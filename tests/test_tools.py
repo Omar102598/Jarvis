@@ -128,7 +128,7 @@ async def test_web_search_success():
          patch("tools.web_search.aiohttp.ClientSession", return_value=session):
         result = await web_search.ainvoke({"query": "weather today"})
     assert "Test Result" in result
-    assert "example.com" in result
+    assert "https://example.com" in result
 
 
 # --- Calendar Tool ---

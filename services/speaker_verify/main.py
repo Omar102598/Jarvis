@@ -15,6 +15,7 @@ import numpy as np
 import paho.mqtt.client as mqtt
 import redis
 import torch
+import torchaudio
 from speechbrain.inference.speaker import EncoderClassifier
 
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
@@ -36,8 +37,6 @@ print("[Verify] Model loaded.")
 
 def extract_embedding(audio_path: str) -> np.ndarray:
     """Extract a speaker embedding from a WAV file."""
-    import torchaudio
-
     signal, sr = torchaudio.load(audio_path)
     # Resample to 16kHz if needed
     if sr != 16000:

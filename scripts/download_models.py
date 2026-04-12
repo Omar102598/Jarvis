@@ -25,8 +25,10 @@ def download_stt_model():
         model_dir = os.path.join(MODELS_DIR, "faster-whisper-turbo")
         os.makedirs(model_dir, exist_ok=True)
         print("  Downloading 'turbo' model (this may take a few minutes)...")
-        WhisperModel("turbo", device="cpu", compute_type="int8",
-                      download_root=model_dir)
+        WhisperModel(
+            "turbo", device="cpu", compute_type="int8",
+            download_root=model_dir,
+        )
         print("  ✓ STT model downloaded")
     except ImportError:
         print("  ✗ faster-whisper not installed. Install with: pip install faster-whisper")

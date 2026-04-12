@@ -70,7 +70,9 @@ def test_verify_speaker_match():
             key = key_bytes.decode() if isinstance(key_bytes, bytes) else key_bytes
             name = key.split(":")[1]
             stored = mock_redis.get(key)
-            stored_embed = np.frombuffer(stored, dtype=np.float32).reshape(192)
+            dim_raw = mock_redis.get(f"speaker:{name}:dim")
+            dim = int(dim_raw) if dim_raw else 192
+            stored_embed = np.frombuffer(stored, dtype=np.float32).reshape(dim)
 
             similarity = float(
                 np.dot(stored_embed, test_emb)
@@ -103,8 +105,11 @@ def test_verify_speaker_no_match():
     best_score = 0.0
     for key_bytes in mock_redis.scan_iter("speaker:*:embedding"):
         key = key_bytes.decode() if isinstance(key_bytes, bytes) else key_bytes
+        name = key.split(":")[1]
         stored = mock_redis.get(key)
-        stored_embed = np.frombuffer(stored, dtype=np.float32).reshape(192)
+        dim_raw = mock_redis.get(f"speaker:{name}:dim")
+        dim = int(dim_raw) if dim_raw else 192
+        stored_embed = np.frombuffer(stored, dtype=np.float32).reshape(dim)
 
         similarity = float(
             np.dot(stored_embed, test_emb)
