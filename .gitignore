@@ -1,0 +1,45 @@
+# Dependencies
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# Model weights (large files — download at setup)
+models/
+
+# Data (local recordings, snapshots)
+data/speaker_enrollment/*.wav
+data/face_enrollment/**/*.jpg
+data/face_enrollment/**/*.png
+data/snapshots/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+
+# Mosquitto persistence
+config/mosquitto/data/
+config/mosquitto/log/
+
+# Redis persistence
+config/redis/data/
+dump.rdb

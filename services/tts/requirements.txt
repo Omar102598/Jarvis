@@ -1,0 +1,4 @@
+piper-tts==1.2.0
+paho-mqtt==1.6.1
+numpy
+soundfile

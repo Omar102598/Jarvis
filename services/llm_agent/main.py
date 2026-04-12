@@ -1,0 +1,150 @@
+"""JARVIS LLM Agent Service.
+
+The brain of JARVIS. Receives transcribed speech, processes it through an LLM
+with tool-calling (smart home, web search, vision, etc.), and publishes the
+response for TTS synthesis.
+"""
+
+import json
+import os
+from datetime import datetime, timezone
+
+import paho.mqtt.client as mqtt
+import redis
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, StateGraph
+from langgraph.prebuilt import ToolNode
+
+from tools.smart_home import control_device, get_device_states, get_presence, set_scene
+from tools.web_search import web_search
+from tools.vision import get_camera_snapshot
+
+MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
+MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+
+SYSTEM_PROMPT = """You are JARVIS, an advanced AI assistant inspired by the AI from Iron Man.
+You are British, witty, efficient, and loyal. You address your user as "sir" occasionally
+but not excessively. You have access to smart home controls, cameras, web search, and more.
+
+Be concise but helpful. When controlling devices, confirm the action briefly.
+If you don't know something, say so honestly. Never make up information.
+
+Current time: {time}
+User location: {room}
+"""
+
+# Tools available to the LLM
+tools = [
+    control_device,
+    get_device_states,
+    set_scene,
+    get_presence,
+    web_search,
+    get_camera_snapshot,
+]
+
+# LLM with tool-calling
+llm = ChatOpenAI(
+    model=os.environ.get("LLM_MODEL", "gpt-4.1"),
+    temperature=0.3,
+).bind_tools(tools)
+
+# Redis for conversation history
+r = redis.Redis(host=REDIS_HOST, decode_responses=True)
+
+
+# --- LangGraph Agent ---
+
+def should_continue(state):
+    last_message = state["messages"][-1]
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "tools"
+    return END
+
+
+def call_model(state):
+    response = llm.invoke(state["messages"])
+    return {"messages": state["messages"] + [response]}
+
+
+tool_node = ToolNode(tools)
+
+workflow = StateGraph(dict)
+workflow.add_node("agent", call_model)
+workflow.add_node("tools", tool_node)
+workflow.set_entry_point("agent")
+workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+workflow.add_edge("tools", "agent")
+agent = workflow.compile()
+
+
+# --- Request Processing ---
+
+def process_request(text: str, room: str) -> str:
+    """Process a user request through the LLM agent with tool-calling."""
+    system = SystemMessage(content=SYSTEM_PROMPT.format(
+        time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        room=room,
+    ))
+
+    # Retrieve conversation history (last 20 messages)
+    history_key = f"conversation:{room}"
+    history_raw = r.lrange(history_key, -20, -1)
+    history = []
+    for h in history_raw:
+        msg = json.loads(h)
+        if msg["role"] == "user":
+            history.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            history.append(AIMessage(content=msg["content"]))
+
+    messages = [system] + history + [HumanMessage(content=text)]
+
+    result = agent.invoke({"messages": messages})
+    response_text = result["messages"][-1].content
+
+    # Store in conversation history
+    r.rpush(history_key, json.dumps({"role": "user", "content": text}))
+    r.rpush(history_key, json.dumps({"role": "assistant", "content": response_text}))
+    r.ltrim(history_key, -40, -1)
+
+    return response_text
+
+
+# --- MQTT Handler ---
+
+def on_llm_request(client, userdata, msg):
+    data = json.loads(msg.payload)
+    text = data["text"]
+    room = data["room"]
+
+    print(f"[LLM] Processing: '{text}' (from {room})")
+
+    try:
+        response = process_request(text, room)
+    except Exception as e:
+        print(f"[LLM] Error: {e}")
+        response = "I'm sorry, I encountered an error processing that request."
+
+    print(f"[LLM] Response: '{response[:100]}...'")
+
+    client.publish(
+        f"jarvis/tts/{room}/speak",
+        json.dumps({"text": response, "room": room}),
+    )
+
+
+def main():
+    mqtt_client = mqtt.Client()
+    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
+    mqtt_client.subscribe("jarvis/llm/request")
+    mqtt_client.message_callback_add("jarvis/llm/request", on_llm_request)
+
+    print("[LLM] Agent ready, waiting for requests...")
+    mqtt_client.loop_forever()
+
+
+if __name__ == "__main__":
+    main()

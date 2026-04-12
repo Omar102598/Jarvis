@@ -1,0 +1,98 @@
+graph TB
+    subgraph GPU["Central GPU Server"]
+        direction TB
+
+        subgraph Brain["LLM Brain"]
+            LLM["GPT-4.1 / Claude / Llama 3.3<br/>(Ollama / vLLM / Cloud API)"]
+        end
+
+        subgraph Agent["LangGraph Agent"]
+            Router["Tool Router"]
+            LLM --> Router
+            Router --> T_SmartHome["Smart Home<br/>(HA)"]
+            Router --> T_Web["Web Search<br/>(Tavily)"]
+            Router --> T_Vision["Vision Query<br/>(Camera)"]
+            Router --> T_Calendar["Calendar<br/>(Google)"]
+            Router --> T_Reminder["Reminder<br/>(Redis)"]
+        end
+
+        subgraph Voice["Voice Pipeline"]
+            WW["OpenWakeWord<br/>~80ms"]
+            STT["faster-whisper<br/>(turbo) ~300ms"]
+            SV["SpeechBrain<br/>ECAPA-TDNN ~200ms"]
+            TTS["XTTS v2 / Piper<br/>~200ms / ~50ms"]
+            WW --> STT --> SV --> LLM
+            LLM --> TTS
+        end
+
+        subgraph VisionPipe["Vision Pipeline"]
+            YOLO["YOLO26m<br/>~5ms/frame"]
+            Face["InsightFace<br/>Buffalo_L ~10ms"]
+            GPT4V["GPT-4o Vision<br/>~1-2s"]
+            YOLO -->|Person detected| Face
+            YOLO --> GPT4V
+        end
+
+        subgraph Infra["Infrastructure"]
+            MQTT["Mosquitto<br/>MQTT Broker"]
+            Redis["Redis<br/>State Store"]
+        end
+
+        Voice --> MQTT
+        Agent --> MQTT
+        VisionPipe --> MQTT
+    end
+
+    subgraph RoomNodes["Room Nodes (per room)"]
+        Mic["ReSpeaker<br/>Mic Array"]
+        Speaker["Snapcast<br/>Speaker"]
+        ESP32["ESP32<br/>(ESPresense)"]
+    end
+
+    subgraph Cameras["Camera Nodes"]
+        Ring["Ring Cameras"]
+        PoE["PoE Cameras<br/>(Frigate)"]
+        go2rtc["go2rtc<br/>RTSP Proxy"]
+        Ring --> go2rtc
+        PoE --> go2rtc
+    end
+
+    subgraph Wearable["Wearable (Glasses)"]
+        Frame["Brilliant Labs<br/>Frame"]
+        Phone["Phone<br/>(Companion App)"]
+        Frame -->|BLE| Phone
+        Phone -->|WebSocket| GPU
+    end
+
+    subgraph HA["Home Assistant (Smart Home Hub)"]
+        Govee["Govee Lights<br/>(LAN UDP ~10-50ms)"]
+        GoveeCloud["Govee Cloud<br/>(REST fallback)"]
+        RingInt["Ring<br/>Cameras & Alarm"]
+        Zigbee["Zigbee Sensors<br/>(ZHA)"]
+        ESPHome["ESPHome<br/>Devices"]
+        MobileApp["Companion App<br/>(GPS Presence)"]
+        Weather["Weather &<br/>Calendar"]
+    end
+
+    Mic -->|Audio Stream| MQTT
+    MQTT -->|TTS Audio| Speaker
+    ESP32 -->|BLE Tracking| MQTT
+    go2rtc -->|RTSP| VisionPipe
+    MQTT <-->|WebSocket| HA
+    T_SmartHome -->|WebSocket API| HA
+
+    classDef server fill:#1a1a2e,stroke:#16213e,color:#e6e6e6
+    classDef voice fill:#0f3460,stroke:#533483,color:#e6e6e6
+    classDef vision fill:#533483,stroke:#e94560,color:#e6e6e6
+    classDef infra fill:#16213e,stroke:#0f3460,color:#e6e6e6
+    classDef external fill:#e94560,stroke:#533483,color:#e6e6e6
+    classDef agent fill:#2d6a4f,stroke:#40916c,color:#e6e6e6
+    classDef ha fill:#d4a373,stroke:#ccd5ae,color:#1a1a2e
+
+    class GPU server
+    class Voice,WW,STT,SV,TTS voice
+    class VisionPipe,YOLO,Face,GPT4V vision
+    class MQTT,Redis infra
+    class RoomNodes,Cameras,Wearable external
+    class Agent,Router,T_SmartHome,T_Web,T_Vision,T_Calendar,T_Reminder agent
+    class HA,Govee,GoveeCloud,RingInt,Zigbee,ESPHome,MobileApp,Weather ha

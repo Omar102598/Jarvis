@@ -1,0 +1,8 @@
+ultralytics>=8.2.0
+insightface>=0.7.3
+onnxruntime-gpu>=1.17.0
+opencv-python-headless>=4.9.0
+paho-mqtt==1.6.1
+redis>=5.0.0
+numpy
+Pillow

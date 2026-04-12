@@ -1,0 +1,169 @@
+version: "3.9"
+
+# ==============================================================================
+# JARVIS — Docker Compose
+# ==============================================================================
+# Start:  docker compose up -d
+# Logs:   docker compose logs -f <service>
+# Stop:   docker compose down
+# ==============================================================================
+
+services:
+
+  # --- Infrastructure ---
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: jarvis-mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: jarvis-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: always
+
+  # --- Voice Pipeline ---
+
+  wake_word:
+    build: ./services/wake_word
+    container_name: jarvis-wake-word
+    devices:
+      - /dev/snd:/dev/snd
+    privileged: true
+    depends_on:
+      - mosquitto
+    environment:
+      - MQTT_HOST=mosquitto
+      - ROOM_NAME=${ROOM_NAME:-office}
+      - WAKE_THRESHOLD=${WAKE_THRESHOLD:-0.5}
+    restart: always
+
+  stt:
+    build: ./services/stt
+    container_name: jarvis-stt
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - mosquitto
+    environment:
+      - MQTT_HOST=mosquitto
+    volumes:
+      - ./models:/models
+    restart: always
+
+  speaker_verify:
+    build: ./services/speaker_verify
+    container_name: jarvis-speaker-verify
+    depends_on:
+      - mosquitto
+      - redis
+    environment:
+      - MQTT_HOST=mosquitto
+      - REDIS_HOST=redis
+      - VERIFY_THRESHOLD=${VERIFY_THRESHOLD:-0.25}
+    volumes:
+      - ./models:/models
+      - ./data/speaker_enrollment:/data/speaker_enrollment
+    restart: always
+
+  llm_agent:
+    build: ./services/llm_agent
+    container_name: jarvis-llm
+    depends_on:
+      - mosquitto
+      - redis
+    environment:
+      - MQTT_HOST=mosquitto
+      - REDIS_HOST=redis
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4.1}
+      - HA_URL=${HA_URL}
+      - HA_TOKEN=${HA_TOKEN}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+    restart: always
+
+  tts:
+    build: ./services/tts
+    container_name: jarvis-tts
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - mosquitto
+    devices:
+      - /dev/snd:/dev/snd
+    environment:
+      - MQTT_HOST=mosquitto
+      - TTS_ENGINE=${TTS_ENGINE:-piper}
+      - PIPER_MODEL=${PIPER_MODEL:-en_GB-alan-medium}
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    restart: always
+
+  # --- Vision (Phase 3) ---
+
+  vision:
+    build: ./services/vision
+    container_name: jarvis-vision
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - mosquitto
+      - redis
+    environment:
+      - MQTT_HOST=mosquitto
+      - REDIS_HOST=redis
+      - CAMERA_URLS=${CAMERA_URLS:-{}}
+      - PROCESS_FPS=${PROCESS_FPS:-5}
+      - FACE_THRESHOLD=${FACE_THRESHOLD:-0.4}
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    profiles:
+      - vision  # Only start with: docker compose --profile vision up -d
+    restart: always
+
+  # --- Wearable Bridge (Phase 4) ---
+
+  glasses_bridge:
+    build: ./services/glasses_bridge
+    container_name: jarvis-glasses
+    depends_on:
+      - mosquitto
+    ports:
+      - "8765:8765"  # WebSocket port for phone companion app
+    environment:
+      - MQTT_HOST=mosquitto
+    profiles:
+      - wearable  # Only start with: docker compose --profile wearable up -d
+    restart: always
+
+volumes:
+  mosquitto_data:
+  redis_data:
