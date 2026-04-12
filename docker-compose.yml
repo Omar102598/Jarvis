@@ -62,8 +62,10 @@ services:
       - mosquitto
     environment:
       - MQTT_HOST=mosquitto
+      - AUDIO_DIR=/data/audio_cache
     volumes:
       - ./models:/models
+      - ./data:/data
     restart: always
 
   speaker_verify:
@@ -76,9 +78,10 @@ services:
       - MQTT_HOST=mosquitto
       - REDIS_HOST=redis
       - VERIFY_THRESHOLD=${VERIFY_THRESHOLD:-0.25}
+      - MODEL_DIR=/models/speaker_model
     volumes:
       - ./models:/models
-      - ./data/speaker_enrollment:/data/speaker_enrollment
+      - ./data:/data
     restart: always
 
   llm_agent:
