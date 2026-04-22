@@ -19,17 +19,26 @@ from langgraph.prebuilt import ToolNode
 from tools.smart_home import control_device, get_device_states, get_presence, set_scene
 from tools.web_search import web_search
 from tools.vision import get_camera_snapshot
+from tools.calendar import get_calendar_events, set_reminder
+from tools.weather import get_weather
+from tools.notifications import send_notification
 
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 
-SYSTEM_PROMPT = """You are JARVIS, an advanced AI assistant inspired by the AI from Iron Man.
-You are British, witty, efficient, and loyal. You address your user as "sir" occasionally
-but not excessively. You have access to smart home controls, cameras, web search, and more.
+# Load system prompt from file, fall back to inline default
+_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "system.txt")
+try:
+    with open(_PROMPT_PATH) as _f:
+        _BASE_PROMPT = _f.read().strip()
+except FileNotFoundError:
+    _BASE_PROMPT = (
+        "You are JARVIS, an advanced AI assistant inspired by the AI from Iron Man. "
+        "You are British, witty, efficient, and loyal."
+    )
 
-Be concise but helpful. When controlling devices, confirm the action briefly.
-If you don't know something, say so honestly. Never make up information.
+SYSTEM_PROMPT = _BASE_PROMPT + """
 
 Current time: {time}
 User location: {room}
@@ -43,6 +52,10 @@ tools = [
     get_presence,
     web_search,
     get_camera_snapshot,
+    get_calendar_events,
+    set_reminder,
+    get_weather,
+    send_notification,
 ]
 
 # LLM with tool-calling

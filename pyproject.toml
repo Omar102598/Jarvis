@@ -1,0 +1,10 @@
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "JARVIS — AI Assistant with Voice, Smart Home, Vision, and Wearable Integration"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"

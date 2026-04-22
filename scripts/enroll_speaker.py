@@ -84,8 +84,9 @@ def main():
     avg_embedding = np.mean(embeddings, axis=0).astype(np.float32)
 
     # Store in Redis
-    key = f"speaker:{args.name}"
+    key = f"speaker:{args.name}:embedding"
     r.set(key, avg_embedding.tobytes())
+    r.set(f"speaker:{args.name}:dim", str(avg_embedding.shape[0]))
 
     print(f"\n✓ Enrolled '{args.name}' with {args.samples} samples")
     print(f"  Stored as Redis key: {key}")
