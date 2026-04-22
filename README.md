@@ -6,6 +6,7 @@ Voice control, smart home automation, computer vision, and wearable integration.
 ## Features
 
 - **Voice Control** — Wake word detection ("Hey Jarvis" / "J"), speech-to-text, natural language understanding, text-to-speech
+- **iPhone / Siri** — Talk to JARVIS from your iPhone via a Siri Shortcut; say "Hey Siri, Ask JARVIS" to activate hands-free
 - **Speaker Verification** — Recognizes your voice; rejects unauthorized commands
 - **Smart Home** — Controls Govee lights (and more) via Home Assistant with local LAN priority
 - **Vision** — Person detection (YOLO), face recognition (InsightFace), camera snapshot analysis (GPT-4o)
@@ -85,6 +86,7 @@ Jarvis/
 │   ├── llm_agent/
 │   │   └── tools/
 │   ├── tts/
+│   ├── mobile_gateway/
 │   ├── vision/
 │   └── glasses_bridge/
 ├── scripts/
@@ -105,6 +107,7 @@ Jarvis/
 | [Architecture](docs/architecture.md) | System design, component diagrams, data flow |
 | [Plan](docs/Plan.md) | Phased build plan with checkboxes |
 | [Implementation](docs/implementation.md) | Step-by-step setup and code guide |
+| [iPhone / Siri Setup](docs/iphone-setup.md) | Use JARVIS hands-free from your iPhone |
 | [Shopping List](docs/shopping-list.md) | Hardware & costs breakdown |
 | [Research](docs/research.md) | Full technology evaluation findings |
 
