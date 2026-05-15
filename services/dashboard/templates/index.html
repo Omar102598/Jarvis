@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JARVIS — Agent Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root {
+      --jarvis-blue: #00d4ff;
+      --jarvis-blue-dim: #0088aa;
+      --jarvis-bg: #080e1c;
+      --card-bg: #0c1528;
+      --card-border: #1a3050;
+    }
+
+    body {
+      background-color: var(--jarvis-bg);
+      color: #cdd6e8;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+
+    /* ---- Navbar ---- */
+    .navbar {
+      background-color: #060c18 !important;
+      border-bottom: 1px solid var(--jarvis-blue-dim);
+    }
+    .navbar-brand {
+      color: var(--jarvis-blue) !important;
+      font-weight: 700;
+      letter-spacing: 4px;
+      font-size: 1.1rem;
+    }
+    .navbar-subtitle {
+      color: #557799;
+      font-size: 0.75rem;
+      letter-spacing: 2px;
+    }
+
+    /* ---- Agent Cards ---- */
+    .agent-card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .agent-card:hover {
+      border-color: var(--jarvis-blue);
+      box-shadow: 0 0 12px rgba(0, 212, 255, 0.12);
+    }
+    .agent-card.running {
+      border-color: #f0a020;
+      box-shadow: 0 0 12px rgba(240, 160, 32, 0.15);
+    }
+    .agent-card.error-state {
+      border-color: #cc3344;
+    }
+    .agent-name {
+      color: var(--jarvis-blue);
+      font-weight: 600;
+      letter-spacing: 1px;
+    }
+    .agent-desc {
+      font-size: 0.82rem;
+      color: #778899;
+    }
+    .agent-schedule {
+      font-size: 0.75rem;
+      color: #445566;
+      font-family: monospace;
+    }
+
+    /* ---- Status Badges ---- */
+    .status-badge {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 1px;
+      padding: 3px 8px;
+      border-radius: 12px;
+    }
+    .status-idle    { background: #0a2535; color: var(--jarvis-blue); border: 1px solid var(--jarvis-blue-dim); }
+    .status-running { background: #2a1a00; color: #f0a020; border: 1px solid #a07010; animation: pulse 1.5s infinite; }
+    .status-error   { background: #2a0010; color: #ff4466; border: 1px solid #aa2233; }
+    .status-unknown { background: #1a1a2a; color: #556677; border: 1px solid #334455; }
+    .status-enabled  { background: #0a2535; color: #00aa88; border: 1px solid #006655; font-size: 0.68rem; }
+    .status-disabled { background: #1a1a1a; color: #445566; border: 1px solid #2a2a2a; font-size: 0.68rem; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.5; }
+    }
+
+    /* ---- Buttons ---- */
+    .btn-run {
+      background: transparent;
+      border: 1px solid var(--jarvis-blue-dim);
+      color: var(--jarvis-blue);
+      font-size: 0.75rem;
+      letter-spacing: 1px;
+      padding: 4px 12px;
+      border-radius: 4px;
+      transition: background 0.2s, box-shadow 0.2s;
+    }
+    .btn-run:hover {
+      background: rgba(0, 212, 255, 0.1);
+      box-shadow: 0 0 8px rgba(0, 212, 255, 0.3);
+      color: #fff;
+    }
+    .btn-run:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* ---- Report Feed ---- */
+    .report-entry {
+      background-color: var(--card-bg);
+      border-left: 3px solid var(--jarvis-blue);
+      border-radius: 0 6px 6px 0;
+      padding: 12px 16px;
+      margin-bottom: 10px;
+    }
+    .report-entry.error-report {
+      border-left-color: #cc3344;
+    }
+    .report-agent-tag {
+      font-size: 0.7rem;
+      color: var(--jarvis-blue);
+      letter-spacing: 1px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .report-timestamp {
+      font-size: 0.7rem;
+      color: #445566;
+    }
+    .report-text {
+      font-size: 0.85rem;
+      color: #aabbcc;
+      white-space: pre-wrap;
+      margin-top: 6px;
+    }
+
+    /* ---- Misc ---- */
+    .section-label {
+      font-size: 0.7rem;
+      letter-spacing: 3px;
+      color: #445566;
+      text-transform: uppercase;
+      border-bottom: 1px solid #1a2a3a;
+      padding-bottom: 6px;
+      margin-bottom: 16px;
+    }
+    .last-run {
+      font-size: 0.72rem;
+      color: #445566;
+    }
+    .preview-text {
+      font-size: 0.78rem;
+      color: #778899;
+      margin-top: 6px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    #refresh-indicator {
+      font-size: 0.7rem;
+      color: #445566;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ========== Navbar ========== -->
+<nav class="navbar navbar-expand-lg px-4 py-2">
+  <a class="navbar-brand" href="/">J.A.R.V.I.S</a>
+  <span class="navbar-subtitle ms-3">BACKGROUND AGENTS</span>
+  <div class="ms-auto d-flex align-items-center gap-3">
+    <span id="refresh-indicator">Auto-refreshing…</span>
+    <span class="navbar-subtitle">{{ generated_at }}</span>
+  </div>
+</nav>
+
+<!-- ========== Main Layout ========== -->
+<div class="container-fluid px-4 py-4">
+  <div class="row g-4">
+
+    <!-- ========== Left: Agent Cards ========== -->
+    <div class="col-lg-5">
+      <div class="section-label">Active Agents</div>
+      <div id="agents-container">
+        {% for agent in agents %}
+        <div class="agent-card mb-3 p-3 {% if agent.status == 'running' %}running{% elif agent.status == 'error' %}error-state{% endif %}"
+             id="agent-card-{{ agent.name }}">
+          <div class="d-flex align-items-start justify-content-between">
+            <div>
+              <div class="d-flex align-items-center gap-2 mb-1">
+                <span class="agent-name">{{ agent.display_name }}</span>
+                <span class="status-badge {% if agent.enabled %}status-enabled{% else %}status-disabled{% endif %}">
+                  {{ "ON" if agent.enabled else "OFF" }}
+                </span>
+              </div>
+              <div class="agent-desc">{{ agent.description }}</div>
+            </div>
+            <div class="d-flex flex-column align-items-end gap-2 ms-3">
+              <span class="status-badge status-{{ agent.status }}" id="status-{{ agent.name }}">
+                {{ agent.status | upper }}
+              </span>
+              <button class="btn-run"
+                      onclick="triggerAgent('{{ agent.name }}')"
+                      id="btn-{{ agent.name }}"
+                      {% if agent.status == 'running' %}disabled{% endif %}>
+                ▶ RUN NOW
+              </button>
+            </div>
+          </div>
+
+          {% if agent.schedule %}
+          <div class="agent-schedule mt-2">⏱ {{ agent.schedule }}</div>
+          {% endif %}
+
+          {% if agent.last_run %}
+          <div class="last-run mt-1">Last run: {{ agent.last_run }}</div>
+          {% endif %}
+
+          {% if agent.last_error %}
+          <div class="mt-2 small text-danger">⚠ {{ agent.last_error }}</div>
+          {% endif %}
+
+          {% if agent.latest_report_preview %}
+          <div class="preview-text">{{ agent.latest_report_preview }}…</div>
+          {% endif %}
+        </div>
+        {% else %}
+        <div class="text-muted small">No agents registered yet. Start the agent_runner service.</div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- ========== Right: Reports Feed ========== -->
+    <div class="col-lg-7">
+      <div class="section-label">Recent Reports</div>
+      <div id="reports-container">
+        {% for report in recent_reports %}
+        <div class="report-entry">
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <span class="report-agent-tag">{{ report.agent }}</span>
+            <span class="report-timestamp">{{ report.timestamp }}</span>
+          </div>
+          <div class="report-text">{{ report.report }}</div>
+        </div>
+        {% else %}
+        <div class="text-muted small">
+          No reports yet. Reports will appear here after agents run.
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+  </div><!-- row -->
+</div><!-- container -->
+
+<!-- ========== Toast notification ========== -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index: 9999">
+  <div id="toast" class="toast align-items-center text-bg-dark border-0" role="alert" aria-live="assertive">
+    <div class="d-flex">
+      <div class="toast-body" id="toast-msg">Agent triggered.</div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  // ---- Trigger an agent immediately ----
+  async function triggerAgent(name) {
+    const btn = document.getElementById('btn-' + name);
+    btn.disabled = true;
+    btn.textContent = '⏳ QUEUED';
+
+    try {
+      const resp = await fetch(`/api/agents/${name}/run`, { method: 'POST' });
+      const data = await resp.json();
+      showToast(`✓ ${name} triggered — running now.`);
+    } catch (e) {
+      showToast(`✗ Failed to trigger ${name}: ${e}`);
+      btn.disabled = false;
+      btn.textContent = '▶ RUN NOW';
+    }
+  }
+
+  // ---- Auto-refresh agent status every 10 seconds ----
+  async function refreshAgents() {
+    try {
+      const resp = await fetch('/api/agents');
+      const agents = await resp.json();
+
+      for (const agent of agents) {
+        const badge = document.getElementById('status-' + agent.name);
+        const btn   = document.getElementById('btn-'    + agent.name);
+        const card  = document.getElementById('agent-card-' + agent.name);
+
+        if (badge) {
+          badge.textContent = agent.status.toUpperCase();
+          badge.className = 'status-badge status-' + agent.status;
+        }
+        if (btn) {
+          btn.disabled = (agent.status === 'running');
+          btn.textContent = agent.status === 'running' ? '⏳ RUNNING' : '▶ RUN NOW';
+        }
+        if (card) {
+          card.classList.toggle('running',     agent.status === 'running');
+          card.classList.toggle('error-state', agent.status === 'error');
+        }
+      }
+
+      document.getElementById('refresh-indicator').textContent =
+        'Updated ' + new Date().toLocaleTimeString();
+    } catch (e) {
+      console.warn('Refresh failed:', e);
+    }
+  }
+
+  // ---- Auto-refresh reports every 30 seconds ----
+  async function refreshReports() {
+    try {
+      const resp = await fetch('/api/reports?limit=20');
+      const data = await resp.json();
+      const container = document.getElementById('reports-container');
+
+      if (!data.reports || data.reports.length === 0) return;
+
+      container.innerHTML = data.reports.map(r => `
+        <div class="report-entry">
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <span class="report-agent-tag">${escapeHtml(r.agent)}</span>
+            <span class="report-timestamp">${escapeHtml(r.timestamp)}</span>
+          </div>
+          <div class="report-text">${escapeHtml(r.report)}</div>
+        </div>
+      `).join('');
+    } catch (e) {
+      console.warn('Report refresh failed:', e);
+    }
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function showToast(msg) {
+    document.getElementById('toast-msg').textContent = msg;
+    const toast = new bootstrap.Toast(document.getElementById('toast'), { delay: 4000 });
+    toast.show();
+  }
+
+  // Run immediately then on intervals
+  refreshAgents();
+  refreshReports();
+  setInterval(refreshAgents,  10000);
+  setInterval(refreshReports, 30000);
+</script>
+</body>
+</html>

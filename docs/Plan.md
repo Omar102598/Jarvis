@@ -7,7 +7,50 @@ computer vision, and wearable integration. Five phases, each independently funct
 
 ---
 
-## Phase 1: Voice Core (Weeks 1-3)
+## Phase 0: Background Agents + Dashboard *(can run alongside Phase 1)*
+
+> **Goal:** JARVIS works for you while you're away — running agents, gathering intel, and
+> reporting back. A web dashboard shows what every agent found.
+
+### Step 0.1 — Agent Runner Service
+- [ ] Deploy `services/agent_runner` (Docker container)
+- [ ] Configure `config/agents.yml` — enable/disable agents, set schedules, customise params
+- [ ] Verify agents write reports to Redis and publish to MQTT
+
+### Step 0.2 — Newsletter Agent *(enabled by default)*
+- [ ] Set `TAVILY_API_KEY` and `OPENAI_API_KEY` in `.env`
+- [ ] Edit `config/agents.yml` → `newsletter.params.topics` to match your interests
+- [ ] Trigger manually from dashboard to verify first digest
+- [ ] Schedule: 8 AM daily
+
+### Step 0.3 — Job Monitor Agent *(enabled by default)*
+- [ ] Edit `config/agents.yml` → `job_monitor.params.keywords` and `location`
+- [ ] Trigger manually → confirm deduplication works (second run should find 0 new listings)
+- [ ] Schedule: every 6 hours
+
+### Step 0.4 — Web Monitor Agent *(disabled by default)*
+- [ ] Edit `config/agents.yml` → `web_monitor.params.queries` with topics to track
+- [ ] Set `enabled: true`
+- [ ] Schedule: every hour (adjustable)
+
+### Step 0.5 — Dashboard
+- [ ] Deploy `services/dashboard` (Docker container, port 8888)
+- [ ] Open `http://your-server:8888` in browser
+- [ ] Verify agent status cards and reports feed display correctly
+- [ ] Use "Run Now" button to trigger agents on demand
+
+### Step 0.6 — Ask JARVIS About Agent Reports
+- [ ] Say "Hey Jarvis, what did the newsletter agent find today?"
+- [ ] Say "Hey Jarvis, any new job listings?"
+- [ ] Confirm `get_agent_report` tool returns reports from Redis correctly
+
+**Phase 0 Deliverable:** Persistent background agents that gather news and job listings on
+schedule. A live dashboard shows status and full reports. You can ask JARVIS about any
+agent's findings via voice.
+
+---
+
+
 
 > **Goal:** Say "Hey Jarvis" and get a spoken response from an LLM.
 

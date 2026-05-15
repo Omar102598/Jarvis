@@ -1,0 +1,68 @@
+# ==============================================================================
+# JARVIS Background Agent Configuration
+# ==============================================================================
+# Each agent runs on its own cron schedule (standard 5-field cron syntax).
+# Set enabled: false to disable without removing the entry.
+# Edit params to customise what each agent does for you.
+# ==============================================================================
+
+agents:
+
+  # ---------------------------------------------------------------------------
+  # Newsletter Digest
+  # Searches the web for news on your chosen topics and produces a daily brief.
+  # ---------------------------------------------------------------------------
+  - name: newsletter
+    display_name: "Daily Newsletter"
+    description: >
+      Searches the web for news on configured topics and produces a concise
+      daily digest. Delivered every morning at 8 AM.
+    enabled: true
+    schedule: "0 8 * * *"    # 8:00 AM daily (server local time)
+    params:
+      topics:
+        - "artificial intelligence news"
+        - "tech industry news"
+        - "software engineering"
+        - "open source projects"
+      max_articles: 12
+
+  # ---------------------------------------------------------------------------
+  # Job Monitor
+  # Searches job boards for new listings matching your criteria.
+  # Deduplicates against previously seen listings (7-day memory).
+  # ---------------------------------------------------------------------------
+  - name: job_monitor
+    display_name: "Job Monitor"
+    description: >
+      Monitors job boards (LinkedIn, Greenhouse, Lever, Indeed) for new listings
+      matching your keywords and location. Runs every 6 hours.
+    enabled: true
+    schedule: "0 */6 * * *"  # Every 6 hours
+    params:
+      keywords:
+        - "software engineer"
+        - "AI engineer"
+        - "machine learning engineer"
+        - "backend engineer"
+      location: "remote"
+
+  # ---------------------------------------------------------------------------
+  # Web Monitor
+  # Watches any search query for new content. Good for tracking product
+  # releases, competitors, research papers, news about specific companies, etc.
+  # ---------------------------------------------------------------------------
+  - name: web_monitor
+    display_name: "Web Monitor"
+    description: >
+      Monitors configured search queries for newly published content.
+      Enable and add queries below to start tracking topics.
+    enabled: false
+    schedule: "0 * * * *"   # Every hour
+    params:
+      queries: []
+      # Examples:
+      # queries:
+      #   - "OpenAI GPT-5 release date"
+      #   - "Apple WWDC 2026 announcements"
+      #   - "Nvidia Blackwell GPU availability"

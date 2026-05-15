@@ -16,6 +16,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
+from tools.agents import get_agent_report
 from tools.smart_home import control_device, get_device_states, get_presence, set_scene
 from tools.web_search import web_search
 from tools.vision import get_camera_snapshot
@@ -43,6 +44,7 @@ tools = [
     get_presence,
     web_search,
     get_camera_snapshot,
+    get_agent_report,
 ]
 
 # LLM with tool-calling

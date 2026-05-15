@@ -168,6 +168,38 @@ services:
       - ./models:/models
     restart: always
 
+  # --- Phase 0: Background Agents ---
+
+  agent_runner:
+    build: ./services/agent_runner
+    container_name: jarvis-agent-runner
+    depends_on:
+      - mosquitto
+      - redis
+    environment:
+      - MQTT_HOST=mosquitto
+      - REDIS_HOST=redis
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - AGENTS_CONFIG=/config/agents.yml
+    volumes:
+      - ./config:/config:ro
+    restart: always
+
+  dashboard:
+    build: ./services/dashboard
+    container_name: jarvis-dashboard
+    depends_on:
+      - mosquitto
+      - redis
+    ports:
+      - "${DASHBOARD_PORT:-8888}:8888"
+    environment:
+      - REDIS_HOST=redis
+      - MQTT_HOST=mosquitto
+      - DASHBOARD_PORT=8888
+    restart: always
+
   # --- Wearable Bridge (Phase 4) ---
 
   glasses_bridge:
