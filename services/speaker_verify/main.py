@@ -3,9 +3,16 @@
 Receives speech events, verifies the speaker's identity against enrolled
 embeddings in Redis, then forwards authorized requests to the LLM agent.
 
-TODO: Currently passes through all requests. Full implementation requires
-the raw audio to be shared (via file reference or binary MQTT payload)
-alongside the transcription.
+The STT service writes the raw command audio to a shared volume and includes
+its path in the MQTT payload (audio_path). This service loads that audio,
+extracts an ECAPA-TDNN embedding, and compares it against every enrolled
+speaker profile.
+
+Modes (VERIFY_MODE):
+    off     — skip verification entirely, forward everything (default when
+              no speakers are enrolled)
+    log     — verify and log the result, but forward regardless (default)
+    enforce — reject requests whose speaker doesn't match an enrolled profile
 """
 
 import json
@@ -19,29 +26,78 @@ MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 THRESHOLD = float(os.environ.get("VERIFY_THRESHOLD", "0.25"))
+VERIFY_MODE = os.environ.get("VERIFY_MODE", "log").lower()
 
 r = redis.Redis(host=REDIS_HOST)
 
+_classifier = None
 
-def verify_speaker(embedding: np.ndarray, expected_name: str = "omar") -> tuple:
-    """Compare embedding against stored speaker profile.
+
+def get_classifier():
+    """Lazily load the ECAPA-TDNN encoder (downloads on first use)."""
+    global _classifier
+    if _classifier is None:
+        from speechbrain.inference.speaker import EncoderClassifier
+
+        print("[Verify] Loading ECAPA-TDNN speaker model...")
+        _classifier = EncoderClassifier.from_hparams(
+            source="speechbrain/spkrec-ecapa-voxceleb",
+            savedir="/models/speaker_model",
+        )
+        print("[Verify] Model loaded.")
+    return _classifier
+
+
+def extract_embedding(audio_path: str) -> np.ndarray:
+    """Compute the speaker embedding for a WAV file."""
+    import torch
+    import torchaudio
+
+    signal, sample_rate = torchaudio.load(audio_path)
+    if sample_rate != 16000:
+        signal = torchaudio.functional.resample(signal, sample_rate, 16000)
+    if signal.shape[0] > 1:
+        signal = signal.mean(dim=0, keepdim=True)
+
+    with torch.no_grad():
+        embedding = get_classifier().encode_batch(signal).squeeze().cpu().numpy()
+    return embedding.astype(np.float32)
+
+
+def load_enrolled_speakers() -> dict:
+    """Return {name: embedding} for every enrolled speaker in Redis."""
+    speakers = {}
+    for key in r.scan_iter("speaker:*:embedding"):
+        name = key.decode().split(":")[1]
+        stored = r.get(key)
+        dim_raw = r.get(f"speaker:{name}:dim")
+        dim = int(dim_raw) if dim_raw else 192
+        speakers[name] = np.frombuffer(stored, dtype=np.float32).reshape(dim)
+    return speakers
+
+
+def verify_speaker(audio_path: str) -> tuple:
+    """Match the audio against all enrolled profiles.
 
     Returns:
-        (is_authorized, similarity_score)
+        (is_authorized, best_match_name, best_similarity)
     """
-    stored = r.get(f"speaker:{expected_name}:embedding")
-    if not stored:
-        return False, 0.0
+    speakers = load_enrolled_speakers()
+    if not speakers:
+        return True, None, 0.0  # nothing enrolled — open access
 
-    dim_raw = r.get(f"speaker:{expected_name}:dim")
-    dim = int(dim_raw) if dim_raw else 192
-    stored_embed = np.frombuffer(stored, dtype=np.float32).reshape(dim)
+    embedding = extract_embedding(audio_path)
 
-    similarity = float(
-        np.dot(stored_embed, embedding)
-        / (np.linalg.norm(stored_embed) * np.linalg.norm(embedding))
-    )
-    return similarity > THRESHOLD, similarity
+    best_name, best_sim = None, -1.0
+    for name, stored in speakers.items():
+        sim = float(
+            np.dot(stored, embedding)
+            / (np.linalg.norm(stored) * np.linalg.norm(embedding))
+        )
+        if sim > best_sim:
+            best_name, best_sim = name, sim
+
+    return best_sim > THRESHOLD, best_name, best_sim
 
 
 def on_speech(client, userdata, msg):
@@ -49,19 +105,32 @@ def on_speech(client, userdata, msg):
     data = json.loads(msg.payload)
     room = data["room"]
     text = data["text"]
+    audio_path = data.get("audio_path", "")
 
-    # TODO: Implement actual speaker verification when raw audio is available.
-    # For now, pass through all requests as verified.
-    verified = True
-    print(f"[Verify] {'VERIFIED' if verified else 'REJECTED'} from {room}: '{text}'")
+    verified, speaker, score = True, None, 0.0
 
-    if verified:
+    if VERIFY_MODE != "off" and audio_path and os.path.exists(audio_path):
+        try:
+            verified, speaker, score = verify_speaker(audio_path)
+            print(
+                f"[Verify] {'VERIFIED' if verified else 'REJECTED'} "
+                f"speaker={speaker} score={score:.3f} from {room}: '{text}'"
+            )
+        except Exception as e:
+            # Never let verification failures take down the pipeline
+            print(f"[Verify] Verification error ({e}), passing through")
+            verified = True
+    else:
+        print(f"[Verify] No audio to verify (mode={VERIFY_MODE}), passing: '{text}'")
+
+    if verified or VERIFY_MODE != "enforce":
         client.publish(
             "jarvis/llm/request",
             json.dumps({
                 "text": text,
                 "room": room,
                 "verified": verified,
+                "speaker": speaker,
             }),
         )
     else:
@@ -80,7 +149,7 @@ def main():
     mqtt_client.subscribe("jarvis/audio/mic/+/speech")
     mqtt_client.message_callback_add("jarvis/audio/mic/+/speech", on_speech)
 
-    print(f"[Verify] Ready (threshold={THRESHOLD})")
+    print(f"[Verify] Ready (mode={VERIFY_MODE}, threshold={THRESHOLD})")
     mqtt_client.loop_forever()
 
 

@@ -30,10 +30,15 @@ Voice → OpenWakeWord → faster-whisper → SpeechBrain → LangGraph Agent �
 
 ## Quick Start
 
+**No GPU required.** The stack runs in CPU mode by default (whisper `small` +
+Piper TTS); an NVIDIA GPU just makes it faster and unlocks the vision pipeline.
+See [docs/shopping-list.md](docs/shopping-list.md) for the tiered hardware plan —
+Tier 0 is your existing laptop.
+
 ### Prerequisites
-- NVIDIA GPU (RTX 4090 recommended) with CUDA
 - Docker + Docker Compose
 - Python 3.11+
+- An OpenAI API key (and optionally Tavily for web search / background agents)
 
 ### 1. Clone & Configure
 
@@ -47,14 +52,22 @@ cp .env.example .env
 ### 2. Start Services
 
 ```bash
+# CPU mode (any machine):
 docker compose up -d
+
+# With an NVIDIA GPU (requires nvidia-container-toolkit):
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
 ### 3. Enroll Your Voice
 
 ```bash
-python scripts/enroll_speaker.py omar
+python scripts/enroll_speaker.py --name omar
 ```
+
+Speaker verification runs in `log` mode by default (it identifies the speaker
+but never blocks). Set `VERIFY_MODE=enforce` in `.env` once enrollment scores
+look good in the logs.
 
 ### 4. Test
 

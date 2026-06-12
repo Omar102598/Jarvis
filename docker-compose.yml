@@ -3,9 +3,10 @@ version: "3.9"
 # ==============================================================================
 # JARVIS — Docker Compose
 # ==============================================================================
-# Start:  docker compose up -d
-# Logs:   docker compose logs -f <service>
-# Stop:   docker compose down
+# CPU (any laptop/desktop):  docker compose up -d
+# With NVIDIA GPU:           docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# Logs:                      docker compose logs -f <service>
+# Stop:                      docker compose down
 # ==============================================================================
 
 services:
@@ -51,19 +52,17 @@ services:
   stt:
     build: ./services/stt
     container_name: jarvis-stt
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    devices:
+      - /dev/snd:/dev/snd
     depends_on:
       - mosquitto
     environment:
       - MQTT_HOST=mosquitto
+      - STT_DEVICE=${STT_DEVICE:-auto}
+      - STT_MODEL=${STT_MODEL:-}
     volumes:
       - ./models:/models
+      - ./data:/data
     restart: always
 
   speaker_verify:
@@ -76,9 +75,10 @@ services:
       - MQTT_HOST=mosquitto
       - REDIS_HOST=redis
       - VERIFY_THRESHOLD=${VERIFY_THRESHOLD:-0.25}
+      - VERIFY_MODE=${VERIFY_MODE:-log}
     volumes:
       - ./models:/models
-      - ./data/speaker_enrollment:/data/speaker_enrollment
+      - ./data:/data
     restart: always
 
   llm_agent:
@@ -101,13 +101,6 @@ services:
   tts:
     build: ./services/tts
     container_name: jarvis-tts
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     depends_on:
       - mosquitto
     devices:
@@ -126,13 +119,6 @@ services:
   vision:
     build: ./services/vision
     container_name: jarvis-vision
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     depends_on:
       - mosquitto
       - redis
