@@ -1,0 +1,44 @@
+# ==============================================================================
+# JARVIS — NVIDIA GPU override
+# ==============================================================================
+# Use alongside the base compose file when the host has an NVIDIA GPU
+# (requires nvidia-container-toolkit):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Pins STT to CUDA with the large 'turbo' model and reserves the GPU for the
+# services that benefit from it. Without this file, everything runs on CPU
+# with smaller models — slower, but works on any machine.
+# ==============================================================================
+
+services:
+
+  stt:
+    environment:
+      - STT_DEVICE=cuda
+      - STT_MODEL=${STT_MODEL:-turbo}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  tts:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  vision:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
