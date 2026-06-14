@@ -20,6 +20,9 @@ from apscheduler.triggers.cron import CronTrigger
 
 from job_monitor_agent import JobMonitorAgent
 from newsletter_agent import NewsletterAgent
+from price_monitor_agent import PriceMonitorAgent
+from research_agent import ResearchAgent
+from task_agent import TaskAgent
 from web_monitor_agent import WebMonitorAgent
 
 # ---------------------------------------------------------------------------
@@ -35,7 +38,14 @@ AGENT_CLASSES = {
     "newsletter": NewsletterAgent,
     "job_monitor": JobMonitorAgent,
     "web_monitor": WebMonitorAgent,
+    "research": ResearchAgent,
+    "task": TaskAgent,
+    "price_monitor": PriceMonitorAgent,
 }
+
+# Agents that can be dispatched on demand with params from the trigger payload
+# (e.g. spawn_task), even when not present in agents.yml.
+DISPATCHABLE = {"research", "task"}
 
 # ---------------------------------------------------------------------------
 # Shared clients
@@ -51,9 +61,15 @@ _loop: asyncio.AbstractEventLoop | None = None
 
 
 async def run_agent(name: str, agent_class, params: dict) -> None:
-    """Execute one agent, persist its report, and publish to MQTT."""
+    """Execute one agent, persist its report, and publish to MQTT.
+
+    If params contains 'notify_room', a spoken announcement is sent to that
+    room's TTS topic when the agent finishes — this is how spawn_task results
+    reach the user who dispatched them.
+    """
     print(f"[AgentRunner] Starting: {name}")
     _redis.set(f"agent:{name}:status", "running")
+    notify_room = (params or {}).get("notify_room", "")
 
     try:
         # Each run gets its own Redis connection to avoid cross-thread issues
@@ -74,11 +90,28 @@ async def run_agent(name: str, agent_class, params: dict) -> None:
                 }
             ),
         )
+
+        if notify_room:
+            _mqtt.publish(
+                f"jarvis/tts/{notify_room}/speak",
+                json.dumps({
+                    "text": f"Sir, the {name} agent has finished. {report[:600]}",
+                    "room": notify_room,
+                }),
+            )
         print(f"[AgentRunner] {name} done. Preview: {report[:80]}…")
 
     except Exception as exc:
         _redis.set(f"agent:{name}:status", "error")
         _redis.set(f"agent:{name}:last_error", str(exc))
+        if notify_room:
+            _mqtt.publish(
+                f"jarvis/tts/{notify_room}/speak",
+                json.dumps({
+                    "text": f"Sir, the {name} task ran into a problem: {exc}",
+                    "room": notify_room,
+                }),
+            )
         print(f"[AgentRunner] {name} failed: {exc}", file=sys.stderr)
 
 
@@ -96,20 +129,44 @@ def _on_connect(client, userdata, flags, rc):
 
 
 def _on_trigger(client, userdata, msg):
-    """Handle a manual run request published to jarvis/agents/{name}/trigger."""
+    """Handle a manual run request published to jarvis/agents/{name}/trigger.
+
+    The payload may carry {"params": {...}} to override/supply parameters at
+    trigger time. This is how spawn_task delivers an ad-hoc task description
+    (and notify_room) to the generic 'task' / 'research' agents, which need
+    not appear in agents.yml.
+    """
     parts = msg.topic.split("/")  # ['jarvis', 'agents', name, 'trigger']
     if len(parts) < 4:
         return
     name = parts[2]
-    cfg = userdata.get(name)
-    if not cfg:
+
+    # Parse optional params from the payload
+    payload_params: dict = {}
+    try:
+        if msg.payload:
+            body = json.loads(msg.payload)
+            if isinstance(body, dict):
+                payload_params = body.get("params", {}) or {}
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    agent_class = AGENT_CLASSES.get(name)
+    if not agent_class:
         print(f"[AgentRunner] Trigger for unknown agent: {name}")
         return
-    agent_class = AGENT_CLASSES.get(name)
-    if agent_class and _loop is not None:
+
+    # Merge configured params (if any) with payload params (payload wins).
+    cfg = userdata.get(name) or {}
+    if not cfg and name not in DISPATCHABLE and not payload_params:
+        print(f"[AgentRunner] Trigger for unconfigured agent: {name}")
+        return
+    params = {**cfg.get("params", {}), **payload_params}
+
+    if _loop is not None:
         _loop.call_soon_threadsafe(
             _loop.create_task,
-            run_agent(name, agent_class, cfg.get("params", {})),
+            run_agent(name, agent_class, params),
         )
         print(f"[AgentRunner] Manual trigger queued for: {name}")
 

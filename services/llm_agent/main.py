@@ -15,13 +15,24 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
-from tools.agents import get_agent_report
+from llm_factory import build_llm
+from tools.agents import get_agent_report, trigger_agent
 from tools.smart_home import control_device, get_device_states, get_presence, set_scene
 from tools.web_search import web_search
+from tools.web import fetch_url
 from tools.vision import get_camera_snapshot
 from tools.calendar import get_calendar_events, set_reminder
 from tools.weather import get_weather
 from tools.notifications import send_notification
+from tools.memory import forget, recall, remember
+from tools.files import list_files, read_file, write_file
+from tools.shell import run_shell
+from tools.comms import send_email, send_sms
+from tools.dispatch import ACTIVE_ROOM, ask_subagent, spawn_task
+from tools.code_exec import run_python
+from tools.spotify import spotify_control
+from tools.github_tool import github_tool
+from tools.notes import manage_notes
 
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
@@ -46,51 +57,45 @@ User location: {room}
 
 # Tools available to the LLM
 tools = [
+    # Smart home
     control_device,
     get_device_states,
     set_scene,
     get_presence,
+    # Information
     web_search,
+    fetch_url,
     get_camera_snapshot,
-    get_agent_report,
-    get_calendar_events,
-    set_reminder,
     get_weather,
+    get_calendar_events,
+    # Memory
+    remember,
+    recall,
+    forget,
+    # Files & system
+    read_file,
+    write_file,
+    list_files,
+    run_shell,
+    run_python,
+    # Communication
     send_notification,
+    send_email,
+    send_sms,
+    set_reminder,
+    # Background agents & dispatch
+    get_agent_report,
+    trigger_agent,
+    spawn_task,
+    ask_subagent,
+    # Integrations
+    spotify_control,
+    github_tool,
+    manage_notes,
 ]
 
-def _build_llm():
-    """Pick LLM provider from LLM_MODEL env var.
-
-    Claude models (Anthropic): set LLM_MODEL=claude-opus-4-5, claude-sonnet-4-5, etc.
-    OpenAI models:              set LLM_MODEL=gpt-4.1, gpt-4o-mini, etc.
-    Default (no key set):       falls back to claude-haiku-4-5 if ANTHROPIC_API_KEY
-                                 is present, else gpt-4.1-mini.
-    """
-    model_name = os.environ.get("LLM_MODEL", "").strip()
-
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    openai_key = os.environ.get("OPENAI_API_KEY", "")
-
-    # Default: prefer Claude if only Anthropic key is set
-    if not model_name:
-        if anthropic_key and not openai_key:
-            model_name = "claude-haiku-4-5"
-        else:
-            model_name = "gpt-4.1-mini"
-
-    if "claude" in model_name.lower() or model_name.startswith("anthropic"):
-        from langchain_anthropic import ChatAnthropic
-        print(f"[LLM] Using Anthropic: {model_name}")
-        return ChatAnthropic(model=model_name, temperature=0.3, anthropic_api_key=anthropic_key)
-    else:
-        from langchain_openai import ChatOpenAI
-        print(f"[LLM] Using OpenAI: {model_name}")
-        return ChatOpenAI(model=model_name, temperature=0.3)
-
-
-# LLM with tool-calling
-llm = _build_llm().bind_tools(tools)
+# LLM with tool-calling (provider selected by llm_factory from LLM_MODEL)
+llm = build_llm(temperature=0.3).bind_tools(tools)
 
 # Redis for conversation history
 r = redis.Redis(host=REDIS_HOST, decode_responses=True)
@@ -125,6 +130,10 @@ agent = workflow.compile()
 
 def process_request(text: str, room: str) -> str:
     """Process a user request through the LLM agent with tool-calling."""
+    # Make the active room available to dispatch tools so spawned background
+    # tasks can announce their results back to the right room.
+    ACTIVE_ROOM["room"] = room
+
     system = SystemMessage(content=SYSTEM_PROMPT.format(
         time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         room=room,
