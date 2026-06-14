@@ -4,7 +4,7 @@ Subscribes to wake word events. When triggered, records audio from the mic
 until silence is detected, then transcribes using faster-whisper and publishes
 the text to MQTT.
 
-The raw command audio is also written to a shared volume (AUDIO_CACHE_DIR) and
+The raw command audio is also written to a shared volume (AUDIO_DIR) and
 its path is included in the MQTT payload so downstream services (speaker
 verification) can analyze the same audio.
 
@@ -33,7 +33,7 @@ SILENCE_THRESHOLD = 500  # RMS threshold for silence
 SILENCE_DURATION = 1.5  # seconds of silence to stop
 MAX_RECORD_SECONDS = 10
 
-AUDIO_CACHE_DIR = os.environ.get("AUDIO_CACHE_DIR", "/data/audio_cache")
+AUDIO_DIR = os.environ.get("AUDIO_DIR", "/data/audio_cache")
 AUDIO_CACHE_MAX_FILES = int(os.environ.get("AUDIO_CACHE_MAX_FILES", "50"))
 
 
@@ -48,7 +48,6 @@ def resolve_device() -> tuple:
     # auto: probe for CUDA without requiring torch
     try:
         import ctypes
-
         ctypes.CDLL("libcudart.so")
         return "cuda", "float16", "turbo"
     except OSError:
@@ -110,14 +109,14 @@ def cache_audio(audio_buf: io.BytesIO, room: str) -> str:
     Returns the file path, or "" if the cache dir is unavailable.
     """
     try:
-        os.makedirs(AUDIO_CACHE_DIR, exist_ok=True)
-        path = os.path.join(AUDIO_CACHE_DIR, f"{room}-{int(time.time() * 1000)}.wav")
+        os.makedirs(AUDIO_DIR, exist_ok=True)
+        path = os.path.join(AUDIO_DIR, f"{room}-{int(time.time() * 1000)}.wav")
         with open(path, "wb") as f:
             f.write(audio_buf.getbuffer())
 
         # Prune oldest files beyond the cap
         wavs = sorted(
-            (os.path.join(AUDIO_CACHE_DIR, n) for n in os.listdir(AUDIO_CACHE_DIR)
+            (os.path.join(AUDIO_DIR, n) for n in os.listdir(AUDIO_DIR)
              if n.endswith(".wav")),
             key=os.path.getmtime,
         )
@@ -156,6 +155,9 @@ def on_wake_word(client, userdata, msg):
         )
     else:
         print(f"[STT] No speech detected in {room}")
+        # Clean up audio file when nothing to verify
+        if audio_path and os.path.exists(audio_path):
+            os.unlink(audio_path)
 
 
 def main():

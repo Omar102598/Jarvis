@@ -60,6 +60,7 @@ services:
       - MQTT_HOST=mosquitto
       - STT_DEVICE=${STT_DEVICE:-auto}
       - STT_MODEL=${STT_MODEL:-}
+      - AUDIO_DIR=/data/audio_cache
     volumes:
       - ./models:/models
       - ./data:/data
@@ -76,6 +77,7 @@ services:
       - REDIS_HOST=redis
       - VERIFY_THRESHOLD=${VERIFY_THRESHOLD:-0.25}
       - VERIFY_MODE=${VERIFY_MODE:-log}
+      - MODEL_DIR=/models/speaker_model
     volumes:
       - ./models:/models
       - ./data:/data

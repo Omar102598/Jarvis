@@ -1,7 +1,7 @@
 """Calendar/reminder tools for JARVIS."""
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 from langchain_core.tools import tool
@@ -18,8 +18,8 @@ async def get_calendar_events(calendar: str = "calendar.personal", days: int = 7
         calendar: Calendar entity ID in Home Assistant
         days: Number of days to look ahead (default 7)
     """
-    now = datetime.utcnow()
-    end = datetime(now.year, now.month, now.day + days)
+    now = datetime.now(timezone.utc)
+    end = now + timedelta(days=days)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(

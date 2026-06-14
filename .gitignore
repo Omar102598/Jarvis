@@ -21,6 +21,7 @@ data/speaker_enrollment/*.wav
 data/face_enrollment/**/*.jpg
 data/face_enrollment/**/*.png
 data/snapshots/
+data/audio_cache/*.wav
 
 # IDE
 .vscode/
@@ -28,6 +29,9 @@ data/snapshots/
 *.swp
 *.swo
 *~
+
+# Test cache
+.pytest_cache/
 
 # OS
 .DS_Store
