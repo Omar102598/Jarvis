@@ -60,6 +60,7 @@ services:
       - MQTT_HOST=mosquitto
       - STT_DEVICE=${STT_DEVICE:-auto}
       - STT_MODEL=${STT_MODEL:-}
+      - AUDIO_DIR=/data/audio_cache
     volumes:
       - ./models:/models
       - ./data:/data
@@ -76,6 +77,7 @@ services:
       - REDIS_HOST=redis
       - VERIFY_THRESHOLD=${VERIFY_THRESHOLD:-0.25}
       - VERIFY_MODE=${VERIFY_MODE:-log}
+      - MODEL_DIR=/models/speaker_model
     volumes:
       - ./models:/models
       - ./data:/data
@@ -92,10 +94,36 @@ services:
       - REDIS_HOST=redis
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - LLM_MODEL=${LLM_MODEL:-gpt-4.1}
+      - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
       - HA_URL=${HA_URL}
       - HA_TOKEN=${HA_TOKEN}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
+      # Filesystem / shell / code tools
+      - JARVIS_WORKSPACE=/data/workspace
+      - NOTES_DIR=/data/notes
+      - SHELL_ALLOWLIST=${SHELL_ALLOWLIST:-}
+      - CODE_EXEC_ENABLED=${CODE_EXEC_ENABLED:-false}
+      # Email (SMTP)
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - SMTP_DEFAULT_TO=${SMTP_DEFAULT_TO:-}
+      # SMS (Twilio)
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-}
+      - TWILIO_FROM=${TWILIO_FROM:-}
+      - SMS_DEFAULT_TO=${SMS_DEFAULT_TO:-}
+      # Spotify
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+      - SPOTIFY_REFRESH_TOKEN=${SPOTIFY_REFRESH_TOKEN:-}
+      # GitHub
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_DEFAULT_REPO=${GITHUB_DEFAULT_REPO:-}
+    volumes:
+      - ./data:/data
     restart: always
 
   tts:
@@ -166,6 +194,8 @@ services:
       - MQTT_HOST=mosquitto
       - REDIS_HOST=redis
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
       - AGENTS_CONFIG=/config/agents.yml
     volumes:

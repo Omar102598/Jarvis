@@ -66,3 +66,45 @@ agents:
       #   - "OpenAI GPT-5 release date"
       #   - "Apple WWDC 2026 announcements"
       #   - "Nvidia Blackwell GPU availability"
+
+  # ---------------------------------------------------------------------------
+  # Price Monitor
+  # Watches product pages and reports price drops. Runs twice a day.
+  # Add products as {name, url} pairs below.
+  # ---------------------------------------------------------------------------
+  - name: price_monitor
+    display_name: "Price Monitor"
+    description: >
+      Tracks prices on configured product pages and flags drops.
+    enabled: false
+    schedule: "0 9,18 * * *"   # 9 AM and 6 PM daily
+    params:
+      products: []
+      # Examples:
+      # products:
+      #   - name: "Standing desk"
+      #     url: "https://www.example.com/standing-desk"
+
+  # ---------------------------------------------------------------------------
+  # Research & Task agents (dispatch targets)
+  # These have NO schedule — JARVIS dispatches them on demand via spawn_task
+  # when you ask it to "go research X" or "figure out Y". Listed here only so
+  # the dashboard can show them; they run when triggered, not on a clock.
+  # ---------------------------------------------------------------------------
+  - name: research
+    display_name: "Research Agent"
+    description: >
+      Multi-angle web research synthesized into a sourced briefing.
+      Dispatched on demand by JARVIS (spawn_task).
+    enabled: false
+    schedule: ""
+    params: {}
+
+  - name: task
+    display_name: "Task Agent"
+    description: >
+      Handles arbitrary delegated goals, with web research when needed.
+      Dispatched on demand by JARVIS (spawn_task).
+    enabled: false
+    schedule: ""
+    params: {}

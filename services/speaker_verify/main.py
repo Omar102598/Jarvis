@@ -27,6 +27,7 @@ MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 THRESHOLD = float(os.environ.get("VERIFY_THRESHOLD", "0.25"))
 VERIFY_MODE = os.environ.get("VERIFY_MODE", "log").lower()
+MODEL_DIR = os.environ.get("MODEL_DIR", "/models/speaker_model")
 
 r = redis.Redis(host=REDIS_HOST)
 
@@ -42,7 +43,7 @@ def get_classifier():
         print("[Verify] Loading ECAPA-TDNN speaker model...")
         _classifier = EncoderClassifier.from_hparams(
             source="speechbrain/spkrec-ecapa-voxceleb",
-            savedir="/models/speaker_model",
+            savedir=MODEL_DIR,
         )
         print("[Verify] Model loaded.")
     return _classifier
@@ -92,7 +93,7 @@ def verify_speaker(audio_path: str) -> tuple:
     for name, stored in speakers.items():
         sim = float(
             np.dot(stored, embedding)
-            / (np.linalg.norm(stored) * np.linalg.norm(embedding))
+            / (np.linalg.norm(stored) * np.linalg.norm(embedding) + 1e-8)
         )
         if sim > best_sim:
             best_name, best_sim = name, sim
@@ -120,6 +121,12 @@ def on_speech(client, userdata, msg):
             # Never let verification failures take down the pipeline
             print(f"[Verify] Verification error ({e}), passing through")
             verified = True
+        finally:
+            # Clean up audio file after verification
+            try:
+                os.unlink(audio_path)
+            except OSError:
+                pass
     else:
         print(f"[Verify] No audio to verify (mode={VERIFY_MODE}), passing: '{text}'")
 

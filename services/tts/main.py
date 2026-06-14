@@ -47,7 +47,7 @@ def synthesize_piper(text: str) -> bytes:
 
 def on_connect(client, userdata, flags, rc):
     print(f"[TTS] Connected to MQTT (rc={rc})")
-    client.subscribe("jarvis/tts/speak")
+    client.subscribe("jarvis/tts/+/speak")
 
 
 def on_message(client, userdata, msg):

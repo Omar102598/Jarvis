@@ -12,7 +12,14 @@ Voice control, smart home automation, computer vision, and wearable integration.
 - **Vision** — Person detection (YOLO), face recognition (InsightFace), camera snapshot analysis (GPT-4o)
 - **Wearable** — Brilliant Labs Frame smart glasses integration (camera, mic, OLED display)
 - **Multi-Room** — Microphone + speaker per room with synchronized audio (Snapcast)
-- **Internet Access** — Web search, weather, calendar, and more via LLM tool-calling
+- **Internet Access** — Web search, full-page reading, weather, calendar via LLM tool-calling
+- **Memory** — Remembers facts you tell it and recalls them across conversations
+- **Files & Notes** — Keeps a scratch workspace and a dated notes/journal vault
+- **System Control** — Allowlisted shell commands and sandboxed Python execution
+- **Communication** — Sends email (SMTP) and SMS (Twilio), not just push notifications
+- **Dispatch** — Delegates long jobs to background agents (`spawn_task`) and focused
+  questions to specialist sub-agents (`ask_subagent`: researcher / coder / planner)
+- **Integrations** — Spotify playback control, GitHub issues/PRs
 
 ## Architecture
 

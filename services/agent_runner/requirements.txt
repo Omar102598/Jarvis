@@ -1,6 +1,7 @@
 apscheduler>=3.10
 aiohttp>=3.9
 openai>=1.30
+anthropic>=0.40
 paho-mqtt>=1.6,<2.0
 redis>=5.0
 pyyaml>=6.0
