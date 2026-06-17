@@ -7,6 +7,7 @@ Spotify Premium):
 
 import base64
 import os
+from typing import Optional
 
 import aiohttp
 from langchain_core.tools import tool
@@ -18,7 +19,7 @@ REFRESH_TOKEN = os.environ.get("SPOTIFY_REFRESH_TOKEN", "")
 _API = "https://api.spotify.com/v1"
 
 
-async def _access_token(session: aiohttp.ClientSession) -> str | None:
+async def _access_token(session: aiohttp.ClientSession) -> Optional[str]:
     auth = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
     async with session.post(
         "https://accounts.spotify.com/api/token",

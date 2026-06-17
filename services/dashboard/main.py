@@ -12,8 +12,12 @@ POST /api/agents/{name}/run         — Trigger an agent immediately (publishes 
 GET  /health                        — Health check
 """
 
+import base64
 import json
 import os
+import urllib.parse
+import urllib.request
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
@@ -21,7 +25,6 @@ import redis
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from contextlib import asynccontextmanager
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -171,9 +174,9 @@ async def dashboard(request: Request):
     agents = _get_all_agents()
     recent_reports = _get_all_recent_reports(limit=20)
     return templates.TemplateResponse(
-        "index.html",
-        {
-            "request": request,
+        request=request,
+        name="index.html",
+        context={
             "agents": agents,
             "recent_reports": recent_reports,
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -214,6 +217,131 @@ async def trigger_agent(name: str):
         ),
     )
     return {"status": "triggered", "agent": name}
+
+
+@app.get("/api/voice-state")
+async def get_voice_state(room: str = "office"):
+    """Return the current voice pipeline state for the given room."""
+    state = _redis.get(f"jarvis:voice:state:{room}") or "ready"
+    return {"room": room, "state": state}
+
+
+@app.get("/api/conversation")
+async def get_conversation(room: str = "office", limit: int = 20):
+    """Return recent conversation messages for a room."""
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+    raw = _redis.lrange(f"conversation:{room}", -limit, -1)
+    messages = []
+    for item in raw:
+        try:
+            messages.append(json.loads(item))
+        except json.JSONDecodeError:
+            pass
+    return {"room": room, "messages": messages}
+
+
+_SPOTIFY_CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID", "")
+_SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
+_SPOTIFY_REDIRECT_URI  = "http://localhost:8888/spotify-callback"
+_SPOTIFY_SCOPES        = (
+    "user-modify-playback-state user-read-playback-state "
+    "user-read-currently-playing user-library-read"
+)
+
+
+@app.get("/spotify-setup", response_class=HTMLResponse)
+async def spotify_setup():
+    """OAuth helper page — generates auth link so the user can get a refresh token."""
+    if not _SPOTIFY_CLIENT_ID:
+        return HTMLResponse("<h2>SPOTIFY_CLIENT_ID not set in .env</h2>", status_code=400)
+
+    params = urllib.parse.urlencode({
+        "client_id":     _SPOTIFY_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri":  _SPOTIFY_REDIRECT_URI,
+        "scope":         _SPOTIFY_SCOPES,
+    })
+    auth_url = f"https://accounts.spotify.com/authorize?{params}"
+
+    html = f"""<!DOCTYPE html>
+<html data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <title>JARVIS — Spotify Setup</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>body{{background:#060c18;color:#cdd6e8;font-family:system-ui}}.card{{background:#0a1220;border:1px solid #1a3050}}</style>
+</head>
+<body class="p-4">
+  <h2 style="color:#00d4ff;letter-spacing:4px">SPOTIFY SETUP</h2>
+  <div class="card p-4 mt-3" style="max-width:600px">
+    <p>Click the button below to authorize Jarvis with your Spotify account.
+       You'll be redirected back here with your refresh token.</p>
+    <p class="text-warning small">Make sure <code>http://localhost:8888/spotify-callback</code>
+       is added as a Redirect URI in your <a href="https://developer.spotify.com/dashboard" target="_blank"
+       class="text-info">Spotify Developer Dashboard</a> app settings.</p>
+    <a href="{auth_url}" class="btn btn-success mt-2">Authorize with Spotify →</a>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(html)
+
+
+@app.get("/spotify-callback", response_class=HTMLResponse)
+async def spotify_callback(code: str = "", error: str = ""):
+    """OAuth callback — exchanges authorization code for refresh token."""
+    if error:
+        return HTMLResponse(f"<h2 style='color:red'>Spotify auth error: {error}</h2>")
+    if not code:
+        return HTMLResponse("<h2>No authorization code received.</h2>")
+
+    # Exchange code for tokens
+    try:
+        auth_header = base64.b64encode(
+            f"{_SPOTIFY_CLIENT_ID}:{_SPOTIFY_CLIENT_SECRET}".encode()
+        ).decode()
+        body = urllib.parse.urlencode({
+            "grant_type":   "authorization_code",
+            "code":         code,
+            "redirect_uri": _SPOTIFY_REDIRECT_URI,
+        }).encode()
+        req = urllib.request.Request(
+            "https://accounts.spotify.com/api/token",
+            data=body,
+            headers={
+                "Authorization": f"Basic {auth_header}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            tokens = json.loads(resp.read())
+    except Exception as e:
+        return HTMLResponse(f"<h2 style='color:red'>Token exchange failed: {e}</h2>")
+
+    refresh_token = tokens.get("refresh_token", "")
+    access_token  = tokens.get("access_token", "")
+
+    html = f"""<!DOCTYPE html>
+<html data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <title>JARVIS — Spotify Connected</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>body{{background:#060c18;color:#cdd6e8;font-family:system-ui}}.card{{background:#0a1220;border:1px solid #1a3050}}code{{color:#00d4ff}}</style>
+</head>
+<body class="p-4">
+  <h2 style="color:#00aa88;letter-spacing:4px">✓ SPOTIFY CONNECTED</h2>
+  <div class="card p-4 mt-3" style="max-width:700px">
+    <p>Copy the refresh token below and add it to your <code>.env</code> file:</p>
+    <pre style="background:#040a14;padding:12px;border-radius:6px;color:#7dc8e8;word-break:break-all">SPOTIFY_REFRESH_TOKEN={refresh_token}</pre>
+    <p class="small text-muted mt-3">After saving .env, restart the llm_agent container:
+      <code>docker compose up -d llm_agent</code>
+    </p>
+    <p class="small text-warning">Keep this token private — it gives full playback control.</p>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(html)
 
 
 @app.get("/health")

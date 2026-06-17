@@ -21,6 +21,7 @@ Leave MOBILE_API_KEY empty to disable auth (local-network-only deployments).
 """
 
 import asyncio
+import base64
 import json
 import os
 import subprocess
@@ -31,7 +32,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from faster_whisper import WhisperModel
 from pydantic import BaseModel
@@ -120,7 +121,7 @@ def _on_mqtt_connect(client, userdata, flags, rc):
         return
     print(f"[Gateway] MQTT connected (rc={rc})")
     # Subscribe to all mobile TTS response topics
-    client.subscribe("jarvis/tts/mobile-+/speak")
+    client.subscribe("jarvis/tts/+/speak")
 
 
 def _on_mqtt_message(client, userdata, msg):
@@ -246,24 +247,66 @@ async def _run_pipeline(text: str) -> bytes:
     },
 )
 async def ask_audio(
-    audio: UploadFile = File(..., description="Voice recording (WAV, M4A, MP3, OGG, …)"),
+    request: Request,
     x_api_key: str = Header(default=""),
 ):
     """
     Primary endpoint for the iPhone Siri Shortcut.
 
-    The Shortcut should:
-    1. Use the **Record Audio** action to capture the user's voice.
-    2. POST that file to ``/ask/audio`` with the ``X-API-Key`` header.
-    3. Play the returned WAV audio with the **Play Sound** action.
+    Accepts audio in any of three formats iOS Shortcuts may send:
+    - multipart/form-data with an 'audio' file field  (preferred)
+    - application/octet-stream raw body
+    - raw body with any other content-type (m4a, wav, etc.)
     """
     _check_api_key(x_api_key)
 
-    audio_bytes = await audio.read()
-    if not audio_bytes:
-        raise HTTPException(status_code=400, detail="Empty audio file")
+    content_type = request.headers.get("content-type", "")
+    audio_bytes = b""
+    filename = "audio.m4a"
 
-    text = transcribe_audio(audio_bytes, audio.filename or "audio.wav")
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        audio_field = form.get("audio")
+        if audio_field is None:
+            # Try the first field regardless of name
+            for v in form.values():
+                audio_field = v
+                break
+        if audio_field is None:
+            raise HTTPException(status_code=400, detail="No audio field in form data")
+        if hasattr(audio_field, "read"):
+            audio_bytes = await audio_field.read()
+            filename = getattr(audio_field, "filename", None) or "audio.m4a"
+        else:
+            # Field came through as string — iOS sometimes base64-encodes it
+            import base64
+            try:
+                audio_bytes = base64.b64decode(str(audio_field))
+            except Exception:
+                audio_bytes = str(audio_field).encode("latin-1")
+    else:
+        # Raw binary body (common from iOS "Get Contents of URL" with file variable)
+        audio_bytes = await request.body()
+
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio received")
+
+    print(f"[Gateway] Received {len(audio_bytes)} bytes, content-type={content_type!r}")
+    print(f"[Gateway] First 40 bytes hex: {audio_bytes[:40].hex()}")
+    print(f"[Gateway] First 40 bytes ascii: {audio_bytes[:40]!r}")
+
+    # Auto-detect base64-encoded audio (iOS Shortcuts sometimes base64-encodes the file)
+    # Base64 data is entirely printable ASCII; real audio starts with binary bytes.
+    if len(audio_bytes) > 10 and all(0x20 <= b < 0x7F or b in (0x09, 0x0A, 0x0D) for b in audio_bytes[:200]):
+        try:
+            decoded = base64.b64decode(audio_bytes.strip())
+            if len(decoded) > 100:
+                print(f"[Gateway] Auto-decoded base64 → {len(decoded)} bytes, first hex: {decoded[:8].hex()}")
+                audio_bytes = decoded
+        except Exception as exc:
+            print(f"[Gateway] Base64 decode attempt failed: {exc}")
+
+    text = transcribe_audio(audio_bytes, filename)
     if not text:
         raise HTTPException(status_code=422, detail="No speech detected in audio")
 
@@ -309,6 +352,32 @@ async def ask_text(
     print(f"[Gateway] Text request: '{request.text}'")
     wav_bytes = await _run_pipeline(request.text)
     return Response(content=wav_bytes, media_type="audio/wav")
+
+
+@app.post("/debug/audio", summary="Echo audio metadata for debugging")
+async def debug_audio(request: Request):
+    """Returns metadata about what the client sent — no API key required."""
+    body = await request.body()
+    content_type = request.headers.get("content-type", "")
+    first_hex = body[:60].hex() if body else ""
+    first_ascii = repr(body[:60]) if body else ""
+    # Check if it looks like base64
+    is_b64 = bool(body) and all(0x20 <= b < 0x7F or b in (0x09, 0x0A, 0x0D) for b in body[:200])
+    decoded_size = None
+    if is_b64:
+        try:
+            decoded_size = len(base64.b64decode(body.strip()))
+        except Exception:
+            decoded_size = -1
+    return {
+        "total_bytes": len(body),
+        "content_type": content_type,
+        "headers": dict(request.headers),
+        "first_60_hex": first_hex,
+        "first_60_ascii": first_ascii,
+        "looks_like_base64": is_b64,
+        "base64_decoded_size": decoded_size,
+    }
 
 
 @app.get("/health", summary="Health check")

@@ -29,9 +29,12 @@ MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 1600  # 100ms at 16kHz
-SILENCE_THRESHOLD = 500  # RMS threshold for silence
-SILENCE_DURATION = 1.5  # seconds of silence to stop
-MAX_RECORD_SECONDS = 10
+SILENCE_THRESHOLD = int(os.environ.get("STT_SILENCE_THRESHOLD", "150"))  # RMS; lower = more sensitive
+SILENCE_DURATION = float(os.environ.get("STT_SILENCE_DURATION", "1.2"))  # seconds of silence to stop
+INITIAL_GRACE = float(os.environ.get("STT_INITIAL_GRACE", "1.5"))  # seconds before silence detection starts
+MAX_RECORD_SECONDS = 15
+# Seconds after TTS finishes to keep an open mic for follow-ups (0 = disabled)
+FOLLOWUP_WINDOW = float(os.environ.get("STT_FOLLOWUP_WINDOW", "25.0"))
 
 AUDIO_DIR = os.environ.get("AUDIO_DIR", "/data/audio_cache")
 AUDIO_CACHE_MAX_FILES = int(os.environ.get("AUDIO_CACHE_MAX_FILES", "50"))
@@ -62,6 +65,29 @@ model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE)
 print("[STT] Model loaded.")
 
 
+def _beep():
+    """Play a short confirmation tone via macOS afplay so the user knows to speak."""
+    import subprocess
+    import tempfile
+    import struct
+    import math
+    # Generate a short 880 Hz beep as raw WAV and play it
+    try:
+        freq, duration, rate = 880, 0.12, 16000
+        samples = [int(32767 * math.sin(2 * math.pi * freq * i / rate)) for i in range(int(rate * duration))]
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            tmp = f.name
+            import wave as wv
+            with wv.open(tmp, "w") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(rate)
+                wf.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+        subprocess.run(["afplay", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+    except Exception:
+        pass  # beep is best-effort
+
+
 def capture_command_audio() -> io.BytesIO:
     """Record audio until silence or max duration, return as WAV BytesIO."""
     audio = pyaudio.PyAudio()
@@ -73,21 +99,28 @@ def capture_command_audio() -> io.BytesIO:
     frames = []
     silent_chunks = 0
     chunks_per_second = SAMPLE_RATE // CHUNK_SIZE
+    grace_chunks = int(INITIAL_GRACE * chunks_per_second)
+    chunk_index = 0
 
     for _ in range(int(MAX_RECORD_SECONDS * chunks_per_second)):
         data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
         frames.append(data)
 
-        audio_data = np.frombuffer(data, dtype=np.int16)
-        rms = np.sqrt(np.mean(audio_data.astype(np.float32) ** 2))
+        # During the grace period don't check for silence — give the user
+        # time to start speaking after the beep.
+        if chunk_index >= grace_chunks:
+            audio_data = np.frombuffer(data, dtype=np.int16)
+            rms = np.sqrt(np.mean(audio_data.astype(np.float32) ** 2))
 
-        if rms < SILENCE_THRESHOLD:
-            silent_chunks += 1
-        else:
-            silent_chunks = 0
+            if rms < SILENCE_THRESHOLD:
+                silent_chunks += 1
+            else:
+                silent_chunks = 0
 
-        if silent_chunks > int(SILENCE_DURATION * chunks_per_second):
-            break
+            if silent_chunks > int(SILENCE_DURATION * chunks_per_second):
+                break
+
+        chunk_index += 1
 
     stream.stop_stream()
     stream.close()
@@ -129,11 +162,67 @@ def cache_audio(audio_buf: io.BytesIO, room: str) -> str:
         return ""
 
 
+def _publish_speech(client, room: str, text: str, audio_path: str) -> None:
+    client.publish(
+        f"jarvis/audio/mic/{room}/speech",
+        json.dumps({
+            "text": text,
+            "room": room,
+            "language": "en",
+            "audio_path": audio_path,
+        }),
+    )
+
+
+def on_tts_done(client, userdata, msg):
+    """After Jarvis finishes speaking, open the mic for a follow-up reply.
+
+    The user doesn't need to say 'Hey Jarvis' — just start talking within
+    FOLLOWUP_WINDOW seconds of the response ending.
+    """
+    if FOLLOWUP_WINDOW <= 0:
+        return
+
+    try:
+        data = json.loads(msg.payload)
+        room = data.get("room", "office")
+    except Exception:
+        room = "office"
+
+    # Brief pause so the mic doesn't pick up audio reverb from the speaker
+    time.sleep(0.6)
+    print(f"[STT] Follow-up window open for {FOLLOWUP_WINDOW}s in '{room}'...")
+    _beep()
+
+    audio_buf = capture_command_audio()
+    audio_path = cache_audio(audio_buf, room)
+    audio_buf.seek(0)
+
+    segments, info = model.transcribe(audio_buf, language="en", vad_filter=True)
+    text = " ".join([s.text for s in segments]).strip()
+
+    if text:
+        lower = text.lower().strip(".,!?")
+        if lower in ("goodbye", "goodbye jarvis", "bye", "bye jarvis",
+                     "that's all", "thats all", "thank you", "thanks"):
+            print(f"[STT] Conversation ended by user: '{text}'")
+            if audio_path and os.path.exists(audio_path):
+                os.unlink(audio_path)
+            return
+        print(f"[STT] Follow-up ({room}): '{text}'")
+        _publish_speech(client, room, text, audio_path)
+    else:
+        print(f"[STT] Follow-up window closed — no speech detected")
+        if audio_path and os.path.exists(audio_path):
+            os.unlink(audio_path)
+
+
 def on_wake_word(client, userdata, msg):
     """Handle wake word detection: record, transcribe, publish."""
     data = json.loads(msg.payload)
     room = data["room"]
-    print(f"[STT] Wake word in '{room}', recording...")
+    print(f"[STT] Wake word in '{room}', beeping and recording...")
+    _beep()
 
     audio_buf = capture_command_audio()
     audio_path = cache_audio(audio_buf, room)
@@ -144,18 +233,9 @@ def on_wake_word(client, userdata, msg):
 
     if text:
         print(f"[STT] Transcribed ({room}): '{text}'")
-        client.publish(
-            f"jarvis/audio/mic/{room}/speech",
-            json.dumps({
-                "text": text,
-                "room": room,
-                "language": info.language,
-                "audio_path": audio_path,
-            }),
-        )
+        _publish_speech(client, room, text, audio_path)
     else:
         print(f"[STT] No speech detected in {room}")
-        # Clean up audio file when nothing to verify
         if audio_path and os.path.exists(audio_path):
             os.unlink(audio_path)
 
@@ -165,6 +245,8 @@ def main():
     mqtt_client.connect(MQTT_HOST, MQTT_PORT)
     mqtt_client.subscribe("jarvis/audio/mic/+/wake_word")
     mqtt_client.message_callback_add("jarvis/audio/mic/+/wake_word", on_wake_word)
+    mqtt_client.subscribe("jarvis/tts/+/done")
+    mqtt_client.message_callback_add("jarvis/tts/+/done", on_tts_done)
 
     print("[STT] Waiting for wake word events...")
     mqtt_client.loop_forever()

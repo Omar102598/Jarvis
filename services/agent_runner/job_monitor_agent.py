@@ -9,12 +9,11 @@ import hashlib
 import os
 
 import aiohttp
-from openai import AsyncOpenAI
 
 from base_agent import BaseAgent
+from llm_helper import complete
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
-_openai = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", "placeholder"))
 
 _JOB_SITES = (
     "site:linkedin.com/jobs OR site:greenhouse.io OR site:lever.co OR site:indeed.com"
@@ -82,16 +81,8 @@ class JobMonitorAgent(BaseAgent):
             for j in new_listings
         )
 
-        response = await _openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"New job listings found:\n\n{listing_text}",
-                },
-            ],
+        return await complete(
+            system=_SYSTEM_PROMPT,
+            user=f"New job listings found:\n\n{listing_text}",
             max_tokens=600,
-            temperature=0.3,
         )
-        return response.choices[0].message.content

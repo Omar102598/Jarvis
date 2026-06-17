@@ -7,12 +7,34 @@ from .comms import send_email, send_sms
 from .dispatch import ask_subagent, spawn_task
 from .files import list_files, read_file, write_file
 from .github_tool import github_tool
+from .mac import (
+    mac_applescript,
+    mac_browser_click,
+    mac_browser_fill,
+    mac_browser_navigate,
+    mac_browser_read,
+    mac_browser_screenshot,
+    mac_clipboard,
+    mac_notify,
+    mac_open,
+    mac_shell,
+    mac_screenshot,
+    mac_spotlight,
+    mac_system_info,
+    mac_type,
+)
 from .memory import forget, recall, remember
 from .notes import manage_notes
 from .notifications import send_notification
 from .shell import run_shell
 from .smart_home import control_device, get_device_states, get_presence, set_scene
 from .spotify import spotify_control
+from .spotify_desktop import spotify_desktop
+from .self_modify import (
+    jarvis_find_file, jarvis_grep_code,
+    jarvis_list_files, jarvis_read_code, jarvis_rebuild, jarvis_write_code,
+)
+from .developer import dev_list_dir, dev_read_file, dev_search_code, dev_shell, dev_write_file
 from .vision import get_camera_snapshot
 from .weather import get_weather
 from .web import fetch_url
@@ -31,6 +53,34 @@ __all__ = [
     "get_weather",
     "github_tool",
     "list_files",
+    "dev_list_dir",
+    "dev_read_file",
+    "dev_search_code",
+    "dev_shell",
+    "dev_write_file",
+    "jarvis_find_file",
+    "jarvis_grep_code",
+    "jarvis_list_files",
+    "jarvis_read_code",
+    "jarvis_rebuild",
+    "jarvis_write_code",
+    "mac_applescript",
+    "mac_chrome_js",
+    "mac_chrome_navigate",
+    "mac_chrome_read",
+    "mac_browser_click",
+    "mac_browser_fill",
+    "mac_browser_navigate",
+    "mac_browser_read",
+    "mac_browser_screenshot",
+    "mac_clipboard",
+    "mac_notify",
+    "mac_open",
+    "mac_shell",
+    "mac_screenshot",
+    "mac_spotlight",
+    "mac_system_info",
+    "mac_type",
     "manage_notes",
     "read_file",
     "recall",
@@ -44,6 +94,7 @@ __all__ = [
     "set_scene",
     "spawn_task",
     "spotify_control",
+    "spotify_desktop",
     "trigger_agent",
     "web_search",
     "write_file",

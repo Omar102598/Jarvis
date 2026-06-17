@@ -27,7 +27,7 @@ services:
     image: redis:7-alpine
     container_name: jarvis-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
@@ -214,6 +214,8 @@ services:
       - REDIS_HOST=redis
       - MQTT_HOST=mosquitto
       - DASHBOARD_PORT=8888
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
     restart: always
 
   # --- Wearable Bridge (Phase 4) ---

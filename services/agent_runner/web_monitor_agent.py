@@ -8,12 +8,11 @@ import hashlib
 import os
 
 import aiohttp
-from openai import AsyncOpenAI
 
 from base_agent import BaseAgent
+from llm_helper import complete
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
-_openai = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", "placeholder"))
 
 _SYSTEM_PROMPT = (
     "You are JARVIS. Summarise these newly detected web results for your user. "
@@ -86,13 +85,8 @@ class WebMonitorAgent(BaseAgent):
             for r in new_results
         )
 
-        response = await _openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": f"Newly detected results:\n\n{results_text}"},
-            ],
+        return await complete(
+            system=_SYSTEM_PROMPT,
+            user=f"Newly detected results:\n\n{results_text}",
             max_tokens=500,
-            temperature=0.3,
         )
-        return response.choices[0].message.content
