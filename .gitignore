@@ -47,3 +47,12 @@ config/mosquitto/log/
 # Redis persistence
 config/redis/data/
 dump.rdb
+
+# Native service runtime files
+.audio_pids
+.mac_bridge.pid
+.venv-audio/
+.venv-mac-bridge/
+
+# Claude Code project memory
+.claude/
