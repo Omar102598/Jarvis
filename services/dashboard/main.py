@@ -19,11 +19,12 @@ import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 import paho.mqtt.client as mqtt
 import redis
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 # ---------------------------------------------------------------------------
@@ -41,10 +42,23 @@ MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 _redis = redis.Redis(host=REDIS_HOST, decode_responses=True)
 _mqtt = mqtt.Client()
 
+# Widget files live in services/dashboard/widgets/ (volume-mounted into /app/widgets/)
+_WIDGETS_DIR = Path(os.environ.get("WIDGETS_DIR", str(Path(__file__).parent / "widgets")))
+
+
+def _on_dashboard_reload(client, userdata, msg):
+    try:
+        data = json.loads(msg.payload.decode())
+        print(f"[Dashboard] Widget reload: {data.get('widget', 'unknown')}")
+    except Exception:
+        pass
+
 
 def _mqtt_connect():
     try:
         _mqtt.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
+        _mqtt.subscribe("jarvis/dashboard/reload")
+        _mqtt.message_callback_add("jarvis/dashboard/reload", _on_dashboard_reload)
         _mqtt.loop_start()
     except OSError as exc:
         print(f"[Dashboard] MQTT connect warning: {exc}")
@@ -342,6 +356,50 @@ async def spotify_callback(code: str = "", error: str = ""):
 </body>
 </html>"""
     return HTMLResponse(html)
+
+
+@app.get("/api/widgets")
+async def list_widgets():
+    """Return manifests for all installed dashboard widgets."""
+    _WIDGETS_DIR.mkdir(parents=True, exist_ok=True)
+    widgets = []
+    for widget_dir in sorted(_WIDGETS_DIR.iterdir()):
+        if not widget_dir.is_dir():
+            continue
+        manifest_path = widget_dir / "manifest.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            widgets.append(json.loads(manifest_path.read_text()))
+        except Exception:
+            pass
+    return {"widgets": widgets}
+
+
+@app.get("/widgets/{name}/html")
+async def widget_html(name: str):
+    """Serve the HTML partial for a widget."""
+    safe_name = name.replace("/", "").replace("..", "")
+    html_path = _WIDGETS_DIR / safe_name / "widget.html"
+    if not html_path.exists():
+        raise HTTPException(404, f"Widget '{safe_name}' not found")
+    return FileResponse(str(html_path), media_type="text/html")
+
+
+@app.get("/api/widgets/{name}/data")
+async def widget_data(name: str):
+    """Return live data for a widget (widgets may also store data in Redis at widget:<name>:data)."""
+    safe_name = name.replace("/", "").replace("..", "")
+    if not (_WIDGETS_DIR / safe_name).exists():
+        raise HTTPException(404, f"Widget '{safe_name}' not found")
+    data = {}
+    try:
+        raw = _redis.get(f"widget:{safe_name}:data")
+        if raw:
+            data = json.loads(raw)
+    except Exception:
+        pass
+    return {"widget": safe_name, "data": data, "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @app.get("/health")

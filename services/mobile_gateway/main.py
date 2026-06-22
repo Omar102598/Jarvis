@@ -25,6 +25,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
@@ -32,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import paho.mqtt.client as mqtt
+import redis as _redis_lib
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from faster_whisper import WhisperModel
@@ -43,9 +45,12 @@ from pydantic import BaseModel
 
 MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 PIPER_MODEL = os.environ.get("PIPER_MODEL", "en_GB-alan-medium")
 LLM_TIMEOUT = float(os.environ.get("MOBILE_LLM_TIMEOUT", "45"))
 API_KEY = os.environ.get("MOBILE_API_KEY", "")
+
+_redis = _redis_lib.Redis(host=REDIS_HOST, decode_responses=True)
 
 # ---------------------------------------------------------------------------
 # Shared state
@@ -203,6 +208,22 @@ def _on_mqtt_connect(client, userdata, flags, rc):
         return
     print(f"[Gateway] MQTT connected")
     client.subscribe("jarvis/tts/+/speak")
+    client.subscribe("jarvis/surfaces/iphone/push")
+
+
+def _on_surface_push(client, userdata, msg):
+    """Relay llm_agent surface fanout to all connected WebSocket clients."""
+    global _event_loop
+    try:
+        data = json.loads(msg.payload.decode())
+        text = data.get("text", "")
+        if not text:
+            return
+        payload = DisplayPayload("text", "Jarvis", text[:200], None, text)
+        if _event_loop is not None:
+            asyncio.run_coroutine_threadsafe(_push_display_payload(payload), _event_loop)
+    except Exception as exc:
+        print(f"[Gateway] Surface push error: {exc}")
 
 
 def _on_mqtt_message(client, userdata, msg):
@@ -225,6 +246,25 @@ def _on_mqtt_message(client, userdata, msg):
 
 _mqtt_client.on_connect = _on_mqtt_connect
 _mqtt_client.on_message = _on_mqtt_message
+_mqtt_client.message_callback_add("jarvis/surfaces/iphone/push", _on_surface_push)
+
+
+def _surface_cleanup() -> None:
+    """Periodically prune surfaces whose heartbeat TTL has expired."""
+    while True:
+        time.sleep(60)
+        try:
+            members = _redis.smembers("jarvis:active_surfaces")
+            for sid in members:
+                if not _redis.exists(f"jarvis:surface:{sid}:active"):
+                    _redis.srem("jarvis:active_surfaces", sid)
+                    print(f"[Gateway] Pruned stale surface '{sid}'")
+        except Exception as exc:
+            print(f"[Gateway] Surface cleanup error: {exc}")
+
+
+threading.Thread(target=_surface_cleanup, daemon=True, name="surface-cleanup").start()
+
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -532,6 +572,58 @@ async def health():
         "service": "jarvis-mobile-gateway",
         "ws_clients": len(_ws_clients),
     }
+
+
+# ---------------------------------------------------------------------------
+# Presence / surface registry
+# ---------------------------------------------------------------------------
+
+class HeartbeatRequest(BaseModel):
+    surface_id: str
+    type: str = "unknown"
+    capabilities: list[str] = []
+
+
+@app.post("/presence/heartbeat", summary="Surface heartbeat — register or renew presence")
+async def presence_heartbeat(req: HeartbeatRequest, x_api_key: str = Header(default="")):
+    """
+    Called every 15 s by each active surface (iPhone, Mac).
+    Stores surface metadata in Redis with a 30-second TTL; the surface is
+    considered offline if a heartbeat is missed for two intervals.
+    """
+    _check_api_key(x_api_key)
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        _redis.setex(f"jarvis:surface:{req.surface_id}:active", 30, "1")
+        _redis.set(f"jarvis:surface:{req.surface_id}:meta", json.dumps({
+            "type": req.type,
+            "capabilities": req.capabilities,
+            "last_seen": now,
+        }))
+        _redis.sadd("jarvis:active_surfaces", req.surface_id)
+        active = sorted(_redis.smembers("jarvis:active_surfaces"))
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+    return {"ok": True, "surface_id": req.surface_id, "active_surfaces": active}
+
+
+@app.get("/presence/surfaces", summary="List all currently active surfaces")
+async def list_surfaces(x_api_key: str = Header(default="")):
+    _check_api_key(x_api_key)
+    try:
+        members = sorted(_redis.smembers("jarvis:active_surfaces"))
+        surfaces = []
+        for sid in members:
+            meta_raw = _redis.get(f"jarvis:surface:{sid}:meta")
+            active = bool(_redis.exists(f"jarvis:surface:{sid}:active"))
+            if meta_raw:
+                meta = json.loads(meta_raw)
+                meta["surface_id"] = sid
+                meta["active"] = active
+                surfaces.append(meta)
+        return {"surfaces": surfaces}
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
 
 
 # ---------------------------------------------------------------------------

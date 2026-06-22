@@ -26,6 +26,7 @@ struct JarvisApp: App {
                 .task {
                     await glassesManager.start()
                     await chatViewModel.connectWebSocket()
+                    PresenceManager.shared.startHeartbeat()
                 }
         }
     }

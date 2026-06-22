@@ -21,9 +21,11 @@ POST /notify     {"title":"","body":""} — macOS native notification
 import base64
 import json
 import os
+import queue
 import shlex
 import subprocess
 import tempfile
+import threading
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -616,6 +618,54 @@ def jarvis_rebuild(req: JarvisRebuildRequest):
             raise HTTPException(500, f"Restart failed: {e}")
 
     raise HTTPException(400, f"Unknown service '{svc}'. Docker: {_DOCKER_SERVICES}. Native: {_NATIVE_SERVICES}.")
+
+
+# ---------------------------------------------------------------------------
+# Safe-restart watchdog
+# ---------------------------------------------------------------------------
+
+_restart_queue: queue.Queue = queue.Queue()
+
+
+class RestartRequest(BaseModel):
+    service: str = "llm_agent"
+
+
+@app.post("/jarvis/request-restart")
+def jarvis_request_restart(req: RestartRequest):
+    """Queue a safe Docker service restart.
+
+    The restart happens ~3 seconds after this call returns so the caller can
+    finish delivering its response before the container goes down.
+    """
+    svc = req.service.strip()
+    if svc not in _DOCKER_SERVICES:
+        raise HTTPException(400, f"Unknown Docker service '{svc}'. Known: {_DOCKER_SERVICES}")
+    _restart_queue.put(svc)
+    print(f"[MacBridge] Restart queued for '{svc}'")
+    return {"status": f"Restart queued for '{svc}'"}
+
+
+def _restart_watchdog() -> None:
+    """Drain restart queue and run docker compose restart after a brief delay."""
+    while True:
+        try:
+            service = _restart_queue.get(timeout=2)
+            print(f"[MacBridge] Watchdog: restarting '{service}' in 3 s…")
+            threading.Event().wait(3)  # let the HTTP response fly first
+            cmd = f"cd {_JARVIS_ROOT} && docker compose restart {service}"
+            result = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=60)
+            if result.returncode == 0:
+                print(f"[MacBridge] Watchdog: '{service}' restarted OK.")
+            else:
+                print(f"[MacBridge] Watchdog: restart failed — {result.stderr[:200]}")
+        except queue.Empty:
+            continue
+        except Exception as exc:
+            print(f"[MacBridge] Watchdog error: {exc}")
+
+
+threading.Thread(target=_restart_watchdog, daemon=True, name="restart-watchdog").start()
 
 
 # ---------------------------------------------------------------------------

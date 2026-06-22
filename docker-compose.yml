@@ -124,6 +124,7 @@ services:
       - GITHUB_DEFAULT_REPO=${GITHUB_DEFAULT_REPO:-}
     volumes:
       - ./data:/data
+      - ./services/llm_agent/plugins:/app/plugins
     restart: always
 
   tts:
@@ -170,10 +171,12 @@ services:
     container_name: jarvis-mobile-gateway
     depends_on:
       - mosquitto
+      - redis
     ports:
       - "${MOBILE_GATEWAY_PORT:-8080}:8080"
     environment:
       - MQTT_HOST=mosquitto
+      - REDIS_HOST=redis
       - PIPER_MODEL=${PIPER_MODEL:-en_GB-alan-medium}
       - MOBILE_API_KEY=${MOBILE_API_KEY:-}
       - MOBILE_GATEWAY_PORT=8080
@@ -216,6 +219,9 @@ services:
       - DASHBOARD_PORT=8888
       - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
       - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+      - WIDGETS_DIR=/app/widgets
+    volumes:
+      - ./services/dashboard/widgets:/app/widgets
     restart: always
 
   # --- Wearable Bridge (Phase 4) ---

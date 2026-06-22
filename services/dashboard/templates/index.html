@@ -458,6 +458,12 @@
   </div>
 </div>
 
+<!-- ── Dynamic Widgets ───────────────────────── -->
+<div class="agents-section" id="widget-section" style="display:none">
+  <div class="section-label">Live Widgets</div>
+  <div id="widget-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px"></div>
+</div>
+
 <!-- ── Toast ─────────────────────────────────── -->
 <div class="position-fixed bottom-0 end-0 p-3" style="z-index:9999">
   <div id="toast" class="toast align-items-center text-bg-dark border-0" role="alert" aria-live="assertive">
@@ -592,13 +598,55 @@ async function triggerAgent(name) {
   }
 }
 
+// ── Dynamic widgets ────────────────────────────────────────
+async function loadWidgets() {
+  try {
+    const resp = await fetch('/api/widgets');
+    const { widgets } = await resp.json();
+    if (!widgets || widgets.length === 0) return;
+
+    const grid = document.getElementById('widget-grid');
+    document.getElementById('widget-section').style.display = '';
+
+    for (const w of widgets) {
+      const existing = document.getElementById('widget-' + w.name);
+      if (existing) continue; // already rendered
+
+      let html = '';
+      try {
+        const r = await fetch(`/widgets/${w.name}/html`);
+        html = r.ok ? await r.text() : `<p style="color:#446688">${esc(w.name)} widget</p>`;
+      } catch(e) { html = `<p style="color:#cc3344">Failed to load ${esc(w.name)}</p>`; }
+
+      const card = document.createElement('div');
+      card.id = 'widget-' + w.name;
+      card.className = 'agent-card';
+      card.style.cssText = 'padding:14px';
+      card.innerHTML = `<div style="color:var(--j-blue);font-size:0.72rem;letter-spacing:2px;margin-bottom:8px">${esc(w.title || w.name).toUpperCase()}</div>${html}`;
+      grid.appendChild(card);
+
+      // Schedule auto-refresh if widget requests it
+      if (w.refresh_secs && w.refresh_secs > 0) {
+        setInterval(async () => {
+          try {
+            const r2 = await fetch(`/widgets/${w.name}/html`);
+            if (r2.ok) card.querySelector(':scope > div:last-child')?.replaceWith(...new DOMParser().parseFromString(await r2.text(), 'text/html').body.childNodes);
+          } catch(e) {}
+        }, w.refresh_secs * 1000);
+      }
+    }
+  } catch(e) { console.warn('widget load failed', e); }
+}
+
 // ── Boot ───────────────────────────────────────────────────
 refreshVoiceState();
 refreshConversation();
 refreshAgents();
+loadWidgets();
 setInterval(refreshVoiceState,    1000);
 setInterval(refreshConversation,  3000);
 setInterval(refreshAgents,       10000);
+setInterval(loadWidgets,         30000);
 </script>
 </body>
 </html>
