@@ -89,12 +89,26 @@ Requires Tier 2 GPU for real-time YOLO + face recognition.
 
 ---
 
-## Tier 5: Wearables & Multi-Room — ~$500–650 (optional, last)
+## Tier 5: Meta Ray-Ban Display + Multi-Room — ~$450–550 (optional, last)
 
 | Item | Est. Price | Notes |
 |------|-----------|-------|
-| **Brilliant Labs Frame glasses** | ~$349 | Open-source smart glasses; `glasses_bridge` service is scaffolded for it. Verify availability/successor before ordering — the mobile gateway + iPhone covers most of this use case for $0. |
-| **ReSpeaker mic (×2) + Pi Zero 2 W (×2) + USB audio + speakers (×2)** | ~$130–165 | Per-room satellites with Snapcast audio. |
+| **Meta Ray-Ban (Display model)** | ~$299–349 | Full-color 600×600 waveguide HUD, 42 PPD, 30 Hz content, 5,000 nit brightness. Requires Meta AI app v272+ + Developer Mode. **Not on the App Store yet** (MFi restriction; Meta expects broader distribution later in 2026 — sideload via Xcode for now). |
+| **Meta Neural Band** *(optional)* | ~$99–149 | EMG wristband — subtle finger gestures activate the "Ask Jarvis" button on the HUD without touching the frame. Not required; frame cap-touch works without it. |
+| **iPhone (existing)** | $0 | iOS 16+. Sideload the `JarvisApp/` Xcode project. The old Siri Shortcuts bridge still works as a fallback. |
+| **ReSpeaker mic (×2) + Pi Zero 2 W (×2) + USB audio + speakers (×2)** | ~$130–165 | Per-room Snapcast satellites (unchanged). |
+
+> **Developer-preview caveats (SDK 0.7):**
+> - Meta AI app is a mandatory pairing bridge — your app registers through it.
+> - Sideload only: `ExternalAccessory` framework blocks App Store until Meta lifts the MFi restriction.
+> - Default release channel: 200 testers (raise to 2,500 in Wearables Developer Center settings).
+> - Known bug: `DeviceSessionError.datAppOnTheGlassesUpdateRequired` on first session start (SDK issue #180) — restart Meta AI and retry.
+> - Camera + display concurrency is an architectural inference from the SDK ("one capability per type") — validate on hardware in Stage 1 before building the full loop.
+
+> **Why not Brilliant Labs Frame?** Frame's display is a 0.23″ microOLED at 640×400 with ~16 colors per frame,
+> assistant latency is 1–3 s, and the SDK is community-maintained. Meta Ray-Ban Display wins on
+> display quality, daylight readability, Neural Band input, and a maintained Swift component API.
+> The `services/glasses_bridge/main.py` Frame relay is kept but marked deprecated.
 
 ---
 

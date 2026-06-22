@@ -1,8 +1,12 @@
 """JARVIS Glasses Bridge — Brilliant Labs Frame integration.
 
-Connects to the Frame smart glasses via Bluetooth and bridges
-camera capture, display output, and microphone data to JARVIS
-via MQTT.
+DEPRECATED: The native iOS JarvisApp (JarvisApp/) now handles wearable integration
+using the Meta Ray-Ban Display + Meta DAT SDK 0.7.  This service is kept for
+backward compatibility but is no longer the primary glasses interface.
+See docs/Plan.md Phase 4 and JarvisApp/ for the current implementation.
+
+Original description: Connects to the Frame smart glasses via Bluetooth and bridges
+camera capture, display output, and microphone data to JARVIS via MQTT.
 """
 
 import asyncio

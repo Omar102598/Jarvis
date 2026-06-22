@@ -207,36 +207,60 @@ questions about what's happening on any camera feed.
 
 ---
 
-## Phase 4: Wearable (Weeks 11-13)
+## Phase 4: Meta Ray-Ban Display + Native iOS App (Weeks 11-14)
 
-> **Goal:** Use Brilliant Labs Frame glasses as a portable JARVIS interface.
+> **Goal:** Glasses show Jarvis responses on the HUD; tap Neural Band / frame to activate;
+> chat by voice or text from the phone; "Hey Siri, ask Jarvis" works hands-free.
+>
+> **Platform:** Meta Ray-Ban Display (SDK 0.7) + native SwiftUI iOS app (`JarvisApp/`).
+> Code is already written — steps below are hardware bring-up + wiring.
 
-### Step 4.1 — Frame SDK Setup
-- [ ] Purchase Brilliant Labs Frame glasses
-- [ ] Install SDK: `pip install frame-sdk`
-- [ ] Pair with phone via Bluetooth
-- [ ] Test: capture photo, record audio, display text on lens
+### Step 4.1 — Hardware & SDK Setup
+- [ ] Buy Meta Ray-Ban Display model; install Meta AI app v272+, update glasses firmware to v125+
+- [ ] Enable Developer Mode on glasses: Settings → App Info, tap App Version 5×
+- [ ] Install DAT on glasses through Meta AI app (takes ~10 s)
+- [ ] Register at wearables.developer.meta.com — create a Wearables app, note the App ID
+- [ ] Clone `github.com/facebook/meta-wearables-dat-ios`; run the **DisplayAccess** sample against
+      MockDeviceKit to confirm your Xcode + SPM environment before touching real hardware
 
-### Step 4.2 — Phone Companion App
-- [ ] Build a lightweight companion app (Python script or Flutter app) that:
-  - Maintains BLE connection to Frame glasses
-  - Maintains WebSocket connection to JARVIS server (via Tailscale VPN)
-  - Relays camera photos, audio, and display commands between Frame and server
+### Step 4.2 — Build & Sideload the iOS App
+- [ ] Install XcodeGen (`brew install xcodegen`) then `cd JarvisApp && xcodegen generate`
+- [ ] Open `JarvisApp.xcodeproj` in Xcode; set your Apple Developer Team ID in project settings
+- [ ] Set server URL + API key in Settings tab (your Mac's LAN IP, port 8080)
+- [ ] Build & run on iPhone — Meta AI app opens automatically for registration/permission
+- [ ] Confirm glasses icon turns green in the app's Chat tab toolbar
 
-### Step 4.3 — Glasses Voice Commands *(depends on 4.2)*
-- [ ] "Jarvis, what am I looking at?" → capture photo → GPT-4o vision → TTS + display
-- [ ] "Jarvis, who is this person?" → capture photo → InsightFace → display name
-- [ ] "Jarvis, are the lights on at home?" → query HA → display + TTS
+### Step 4.3 — Validate Concurrent Camera + Display
+- [ ] Confirm a static "Jarvis / Ask" HUD card appears on the glasses after connecting
+- [ ] Tap the "Ask Jarvis" button — confirm HUD transitions to "Listening…"
+- [ ] Speak a query — confirm HUD shows "Thinking…" then a text answer card
+- [ ] Use the camera button in chat — confirm a glasses photo reaches the LLM and
+      the HUD shows the vision answer
+- [ ] **Threshold check:** if the session terminates within 30 s ("Session ended by device"),
+      Bluetooth bandwidth is saturated — switch `frameRate` from 15 to 2 in `GlassesManager.swift`
+      and use on-demand `capturePhoto` only (no continuous stream)
 
-### Step 4.4 — Proactive Notifications *(depends on 4.2)*
-- [ ] JARVIS pushes notifications to Frame display:
-  - Calendar reminders
-  - "Someone is at the front door" (with photo)
-  - Weather alerts
-  - Smart home alerts (e.g., motion detected while away)
+### Step 4.4 — Siri + App Intent Integration
+- [ ] Say "Hey Siri, ask Jarvis what's the weather" — Siri should speak Jarvis's response
+- [ ] Add the shortcut via Shortcuts app (it appears automatically from `JarvisShortcuts`)
+- [ ] Verify existing Siri Shortcuts still hit `/ask/audio` correctly (backward compat)
 
-**Phase 4 Deliverable:** JARVIS accessible on-the-go via smart glasses with camera, mic,
-and display capabilities.
+### Step 4.5 — Proactive Notifications to HUD
+- [ ] When a calendar reminder fires → LLM agent calls `send_notification` →
+      mobile_gateway WebSocket pushes DisplayPayload → HUD shows the reminder
+- [ ] "Someone at the front door" motion event → Ring camera snapshot → image card on HUD
+- [ ] Weather alert, smart home state changes → same WebSocket push path
+
+### Step 4.6 — Distribution
+- [ ] Create a release channel in Wearables Developer Center
+      (default 200 testers; raise to 2,500 in channel settings)
+- [ ] Distribute IPA via TestFlight or direct install for additional testers
+- [ ] Re-evaluate App Store submission once Meta lifts the ExternalAccessory/MFi restriction
+      (expected later in 2026 — this is the gating milestone for any public product)
+
+**Phase 4 Deliverable:** Jarvis visible and interactive on the Meta Ray-Ban HUD —
+voice-activated via tap or "Hey Siri", visual context via glasses camera, chat UI on phone,
+and proactive push notifications from the backend to the glasses.
 
 ---
 
