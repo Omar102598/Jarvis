@@ -199,7 +199,8 @@ _rebuild_graph()
 
 def _plugin_reload_watcher() -> None:
     """Blocks on a Redis list; reloads the named plugin and rebuilds the graph."""
-    watcher_r = redis.Redis(host=REDIS_HOST, decode_responses=True)
+    # socket_timeout must exceed the blpop timeout or redis-py raises TimeoutError
+    watcher_r = redis.Redis(host=REDIS_HOST, decode_responses=True, socket_timeout=10)
     while True:
         try:
             item = watcher_r.blpop("jarvis:plugin:reload_queue", timeout=5)
@@ -259,6 +260,19 @@ async def _process_async(text: str, room: str) -> str:
             )
             if has_tool_use:
                 continue
+            # Strip any image blocks (avoid re-sending large base64 payloads)
+            content = [
+                item for item in content
+                if not (isinstance(item, dict) and item.get("type") == "image")
+            ]
+            if not content:
+                continue
+        elif isinstance(content, str) and "[GLASSES_CAMERA_IMAGE:" in content:
+            # Strip stored camera image data URIs — keep only the text prompt
+            import re as _re
+            content = _re.sub(r"\[GLASSES_CAMERA_IMAGE:[^\]]*\]\n?", "", content).strip()
+            if not content:
+                continue
         if msg["role"] == "user":
             history.append(HumanMessage(content=content))
         elif msg["role"] == "assistant":
@@ -278,7 +292,10 @@ async def _process_async(text: str, room: str) -> str:
     else:
         response_text = str(raw)
 
-    r.rpush(history_key, json.dumps({"role": "user", "content": text}))
+    # Sanitize before storing: replace camera image data URIs with a short placeholder
+    import re as _re
+    stored_text = _re.sub(r"\[GLASSES_CAMERA_IMAGE:[^\]]*\]", "[camera image]", text)
+    r.rpush(history_key, json.dumps({"role": "user", "content": stored_text}))
     r.rpush(history_key, json.dumps({"role": "assistant", "content": response_text}))
     r.ltrim(history_key, -40, -1)
 
