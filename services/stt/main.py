@@ -16,6 +16,7 @@ Runs on GPU or CPU:
 import io
 import json
 import os
+import re
 import time
 import wave
 
@@ -38,6 +39,42 @@ FOLLOWUP_WINDOW = float(os.environ.get("STT_FOLLOWUP_WINDOW", "25.0"))
 
 AUDIO_DIR = os.environ.get("AUDIO_DIR", "/data/audio_cache")
 AUDIO_CACHE_MAX_FILES = int(os.environ.get("AUDIO_CACHE_MAX_FILES", "50"))
+
+# ---------------------------------------------------------------------------
+# Hallucination filter — faster-whisper emits these on silence/noise
+# ---------------------------------------------------------------------------
+
+_HALLUCINATION_PHRASES = {
+    "thank you for watching",
+    "thanks for watching",
+    "please subscribe",
+    "like and subscribe",
+    "subscribe to my channel",
+    "thanks for listening",
+    "thank you for listening",
+    "don't forget to subscribe",
+    "see you in the next video",
+    "see you next time",
+    "bye",
+    "goodbye",
+    "you",
+    ".",
+    "",
+}
+
+_REPEAT_PATTERN = re.compile(r"(.{10,}?)\1{2,}", re.DOTALL)
+
+
+def _is_hallucination(text: str) -> bool:
+    """Return True if the transcription looks like a faster-whisper artifact."""
+    lower = text.lower().strip().rstrip(".,!?")
+    if lower in _HALLUCINATION_PHRASES:
+        return True
+    if len(text.strip()) < 3:
+        return True
+    if _REPEAT_PATTERN.search(text):
+        return True
+    return False
 
 
 def resolve_device() -> tuple:
@@ -201,7 +238,7 @@ def on_tts_done(client, userdata, msg):
     segments, info = model.transcribe(audio_buf, language="en", vad_filter=True)
     text = " ".join([s.text for s in segments]).strip()
 
-    if text:
+    if text and not _is_hallucination(text):
         lower = text.lower().strip(".,!?")
         if lower in ("goodbye", "goodbye jarvis", "bye", "bye jarvis",
                      "that's all", "thats all", "thank you", "thanks"):
@@ -212,7 +249,8 @@ def on_tts_done(client, userdata, msg):
         print(f"[STT] Follow-up ({room}): '{text}'")
         _publish_speech(client, room, text, audio_path)
     else:
-        print(f"[STT] Follow-up window closed — no speech detected")
+        reason = "hallucination filtered" if text else "no speech detected"
+        print(f"[STT] Follow-up window closed — {reason}: '{text}'")
         if audio_path and os.path.exists(audio_path):
             os.unlink(audio_path)
 
@@ -231,11 +269,12 @@ def on_wake_word(client, userdata, msg):
     segments, info = model.transcribe(audio_buf, language="en", vad_filter=True)
     text = " ".join([s.text for s in segments]).strip()
 
-    if text:
+    if text and not _is_hallucination(text):
         print(f"[STT] Transcribed ({room}): '{text}'")
         _publish_speech(client, room, text, audio_path)
     else:
-        print(f"[STT] No speech detected in {room}")
+        reason = "hallucination filtered" if text else "no speech detected"
+        print(f"[STT] {reason} in {room}: '{text}'")
         if audio_path and os.path.exists(audio_path):
             os.unlink(audio_path)
 

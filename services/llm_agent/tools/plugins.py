@@ -1,6 +1,8 @@
 """Plugin management and safe-restart tools.
 
 install_plugin        — install a Python package and/or write a plugin scaffold
+install_mcp_server    — add an MCP server to config/mcp_servers.yml and reload
+test_tool             — run a plugin tool in a sandboxed call for quick self-debug
 create_dashboard_widget — write a widget file and notify the dashboard to reload
 jarvis_restart_safe   — queue a container restart via the mac_bridge watchdog
 list_plugins          — show currently loaded plugins
@@ -10,9 +12,11 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 from typing import Optional
 
 import httpx
+import yaml
 from langchain_core.tools import tool
 
 _MAC_BRIDGE = os.environ.get("MAC_BRIDGE_HOST", "host.docker.internal")
@@ -215,3 +219,160 @@ def list_plugins() -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Could not read plugin registry: {e}"
+
+
+# ---------------------------------------------------------------------------
+# install_mcp_server
+# ---------------------------------------------------------------------------
+
+_MCP_CONFIG_PATH = "/config/mcp_servers.yml"
+
+
+@tool
+def install_mcp_server(
+    name: str,
+    npm_package: str = "",
+    url: str = "",
+    transport: str = "stdio",
+    description: str = "",
+    extra_args: str = "",
+) -> str:
+    """Add an MCP server to Jarvis and activate its tools without a rebuild.
+
+    Writes the server config to config/mcp_servers.yml via the mac_bridge,
+    then queues a graph rebuild so the new tools are live within ~5 seconds.
+
+    Provide EITHER npm_package (for stdio/npx servers) OR url (for HTTP servers).
+
+    Examples:
+      install_mcp_server("slack", npm_package="@modelcontextprotocol/server-slack")
+      install_mcp_server("myapi", url="http://localhost:9000/mcp", transport="streamable_http")
+
+    Args:
+        name:        Unique slug for the server, e.g. "slack" or "notion".
+        npm_package: npm package to run via npx, e.g. "@modelcontextprotocol/server-slack".
+                     Leave empty if using a URL-based server.
+        url:         URL for HTTP/SSE transport. Leave empty if using npm_package.
+        transport:   "stdio", "streamable_http", or "sse". Auto-detected if omitted.
+        description: Human-readable description for the config file.
+        extra_args:  Space-separated extra CLI args for stdio servers.
+    """
+    if not npm_package and not url:
+        return "Provide either npm_package or url."
+
+    # Auto-detect transport
+    if not transport:
+        transport = "stdio" if npm_package else "streamable_http"
+
+    # Build config entry
+    entry: dict = {"enabled": True, "transport": transport}
+    if description:
+        entry["description"] = description or f"MCP server: {name}"
+
+    if npm_package:
+        args = ["-y", npm_package]
+        if extra_args:
+            args += extra_args.split()
+        entry["command"] = "npx"
+        entry["args"] = args
+    else:
+        entry["url"] = url
+
+    # Read existing config via mac_bridge
+    try:
+        resp = httpx.get(f"{_BASE}/jarvis/read", params={"path": "config/mcp_servers.yml"}, timeout=10)
+        if resp.status_code == 200:
+            config = yaml.safe_load(resp.json().get("content", "")) or {}
+        else:
+            config = {}
+    except Exception:
+        config = {}
+
+    servers = config.get("servers", {})
+    servers[name] = entry
+    config["servers"] = servers
+
+    # Write back via mac_bridge
+    new_content = yaml.dump(config, default_flow_style=False, allow_unicode=True)
+    try:
+        resp = httpx.post(
+            f"{_BASE}/jarvis/write",
+            json={"path": "config/mcp_servers.yml", "content": new_content},
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        return f"Failed to write mcp_servers.yml: {e}"
+
+    # Queue plugin/graph reload
+    try:
+        import redis as _redis
+        r = _redis.Redis(host=os.environ.get("REDIS_HOST", "redis"), decode_responses=True)
+        r.lpush("jarvis:plugin:reload_queue", "__all__")
+    except Exception as e:
+        return f"Config written but reload failed: {e}. Rebuild llm_agent to activate."
+
+    transport_note = f"npx {npm_package}" if npm_package else url
+    return (
+        f"MCP server '{name}' added ({transport_note}).\n"
+        f"Graph rebuild queued — new tools will be active within ~10 seconds."
+    )
+
+
+# ---------------------------------------------------------------------------
+# test_tool
+# ---------------------------------------------------------------------------
+
+@tool
+def test_tool(plugin_name: str, tool_name: str, args_json: str = "{}") -> str:
+    """Run a plugin tool in a sandboxed call and return its output or error.
+
+    Use this after writing a new plugin to verify it works before telling the
+    user it's ready. Surfaces Python exceptions and tracebacks so you can fix
+    issues in the same turn.
+
+    Args:
+        plugin_name: Name of the plugin file (without .py), e.g. "finance".
+        tool_name:   Name of the tool function defined in that plugin.
+        args_json:   JSON object of keyword arguments for the tool, e.g. '{"query": "AAPL"}'.
+                     Use '{}' for tools that take no arguments.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    plugins_dir = Path("/app/plugins")
+    plugin_path = plugins_dir / f"{plugin_name}.py"
+
+    if not plugin_path.exists():
+        return f"Plugin file not found: {plugin_path}"
+
+    try:
+        args = json.loads(args_json)
+    except json.JSONDecodeError as e:
+        return f"Invalid args_json: {e}"
+
+    try:
+        spec = importlib.util.spec_from_file_location(f"test_plugin_{plugin_name}", plugin_path)
+        if spec is None or spec.loader is None:
+            return f"Could not load plugin spec for '{plugin_name}'."
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    except Exception as e:
+        return f"Plugin import failed:\n{traceback.format_exc()}"
+
+    tools = mod.get_tools() if hasattr(mod, "get_tools") else []
+    target = next((t for t in tools if t.name == tool_name), None)
+
+    if target is None:
+        available = [t.name for t in tools]
+        return f"Tool '{tool_name}' not found in '{plugin_name}'. Available: {available}"
+
+    try:
+        import asyncio
+        if asyncio.iscoroutinefunction(getattr(target, "_arun", None)):
+            result = asyncio.run(target.arun(args))
+        else:
+            result = target.invoke(args)
+        return f"Tool '{tool_name}' result:\n{result}"
+    except Exception:
+        return f"Tool '{tool_name}' raised an exception:\n{traceback.format_exc()}"

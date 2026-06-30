@@ -5,44 +5,113 @@ struct ChatView: View {
     @EnvironmentObject var chatViewModel: ChatViewModel
     @State private var inputText = ""
     @State private var isRecording = false
+    @State private var micPulse: CGFloat = 1.0
+    @State private var showTimeline = false
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
-        NavigationStack {
+        ZStack {
+            Color.jBg.ignoresSafeArea()
+            scanLine
             VStack(spacing: 0) {
+                header
+                if showTimeline && !chatViewModel.toolEvents.isEmpty {
+                    ToolTimelinePanel(events: chatViewModel.toolEvents)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
                 messageList
-                Divider()
+                if chatViewModel.isPlayingAudio {
+                    audioWaveBar
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
                 inputBar
             }
-            .navigationTitle("Jarvis")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    glassesStatusIndicator
-                }
-            }
         }
+        .animation(.easeInOut(duration: 0.25), value: showTimeline)
+        .animation(.easeInOut(duration: 0.3), value: chatViewModel.isPlayingAudio)
         .onAppear {
             chatViewModel.glassesManager = glassesManager
+            chatViewModel.startToolPolling()
         }
         .onReceive(NotificationCenter.default.publisher(for: .jarvisActivateWake)) { _ in
             Task { await chatViewModel.sendVoice() }
         }
     }
 
-    // MARK: Subviews
+    // MARK: - Header
+
+    private var header: some View {
+        ZStack {
+            HStack {
+                statusDot
+                Spacer()
+                if !chatViewModel.toolEvents.isEmpty {
+                    Button {
+                        withAnimation { showTimeline.toggle() }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "terminal")
+                                .font(.system(size: 11, weight: .medium))
+                            Text("\(chatViewModel.toolEvents.count)")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        }
+                        .foregroundColor(showTimeline ? .jBlue : .jBlueDim)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.jBorder.opacity(showTimeline ? 0.8 : 0.4))
+                        .cornerRadius(6)
+                    }
+                }
+            }
+            Text("J·A·R·V·I·S")
+                .font(.system(size: 17, weight: .bold, design: .monospaced))
+                .tracking(8)
+                .foregroundColor(.jBlue)
+                .shadow(color: .jBlue.opacity(0.8), radius: 8)
+                .shadow(color: .jBlue.opacity(0.4), radius: 16)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .background(Color.jCard)
+        .overlay(Rectangle().frame(height: 1).foregroundColor(.jBorder), alignment: .bottom)
+        .hudCorner()
+    }
+
+    private var statusDot: some View {
+        Circle()
+            .fill(glassesManager.isConnected ? Color.jGreen : Color.jBlueDim)
+            .frame(width: 7, height: 7)
+            .shadow(color: glassesManager.isConnected ? .jGreen : .jBlueDim, radius: 4)
+    }
+
+    // MARK: - Scan line
+
+    private var scanLine: some View {
+        GeometryReader { _ in
+            ScanLineView()
+        }
+        .allowsHitTesting(false)
+    }
+
+    // MARK: - Message list
 
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(chatViewModel.messages) { message in
-                        MessageBubble(message: message)
-                            .id(message.id)
+                if chatViewModel.messages.isEmpty {
+                    emptyStateView
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 60)
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(chatViewModel.messages) { message in
+                            MessageBubble(message: message)
+                                .id(message.id)
+                        }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                 }
-                .padding(.horizontal)
-                .padding(.top, 8)
             }
             .onChange(of: chatViewModel.messages.count) {
                 if let last = chatViewModel.messages.last {
@@ -52,55 +121,146 @@ struct ChatView: View {
         }
     }
 
-    private var inputBar: some View {
-        HStack(spacing: 10) {
-            // Camera / glasses photo button
-            Button {
-                Task {
-                    if let photoData = try? await glassesManager.capturePhoto() {
-                        await chatViewModel.sendImage(photoData)
-                    }
-                }
-            } label: {
-                Image(systemName: "camera.fill")
-                    .foregroundStyle(glassesManager.isConnected ? .blue : .gray)
-            }
-            .disabled(!glassesManager.isConnected || chatViewModel.isProcessing)
+    // MARK: - Empty state
 
-            // Text field
-            TextField("Message Jarvis...", text: $inputText, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...4)
-                .focused($fieldFocused)
-                .onSubmit { submitText() }
-
-            // PTT mic button or send button
-            if inputText.isEmpty {
-                Button {
-                    Task { await chatViewModel.sendVoice() }
-                } label: {
-                    Image(systemName: isRecording ? "stop.circle.fill" : "mic.fill")
-                        .foregroundStyle(isRecording ? .red : .blue)
-                        .contentTransition(.symbolEffect(.replace))
+    private var emptyStateView: some View {
+        VStack(spacing: 24) {
+            IdleOrbView()
+                .frame(width: 120, height: 120)
+            VStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.jGreen)
+                        .frame(width: 6, height: 6)
+                        .shadow(color: .jGreen, radius: 4)
+                    Text("ONLINE")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .tracking(4)
+                        .foregroundColor(.jGreen)
                 }
-                .disabled(chatViewModel.isProcessing)
-            } else {
-                Button(action: submitText) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .foregroundStyle(.blue)
-                }
-                .disabled(chatViewModel.isProcessing)
+                Text("Say \"Hey Jarvis\" or type below")
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundColor(.jBlueDim)
+                    .multilineTextAlignment(.center)
             }
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(Color(.systemBackground))
+        .padding(.horizontal, 40)
     }
 
-    private var glassesStatusIndicator: some View {
-        Circle()
-            .fill(glassesManager.isConnected ? Color.green : Color.red)
-            .frame(width: 10, height: 10)
+    // MARK: - Audio wave bar
+
+    private var audioWaveBar: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "waveform")
+                .font(.system(size: 12))
+                .foregroundColor(.jBlueDim)
+            Text("RESPONDING")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(2)
+                .foregroundColor(.jBlueDim)
+            Spacer()
+            AudioWaveView(isAnimating: chatViewModel.isPlayingAudio)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.jCard)
+        .overlay(Rectangle().frame(height: 1).foregroundColor(.jBorder), alignment: .top)
+    }
+
+    // MARK: - Input bar
+
+    private var inputBar: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(Color.jBorder).frame(height: 1)
+            HStack(spacing: 12) {
+                Button {
+                    Task {
+                        if let photoData = try? await glassesManager.capturePhoto() {
+                            await chatViewModel.sendImage(photoData)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "camera")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(glassesManager.isConnected ? .jBlueDim : .jBorder)
+                }
+                .disabled(!glassesManager.isConnected || chatViewModel.isProcessing)
+
+                ZStack(alignment: .leading) {
+                    if inputText.isEmpty {
+                        Text("Message Jarvis...")
+                            .font(.system(size: 14, design: .monospaced))
+                            .foregroundColor(.jBlueDim.opacity(0.5))
+                            .padding(.horizontal, 12)
+                    }
+                    TextField("", text: $inputText, axis: .vertical)
+                        .font(.system(size: 14, design: .monospaced))
+                        .foregroundColor(.jText)
+                        .tint(.jBlue)
+                        .lineLimit(1...4)
+                        .focused($fieldFocused)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .onSubmit { submitText() }
+                }
+                .background(Color.jCard)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(fieldFocused ? Color.jBlue.opacity(0.6) : Color.jBorder, lineWidth: 1)
+                )
+                .cornerRadius(8)
+
+                if inputText.isEmpty {
+                    micButton
+                } else {
+                    sendButton
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color.jCard)
+        }
+    }
+
+    private var micButton: some View {
+        Button {
+            Task {
+                isRecording = true
+                withAnimation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true)) {
+                    micPulse = 1.12
+                }
+                await chatViewModel.sendVoice()
+                isRecording = false
+                micPulse = 1.0
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(isRecording ? Color.jGold : Color.jGreen)
+                    .frame(width: 44, height: 44)
+                    .shadow(color: isRecording ? .jGold.opacity(0.6) : .jGreen.opacity(0.6), radius: 8)
+                    .scaleEffect(isRecording ? micPulse : 1.0)
+                Image(systemName: isRecording ? "waveform" : "mic.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.black)
+            }
+        }
+        .disabled(chatViewModel.isProcessing && !isRecording)
+    }
+
+    private var sendButton: some View {
+        Button(action: submitText) {
+            ZStack {
+                Circle()
+                    .fill(Color.jBlue)
+                    .frame(width: 44, height: 44)
+                    .shadow(color: .jBlue.opacity(0.5), radius: 6)
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(.black)
+            }
+        }
+        .disabled(chatViewModel.isProcessing)
     }
 
     private func submitText() {
@@ -112,6 +272,183 @@ struct ChatView: View {
     }
 }
 
+// MARK: - Scan line (extracted for cleanliness)
+
+private struct ScanLineView: View {
+    @State private var offset: CGFloat = -UIScreen.main.bounds.height
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.jBlue.opacity(0.35))
+            .frame(height: 1)
+            .offset(y: offset)
+            .onAppear {
+                let h = UIScreen.main.bounds.height
+                offset = -h
+                withAnimation(.linear(duration: 7).repeatForever(autoreverses: false)) {
+                    offset = h
+                }
+            }
+    }
+}
+
+// MARK: - Idle orb (empty state animation)
+
+private struct IdleOrbView: View {
+    @State private var pulse = false
+
+    var body: some View {
+        ZStack {
+            ForEach(0..<3) { i in
+                Circle()
+                    .stroke(Color.jBlue.opacity(0.15 - Double(i) * 0.03), lineWidth: 1)
+                    .frame(width: CGFloat(60 + i * 22), height: CGFloat(60 + i * 22))
+                    .scaleEffect(pulse ? 1.08 : 0.94)
+                    .animation(
+                        .easeInOut(duration: 2.0).repeatForever(autoreverses: true)
+                            .delay(Double(i) * 0.35),
+                        value: pulse
+                    )
+            }
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [Color.jBlue.opacity(0.15), Color.jBg],
+                        center: .center, startRadius: 0, endRadius: 30
+                    )
+                )
+                .frame(width: 54, height: 54)
+                .overlay(
+                    Circle().stroke(Color.jBlue.opacity(0.4), lineWidth: 1)
+                )
+            Text("J")
+                .font(.system(size: 26, weight: .bold, design: .monospaced))
+                .foregroundColor(.jBlue)
+                .shadow(color: .jBlue.opacity(0.8), radius: 6)
+        }
+        .onAppear { pulse = true }
+    }
+}
+
+// MARK: - Audio wave view
+
+struct AudioWaveView: View {
+    let isAnimating: Bool
+    private let barCount = 6
+    @State private var heights: [CGFloat] = Array(repeating: 3, count: 6)
+
+    let timer = Timer.publish(every: 0.10, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        HStack(spacing: 2.5) {
+            ForEach(0..<barCount, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Color.jBlue)
+                    .shadow(color: .jBlue.opacity(0.4), radius: 2)
+                    .frame(width: 2.5, height: heights[i])
+                    .animation(.easeInOut(duration: 0.1), value: heights[i])
+            }
+        }
+        .frame(height: 20)
+        .onReceive(timer) { _ in
+            if isAnimating {
+                heights = (0..<barCount).map { _ in CGFloat.random(in: 3...20) }
+            } else if heights.first != 3 {
+                heights = Array(repeating: 3, count: barCount)
+            }
+        }
+    }
+}
+
+// MARK: - Tool timeline panel
+
+struct ToolTimelinePanel: View {
+    let events: [ToolEvent]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(events.prefix(20).enumerated()), id: \.element.id) { idx, event in
+                        ToolEventRow(event: event, isLast: idx == min(events.count, 20) - 1)
+                    }
+                }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 16)
+            }
+            .frame(maxHeight: 200)
+        }
+        .background(Color.jCard.opacity(0.95))
+        .overlay(Rectangle().frame(height: 1).foregroundColor(.jBorder), alignment: .bottom)
+    }
+}
+
+private struct ToolEventRow: View {
+    let event: ToolEvent
+    let isLast: Bool
+
+    private var dotColor: Color {
+        switch event.status {
+        case "done":    return .jGreen
+        case "calling": return .jGold
+        default:        return .jBlueDim
+        }
+    }
+
+    private var timeString: String {
+        guard let date = ISO8601DateFormatter().date(from: event.timestamp) else { return "" }
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f.string(from: date)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            // Spine: dot + vertical line
+            VStack(spacing: 0) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 7, height: 7)
+                    .shadow(color: dotColor.opacity(0.6), radius: 3)
+                    .padding(.top, 3)
+                if !isLast {
+                    Rectangle()
+                        .fill(Color.jBorder)
+                        .frame(width: 1)
+                        .frame(maxHeight: .infinity)
+                }
+            }
+            .frame(width: 14)
+
+            // Content
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(event.tool)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(dotColor)
+                    Spacer()
+                    Text(timeString)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.jBlueDim.opacity(0.4))
+                }
+                if !event.argsPreview.isEmpty {
+                    Text(event.argsPreview)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.jBlueDim.opacity(0.5))
+                        .lineLimit(2)
+                }
+                if !event.resultPreview.isEmpty && event.status == "done" {
+                    Text(event.resultPreview)
+                        .font(.system(size: 10))
+                        .foregroundColor(.jText.opacity(0.5))
+                        .lineLimit(3)
+                }
+            }
+            .padding(.bottom, isLast ? 0 : 10)
+        }
+    }
+}
+
 // MARK: - Message bubble
 
 struct MessageBubble: View {
@@ -119,23 +456,42 @@ struct MessageBubble: View {
 
     var body: some View {
         HStack {
-            if message.role == .user { Spacer() }
-
+            if message.role == .user { Spacer(minLength: 60) }
             Group {
                 if message.isLoading {
                     ProgressView()
-                        .padding(12)
-                } else {
+                        .tint(.jBlue)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(Color.jCard)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.jBlue.opacity(0.3), lineWidth: 1)
+                        )
+                        .cornerRadius(12)
+                } else if message.role == .user {
                     Text(message.text)
+                        .font(.system(size: 14))
+                        .foregroundColor(.black)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
+                        .background(Color.jBlue)
+                        .cornerRadius(12)
+                } else {
+                    Text(message.text)
+                        .font(.system(size: 14))
+                        .foregroundColor(.jText)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(Color.jCard)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.jBlue.opacity(0.35), lineWidth: 1)
+                        )
+                        .cornerRadius(12)
                 }
             }
-            .background(message.role == .user ? Color.blue : Color(.secondarySystemBackground))
-            .foregroundStyle(message.role == .user ? .white : .primary)
-            .clipShape(RoundedRectangle(cornerRadius: 18))
-
-            if message.role == .jarvis { Spacer() }
+            if message.role == .jarvis { Spacer(minLength: 60) }
         }
     }
 }

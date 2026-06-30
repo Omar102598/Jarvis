@@ -12,6 +12,7 @@ POST /api/agents/{name}/run         — Trigger an agent immediately (publishes 
 GET  /health                        — Health check
 """
 
+import asyncio
 import base64
 import json
 import os
@@ -24,16 +25,17 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 import redis
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
-MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
-MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+REDIS_HOST  = os.environ.get("REDIS_HOST", "redis")
+MQTT_HOST   = os.environ.get("MQTT_HOST", "mosquitto")
+MQTT_PORT   = int(os.environ.get("MQTT_PORT", "1883"))
+USER_ID     = os.environ.get("JARVIS_USER_ID", "default")
 
 # ---------------------------------------------------------------------------
 # Clients
@@ -235,24 +237,25 @@ async def trigger_agent(name: str):
 
 @app.get("/api/voice-state")
 async def get_voice_state(room: str = "office"):
-    """Return the current voice pipeline state for the given room."""
-    state = _redis.get(f"jarvis:voice:state:{room}") or "ready"
-    return {"room": room, "state": state}
+    """Return the current voice pipeline state and current thinking word (if any)."""
+    state         = _redis.get(f"jarvis:voice:state:{room}") or "ready"
+    thinking_word = _redis.get("jarvis:thinking:word") or "Thinking"
+    return {"room": room, "state": state, "thinking_word": thinking_word}
 
 
 @app.get("/api/conversation")
-async def get_conversation(room: str = "office", limit: int = 20):
-    """Return recent conversation messages for a room."""
+async def get_conversation(limit: int = 20):
+    """Return recent conversation messages (shared across all surfaces)."""
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
-    raw = _redis.lrange(f"conversation:{room}", -limit, -1)
+    raw = _redis.lrange(f"conversation:{USER_ID}", -limit, -1)
     messages = []
     for item in raw:
         try:
             messages.append(json.loads(item))
         except json.JSONDecodeError:
             pass
-    return {"room": room, "messages": messages}
+    return {"messages": messages}
 
 
 _SPOTIFY_CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID", "")
@@ -400,6 +403,77 @@ async def widget_data(name: str):
     except Exception:
         pass
     return {"widget": safe_name, "data": data, "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/tool-events")
+async def get_tool_events(limit: int = 30):
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+    raw = _redis.lrange("jarvis:tool_events", 0, limit - 1)
+    events = []
+    for item in raw:
+        try:
+            events.append(json.loads(item))
+        except json.JSONDecodeError:
+            pass
+    return {"events": events}
+
+
+@app.get("/api/stream")
+async def event_stream():
+    """Server-Sent Events stream pushing conversation + tool events + voice state in real-time."""
+    async def generate():
+        last_conv_count = -1
+        last_tool_count = -1
+        last_voice_state = ""
+        while True:
+            try:
+                conv_raw = _redis.lrange(f"conversation:{USER_ID}", -30, -1)
+                tool_raw = _redis.lrange("jarvis:tool_events", 0, 19)
+                voice_state = _redis.get(f"jarvis:voice:state:office") or "ready"
+                thinking_word = _redis.get("jarvis:thinking:word") or ""
+
+                conv_changed = len(conv_raw) != last_conv_count
+                tool_changed = len(tool_raw) != last_tool_count
+                state_changed = voice_state != last_voice_state
+
+                if conv_changed or tool_changed or state_changed:
+                    last_conv_count = len(conv_raw)
+                    last_tool_count = len(tool_raw)
+                    last_voice_state = voice_state
+
+                    messages = []
+                    for item in conv_raw:
+                        try:
+                            messages.append(json.loads(item))
+                        except json.JSONDecodeError:
+                            pass
+
+                    tool_events = []
+                    for item in tool_raw:
+                        try:
+                            tool_events.append(json.loads(item))
+                        except json.JSONDecodeError:
+                            pass
+
+                    payload = json.dumps({
+                        "messages": messages,
+                        "tool_events": tool_events,
+                        "voice_state": voice_state,
+                        "thinking_word": thinking_word,
+                    })
+                    yield f"data: {payload}\n\n"
+
+            except Exception:
+                pass
+
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/health")

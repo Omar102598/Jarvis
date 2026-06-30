@@ -31,6 +31,36 @@ def _post(endpoint: str, **body) -> dict:
     return r.json()
 
 
+# ---------------------------------------------------------------------------
+# Write safety guard
+# ---------------------------------------------------------------------------
+
+_BLOCKED_PATHS = {".env", "docker-compose.yml", "docker-compose.gpu.yml"}
+_BLOCKED_CONTENT_PATTERNS = [
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "MOBILE_API_KEY",
+    "GITHUB_TOKEN",
+    "SPOTIFY_CLIENT_SECRET",
+]
+
+
+def _validate_write(path: str, content: str) -> str | None:
+    """Return an error string if the write should be rejected, else None."""
+    basename = os.path.basename(path)
+    if basename in _BLOCKED_PATHS:
+        return f"Writing to '{basename}' is blocked for safety — edit it manually."
+    if ".." in path or path.startswith("/"):
+        return "Absolute paths and directory traversal ('..') are not allowed."
+    for pat in _BLOCKED_CONTENT_PATTERNS:
+        if pat in content:
+            return (
+                f"Content contains blocked pattern '{pat}' — write rejected. "
+                "Edit credential files manually outside of JARVIS."
+            )
+    return None
+
+
 @tool
 def jarvis_read_code(path: str) -> str:
     """Read any file in the JARVIS codebase.
@@ -68,6 +98,9 @@ def jarvis_write_code(path: str, content: str) -> str:
         path: File path relative to the JARVIS repo root.
         content: Full file content to write.
     """
+    err = _validate_write(path, content)
+    if err:
+        return err
     try:
         data = _post("/jarvis/write", path=path, content=content)
         return data.get("status", f"Written: {path}")

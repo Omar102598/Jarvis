@@ -14,7 +14,7 @@ struct JarvisConfig {
 }
 
 extension UserDefaults {
-    static let group = UserDefaults(suiteName: "group.com.jarvis.app") ?? .standard
+    static let group = UserDefaults(suiteName: "group.com.omarsalazar.jarvis") ?? .standard
 }
 
 // MARK: - Client
@@ -49,12 +49,50 @@ final class JarvisClient {
         return try await post(path: "/ask/image", body: body)
     }
 
+    // MARK: Tool events — for the activity timeline
+
+    func fetchToolEvents(limit: Int = 25) async throws -> [ToolEvent] {
+        let request = baseRequest(path: "/tool-events?limit=\(limit)")
+        let response: ToolEventsResponse = try await execute(request)
+        return response.events
+    }
+
     // MARK: Siri intent — plain text response only (no audio synthesis)
 
     func askTextForSiri(_ text: String) async throws -> String {
         let body = TextQueryRequest(text: text)
         let response: QueryResponse = try await post(path: "/ask/query", body: body)
         return response.text
+    }
+
+    // MARK: HealthKit snapshot — push fitness metrics to the backend
+
+    @discardableResult
+    func pushHealthSnapshot(_ snapshot: HealthSnapshot) async throws -> Bool {
+        var request = baseRequest(path: "/health/snapshot")
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(snapshot)
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            return false
+        }
+        return true
+    }
+
+    // MARK: Calendar — push next upcoming event so the ambient agent can warn
+
+    @discardableResult
+    func pushNextCalendarEvent(_ event: NextCalendarEvent) async throws -> Bool {
+        var request = baseRequest(path: "/calendar/next-event")
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(event)
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            return false
+        }
+        return true
     }
 
     // MARK: WebSocket — receives DisplayPayload pushes from backend

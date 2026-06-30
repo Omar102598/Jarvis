@@ -2,61 +2,72 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- App metadata -->
-    <key>CFBundleName</key>
-    <string>Jarvis</string>
-    <key>CFBundleDisplayName</key>
-    <string>Jarvis</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.jarvis.app</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>LSRequiresIPhoneOS</key>
-    <true/>
-    <key>UIRequiredDeviceCapabilities</key>
-    <array>
-        <string>arm64</string>
-    </array>
-    <key>UISupportedInterfaceOrientations</key>
-    <array>
-        <string>UIInterfaceOrientationPortrait</string>
-    </array>
-
-    <!-- Meta DAT SDK: MFi / ExternalAccessory protocol string -->
-    <key>UISupportedExternalAccessoryProtocols</key>
-    <array>
-        <string>com.meta.frames</string>
-    </array>
-
-    <!-- Privacy usage descriptions -->
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Jarvis uses the microphone to accept your voice commands.</string>
-    <key>NSCameraUsageDescription</key>
-    <string>Jarvis uses the glasses camera to answer visual questions.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Jarvis uses on-device speech recognition for wake-word detection.</string>
-
-    <!-- URL scheme for Meta AI OAuth callback -->
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>jarvisapp</string>
-            </array>
-            <key>CFBundleURLName</key>
-            <string>com.jarvis.app</string>
-        </dict>
-    </array>
-
-    <!-- Background audio for foreground wake-word detection -->
-    <key>UIBackgroundModes</key>
-    <array>
-        <string>audio</string>
-    </array>
+	<key>CFBundleDisplayName</key>
+	<string>Jarvis</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconName</key>
+			<string>AppIcon</string>
+		</dict>
+	</dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.omarsalazar.jarvis</string>
+	<key>CFBundleName</key>
+	<string>Jarvis</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.omarsalazar.jarvis</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>jarvisapp</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Jarvis reads your calendar to remind you before upcoming events.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Jarvis reads your calendar to remind you before upcoming events.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Jarvis uses the glasses camera to answer visual questions.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Jarvis reads your contacts so it can reach the right people when you ask.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Jarvis reads your fitness data (steps, sleep, heart rate, workouts) to tailor your grocery plan and flag health anomalies.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Jarvis uses the microphone to accept your voice commands.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Jarvis uses on-device speech recognition for wake-word detection.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>UISupportedExternalAccessoryProtocols</key>
+	<array>
+		<string>com.meta.frames</string>
+	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
 </dict>
 </plist>

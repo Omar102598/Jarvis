@@ -6,12 +6,30 @@ final class ChatViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var isProcessing = false
     @Published var errorMessage: String?
+    @Published var isPlayingAudio = false
+    @Published var toolEvents: [ToolEvent] = []
 
     private let recorder = VoiceRecorder()
     private var audioPlayer: AVAudioPlayer?
+    private var audioDelegate: AudioDelegate?
     private var webSocketTask: URLSessionWebSocketTask?
+    private var toolPollingTask: Task<Void, Never>?
 
     weak var glassesManager: GlassesManager?
+
+    // MARK: Tool event polling
+
+    func startToolPolling() {
+        toolPollingTask?.cancel()
+        toolPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                if let events = try? await JarvisClient.shared.fetchToolEvents() {
+                    self?.toolEvents = events
+                }
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+            }
+        }
+    }
 
     // MARK: WebSocket
 
@@ -19,7 +37,7 @@ final class ChatViewModel: ObservableObject {
         webSocketTask?.cancel()
         webSocketTask = JarvisClient.shared.connectWebSocket { [weak self] payload in
             Task { @MainActor in
-                self?.glassesManager?.send(payload.hudState)
+                await self?.glassesManager?.send(payload.hudState)
             }
         }
     }
@@ -36,7 +54,8 @@ final class ChatViewModel: ObservableObject {
 
         do {
             let response = try await JarvisClient.shared.askText(text)
-            finishLoading(loadingId, text: response.text)
+            let displayText = response.display.body.isEmpty ? response.text : response.display.body
+            finishLoading(loadingId, text: displayText)
             playAudio(base64: response.audioB64)
             await glassesManager?.send(response.display.hudState)
         } catch {
@@ -60,7 +79,8 @@ final class ChatViewModel: ObservableObject {
 
             let response = try await JarvisClient.shared.askAudio(audioData)
             finishLoading(userPlaceholder, text: "(voice)")
-            finishLoading(loadingId, text: response.text)
+            let displayText = response.display.body.isEmpty ? response.text : response.display.body
+            finishLoading(loadingId, text: displayText)
             playAudio(base64: response.audioB64)
             await glassesManager?.send(response.display.hudState)
         } catch {
@@ -98,7 +118,13 @@ final class ChatViewModel: ObservableObject {
             try AVAudioSession.sharedInstance().setCategory(.playback)
             try AVAudioSession.sharedInstance().setActive(true)
             audioPlayer = try AVAudioPlayer(data: data)
+            let delegate = AudioDelegate { [weak self] in
+                Task { @MainActor in self?.isPlayingAudio = false }
+            }
+            audioDelegate = delegate
+            audioPlayer?.delegate = delegate
             audioPlayer?.play()
+            isPlayingAudio = true
         } catch {
             print("[ChatViewModel] Audio playback failed: \(error)")
         }
@@ -121,5 +147,15 @@ final class ChatViewModel: ObservableObject {
             messages[idx].text = text
             messages[idx].isLoading = false
         }
+    }
+}
+
+// MARK: - AVAudioPlayerDelegate bridge (not MainActor-isolated)
+
+private final class AudioDelegate: NSObject, AVAudioPlayerDelegate {
+    private let onFinish: () -> Void
+    init(onFinish: @escaping () -> Void) { self.onFinish = onFinish }
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        onFinish()
     }
 }

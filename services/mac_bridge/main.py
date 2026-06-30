@@ -16,6 +16,13 @@ POST /open       {"what": "..."}      — open app, file, or URL
 GET  /spotlight  ?q=...&limit=10      — mdfind Spotlight search
 POST /type       {"text": "..."}      — type text into focused app
 POST /notify     {"title":"","body":""} — macOS native notification
+
+Headless Playwright scraper (for grocery agent & price comparison):
+POST /scraper/navigate   {"url": "...", "wait_until": "networkidle", "timeout_ms": 30000}
+GET  /scraper/read                    — get visible text of current scraper page
+POST /scraper/js         {"script": "..."} — run JS in scraper page
+GET  /scraper/screenshot              — PNG screenshot of scraper page
+POST /scraper/close                   — close scraper context
 """
 
 import base64
@@ -61,39 +68,110 @@ else:
     SHELL_ALLOWLIST = _DEFAULT_ALLOW
 
 # ---------------------------------------------------------------------------
-# Browser singleton (Playwright — started lazily on first use)
+# Visible browser singleton (Playwright — started lazily on first use)
 # ---------------------------------------------------------------------------
-_pw        = None
-_browser   = None
-_page      = None
+_pw               = None
+_browser          = None
+_browser_context  = None
+_page             = None
+
+_BROWSER_STATE_PATH = os.path.expanduser("~/.jarvis/browser_state.json")
+
+# ---------------------------------------------------------------------------
+# Headless scraper singleton (separate context — for grocery/price scraping)
+# ---------------------------------------------------------------------------
+_scraper_pw      = None
+_scraper_browser = None
+_scraper_page    = None
+_scraper_lock    = threading.Lock()
 
 
 async def _get_page():
-    """Return the current Playwright page, launching browser if needed."""
-    global _pw, _browser, _page
+    """Return the current visible Playwright page, launching browser if needed.
+
+    Loads a saved storage state (cookies/localStorage) from disk if it exists,
+    so the user stays logged in to stores between grocery agent runs.
+    """
+    global _pw, _browser, _browser_context, _page
     if _pw is None:
         from playwright.async_api import async_playwright
         _pw = await async_playwright().start()
         _browser = await _pw.chromium.launch(headless=False, args=["--start-maximized"])
+    if _browser_context is None:
+        state_file = _BROWSER_STATE_PATH if os.path.exists(_BROWSER_STATE_PATH) else None
+        _browser_context = await _browser.new_context(
+            storage_state=state_file,
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+        )
+        if state_file:
+            print(f"[MacBridge] Browser session loaded from {state_file}")
     if _page is None or _page.is_closed():
-        _page = await _browser.new_page()
-        await _page.set_viewport_size({"width": 1280, "height": 900})
+        _page = await _browser_context.new_page()
     return _page
+
+
+async def _get_scraper_page():
+    """Return the headless scraper page, launching a separate browser if needed."""
+    global _scraper_pw, _scraper_browser, _scraper_page
+    if _scraper_pw is None:
+        from playwright.async_api import async_playwright
+        _scraper_pw = await async_playwright().start()
+        _scraper_browser = await _scraper_pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--window-size=1280,900",
+            ],
+        )
+    if _scraper_page is None or _scraper_page.is_closed():
+        context = await _scraper_browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            locale="en-US",
+            timezone_id="America/Chicago",
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        # Stealth: hide webdriver flag
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+        """)
+        _scraper_page = await context.new_page()
+    return _scraper_page
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    global _pw, _browser, _page
-    if _page and not _page.is_closed():
-        await _page.close()
-    if _browser:
-        await _browser.close()
-    if _pw:
-        await _pw.stop()
+    global _pw, _browser, _browser_context, _page, _scraper_pw, _scraper_browser, _scraper_page
+    for p in [_page, _scraper_page]:
+        if p and not p.is_closed():
+            await p.close()
+    if _browser_context:
+        await _browser_context.close()
+    for b in [_browser, _scraper_browser]:
+        if b:
+            await b.close()
+    for pw in [_pw, _scraper_pw]:
+        if pw:
+            await pw.stop()
 
 
-app = FastAPI(title="JARVIS macOS Bridge", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="JARVIS macOS Bridge", version="1.1.0", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +266,6 @@ def clipboard_write(req: ClipboardWrite):
 def system_info():
     """Return CPU load, memory, battery, and disk usage."""
     import platform
-    import shutil
 
     try:
         import psutil
@@ -216,7 +293,6 @@ def system_info():
             "platform": platform.mac_ver()[0],
         }
     except ImportError:
-        # psutil not installed — fall back to shell tools
         uptime = _run(["uptime"])
         df = _run(["df", "-h", "/"])
         return {"uptime": uptime, "disk": df, "note": "pip install psutil for richer stats"}
@@ -317,23 +393,23 @@ def notify(req: NotifyRequest):
 
 
 # ---------------------------------------------------------------------------
-# Browser automation (Playwright)
+# Visible Browser automation (Playwright — headed, uses user's Chrome session)
 # ---------------------------------------------------------------------------
 
 class BrowserNavigateRequest(BaseModel):
     url: str
 
 class BrowserClickRequest(BaseModel):
-    text: str  # visible text of the element to click
+    text: str
 
 class BrowserFillRequest(BaseModel):
-    label: str   # placeholder, label, or aria-label of the field
+    label: str
     value: str
 
 
 @app.post("/browser/navigate")
 async def browser_navigate(req: BrowserNavigateRequest):
-    """Navigate the browser to a URL."""
+    """Navigate the visible browser to a URL."""
     try:
         page = await _get_page()
         await page.goto(req.url, wait_until="domcontentloaded", timeout=30000)
@@ -348,7 +424,6 @@ async def browser_read():
     """Get the visible text content of the current page."""
     try:
         page = await _get_page()
-        # Get visible text via JS — strips hidden elements
         text = await page.evaluate("""() => {
             const walker = document.createTreeWalker(
                 document.body, NodeFilter.SHOW_TEXT,
@@ -378,7 +453,6 @@ async def browser_click(req: BrowserClickRequest):
     """Click the first element containing the given text."""
     try:
         page = await _get_page()
-        # Try button/link/role first, then any element with that text
         locator = page.get_by_text(req.text, exact=False).first
         await locator.click(timeout=10000)
         await page.wait_for_load_state("domcontentloaded", timeout=10000)
@@ -392,7 +466,6 @@ async def browser_fill(req: BrowserFillRequest):
     """Fill a form field by placeholder, label, or aria-label."""
     try:
         page = await _get_page()
-        # Try placeholder first, then label, then aria-label
         for loc in [
             page.get_by_placeholder(req.label, exact=False),
             page.get_by_label(req.label, exact=False),
@@ -410,9 +483,24 @@ async def browser_fill(req: BrowserFillRequest):
         raise HTTPException(500, f"Browser fill failed: {e}")
 
 
+class BrowserJsRequest(BaseModel):
+    script: str
+
+
+@app.post("/browser/js")
+async def browser_js(req: BrowserJsRequest):
+    """Execute JavaScript in the visible browser page and return the result."""
+    try:
+        page = await _get_page()
+        result = await page.evaluate(req.script)
+        return {"result": result, "url": page.url}
+    except Exception as e:
+        raise HTTPException(500, f"Browser JS failed: {e}")
+
+
 @app.get("/browser/screenshot")
 async def browser_screenshot():
-    """Take a screenshot of the current browser page."""
+    """Take a screenshot of the current visible browser page."""
     try:
         page = await _get_page()
         data = await page.screenshot(type="png")
@@ -434,12 +522,145 @@ async def browser_url():
 
 @app.delete("/browser/close")
 async def browser_close():
-    """Close the browser session."""
-    global _page, _browser, _pw
+    """Close the visible browser session."""
+    global _page
     if _page and not _page.is_closed():
         await _page.close()
         _page = None
     return {"status": "browser page closed"}
+
+
+@app.post("/browser/save-state")
+async def browser_save_state():
+    """Save current browser cookies and localStorage to disk for session persistence.
+
+    The grocery agent calls this after cart automation so the user stays
+    logged in to stores (Amazon, Target, HEB) between weekly runs.
+    """
+    global _browser_context
+    if _browser_context is None:
+        raise HTTPException(400, "No browser context is active — open a page first.")
+    try:
+        os.makedirs(os.path.dirname(_BROWSER_STATE_PATH), exist_ok=True)
+        await _browser_context.storage_state(path=_BROWSER_STATE_PATH)
+        return {"status": "saved", "path": _BROWSER_STATE_PATH}
+    except Exception as e:
+        raise HTTPException(500, f"Save state failed: {e}")
+
+
+@app.post("/browser/clear-state")
+async def browser_clear_state():
+    """Delete saved browser session state (forces re-login on next browser launch)."""
+    global _browser_context, _page
+    if os.path.exists(_BROWSER_STATE_PATH):
+        os.unlink(_BROWSER_STATE_PATH)
+    # Close existing context so next launch starts fresh
+    if _browser_context:
+        if _page and not _page.is_closed():
+            await _page.close()
+            _page = None
+        await _browser_context.close()
+        _browser_context = None
+    return {"status": "cleared", "path": _BROWSER_STATE_PATH}
+
+
+# ---------------------------------------------------------------------------
+# Headless Scraper (Playwright — dedicated context for price scraping)
+# ---------------------------------------------------------------------------
+
+class ScraperNavigateRequest(BaseModel):
+    url: str
+    wait_until: str = "networkidle"   # domcontentloaded | load | networkidle
+    timeout_ms: int = 30000
+
+class ScraperJsRequest(BaseModel):
+    script: str
+    timeout_ms: int = 10000
+
+
+@app.post("/scraper/navigate")
+async def scraper_navigate(req: ScraperNavigateRequest):
+    """Navigate the headless scraper to a URL and wait for it to settle."""
+    try:
+        page = await _get_scraper_page()
+        await page.goto(
+            req.url,
+            wait_until=req.wait_until,
+            timeout=req.timeout_ms,
+        )
+        # Extra scroll to trigger lazy-loaded content
+        await page.evaluate("window.scrollBy(0, 600)")
+        await page.wait_for_timeout(1500)
+        title = await page.title()
+        return {
+            "status": "ok",
+            "url": page.url,
+            "title": title,
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Scraper navigate failed: {e}")
+
+
+@app.get("/scraper/read")
+async def scraper_read():
+    """Get the full visible text of the current scraper page."""
+    try:
+        page = await _get_scraper_page()
+        text = await page.evaluate("""() => {
+            const walker = document.createTreeWalker(
+                document.body, NodeFilter.SHOW_TEXT,
+                { acceptNode: n => {
+                    const p = n.parentElement;
+                    if (!p) return NodeFilter.FILTER_REJECT;
+                    const s = window.getComputedStyle(p);
+                    return (s.display === 'none' || s.visibility === 'hidden')
+                        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+                }}
+            );
+            const parts = [];
+            let n;
+            while ((n = walker.nextNode())) {
+                const t = n.textContent.trim();
+                if (t) parts.push(t);
+            }
+            return parts.join('\\n');
+        }""")
+        return {"url": page.url, "text": text[:12000]}
+    except Exception as e:
+        raise HTTPException(500, f"Scraper read failed: {e}")
+
+
+@app.post("/scraper/js")
+async def scraper_js(req: ScraperJsRequest):
+    """Execute JavaScript in the headless scraper page and return the result."""
+    try:
+        page = await _get_scraper_page()
+        result = await page.evaluate(req.script)
+        return {"result": result, "url": page.url}
+    except Exception as e:
+        raise HTTPException(500, f"Scraper JS failed: {e}")
+
+
+@app.get("/scraper/screenshot")
+async def scraper_screenshot():
+    """Take a PNG screenshot of the current headless scraper page."""
+    try:
+        page = await _get_scraper_page()
+        data = await page.screenshot(type="png", full_page=False)
+        b64 = base64.b64encode(data).decode()
+        return {"image_base64": b64, "format": "png", "url": page.url}
+    except Exception as e:
+        raise HTTPException(500, f"Scraper screenshot failed: {e}")
+
+
+@app.post("/scraper/close")
+async def scraper_close():
+    """Close the headless scraper page (browser stays alive for reuse)."""
+    global _scraper_page
+    if _scraper_page and not _scraper_page.is_closed():
+        await _scraper_page.close()
+        _scraper_page = None
+    return {"status": "scraper page closed"}
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +696,6 @@ class JarvisRebuildRequest(BaseModel):
 
 @app.get("/jarvis/read")
 def jarvis_read(path: str = Query(...)):
-    """Read a file from the JARVIS repo."""
     full = _safe_path(path)
     if not os.path.isfile(full):
         raise HTTPException(404, f"File not found: {path}")
@@ -488,7 +708,6 @@ def jarvis_read(path: str = Query(...)):
 
 @app.get("/jarvis/list")
 def jarvis_list(path: str = Query("services/llm_agent/tools")):
-    """List files in a JARVIS repo directory."""
     full = _safe_path(path)
     if not os.path.isdir(full):
         raise HTTPException(404, f"Directory not found: {path}")
@@ -498,10 +717,8 @@ def jarvis_list(path: str = Query("services/llm_agent/tools")):
 
 @app.post("/jarvis/write")
 def jarvis_write(req: JarvisWriteRequest):
-    """Write a file inside the JARVIS repo."""
     full = _safe_path(req.path)
     os.makedirs(os.path.dirname(full), exist_ok=True)
-    # Keep a .bak before overwriting an existing file
     if os.path.exists(full):
         import shutil
         shutil.copy2(full, full + ".bak")
@@ -515,24 +732,21 @@ def jarvis_write(req: JarvisWriteRequest):
 
 @app.get("/jarvis/root")
 def jarvis_root():
-    """Return the absolute path to the JARVIS repo on the host."""
     return {"root": _JARVIS_ROOT}
 
 
 class JarvisFindRequest(BaseModel):
-    pattern: str          # filename glob, e.g. "mac.py" or "*.py"
-    directory: str = ""   # repo-relative subdirectory to search in (default: whole repo)
-
+    pattern: str
+    directory: str = ""
 
 class JarvisGrepRequest(BaseModel):
-    pattern: str          # text/regex to search for
-    directory: str = ""   # repo-relative subdirectory (default: whole repo)
-    file_pattern: str = ""  # e.g. "*.py", "*.ts"
+    pattern: str
+    directory: str = ""
+    file_pattern: str = ""
 
 
 @app.post("/jarvis/find")
 def jarvis_find(req: JarvisFindRequest):
-    """Find files by name pattern within the JARVIS repo."""
     search_root = _JARVIS_ROOT
     if req.directory:
         search_root = os.path.join(_JARVIS_ROOT, req.directory.lstrip("/"))
@@ -545,7 +759,6 @@ def jarvis_find(req: JarvisFindRequest):
             capture_output=True, text=True, timeout=10,
         )
         paths = result.stdout.strip().splitlines()
-        # Make paths relative to repo root
         rel_paths = [p.replace(_JARVIS_ROOT + "/", "") for p in paths if p]
         return {"matches": rel_paths, "total": len(rel_paths), "repo_root": _JARVIS_ROOT}
     except subprocess.TimeoutExpired:
@@ -554,7 +767,6 @@ def jarvis_find(req: JarvisFindRequest):
 
 @app.post("/jarvis/grep")
 def jarvis_grep(req: JarvisGrepRequest):
-    """Grep for a pattern within the JARVIS repo source files."""
     search_root = _JARVIS_ROOT
     if req.directory:
         search_root = os.path.join(_JARVIS_ROOT, req.directory.lstrip("/"))
@@ -578,7 +790,6 @@ def jarvis_grep(req: JarvisGrepRequest):
 
 @app.post("/jarvis/rebuild")
 def jarvis_rebuild(req: JarvisRebuildRequest):
-    """Rebuild and restart a JARVIS service."""
     svc = req.service.strip()
     if svc in _DOCKER_SERVICES:
         cmd = (
@@ -593,14 +804,10 @@ def jarvis_rebuild(req: JarvisRebuildRequest):
             raise HTTPException(500, f"Rebuild failed: {e}")
 
     if svc in _NATIVE_SERVICES:
-        # Restart native audio/bridge service via the run scripts
         pids_file = os.path.join(_JARVIS_ROOT, ".audio_pids")
         if svc == "mac_bridge":
             cmd = f"cd {_JARVIS_ROOT} && bash scripts/run_mac_bridge.sh stop; bash scripts/run_mac_bridge.sh start"
         else:
-            # Kill the process and let the user re-run the audio script,
-            # or try to restart inline
-            pids_file = os.path.join(_JARVIS_ROOT, ".audio_pids")
             cmd = (
                 f"svc={svc}; "
                 f"pid=$(grep \"^$svc:\" {pids_file} | cut -d: -f2); "
@@ -633,11 +840,6 @@ class RestartRequest(BaseModel):
 
 @app.post("/jarvis/request-restart")
 def jarvis_request_restart(req: RestartRequest):
-    """Queue a safe Docker service restart.
-
-    The restart happens ~3 seconds after this call returns so the caller can
-    finish delivering its response before the container goes down.
-    """
     svc = req.service.strip()
     if svc not in _DOCKER_SERVICES:
         raise HTTPException(400, f"Unknown Docker service '{svc}'. Known: {_DOCKER_SERVICES}")
@@ -647,12 +849,11 @@ def jarvis_request_restart(req: RestartRequest):
 
 
 def _restart_watchdog() -> None:
-    """Drain restart queue and run docker compose restart after a brief delay."""
     while True:
         try:
             service = _restart_queue.get(timeout=2)
             print(f"[MacBridge] Watchdog: restarting '{service}' in 3 s…")
-            threading.Event().wait(3)  # let the HTTP response fly first
+            threading.Event().wait(3)
             cmd = f"cd {_JARVIS_ROOT} && docker compose restart {service}"
             result = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=60)
             if result.returncode == 0:
@@ -684,12 +885,11 @@ class DevShellRequest(BaseModel):
 class DevSearchRequest(BaseModel):
     directory: str
     pattern: str
-    file_pattern: str = ""  # e.g. "*.py", "*.ts"
+    file_pattern: str = ""
 
 
 @app.get("/dev/read")
 def dev_read(path: str = Query(...)):
-    """Read any file by absolute or ~ path."""
     expanded = os.path.expanduser(path)
     if not os.path.isfile(expanded):
         raise HTTPException(404, f"File not found: {path}")
@@ -702,7 +902,6 @@ def dev_read(path: str = Query(...)):
 
 @app.get("/dev/list")
 def dev_list(path: str = Query(...)):
-    """List contents of any directory."""
     expanded = os.path.expanduser(path)
     if not os.path.isdir(expanded):
         raise HTTPException(404, f"Not a directory: {path}")
@@ -719,7 +918,6 @@ def dev_list(path: str = Query(...)):
 
 @app.post("/dev/write")
 def dev_write(req: DevWriteRequest):
-    """Write a file at any path (creates parent dirs, keeps .bak backup)."""
     import shutil
     expanded = os.path.expanduser(req.path)
     parent = os.path.dirname(expanded)
@@ -737,7 +935,6 @@ def dev_write(req: DevWriteRequest):
 
 @app.post("/dev/shell")
 def dev_shell(req: DevShellRequest):
-    """Run a shell command in a specific working directory."""
     cwd = os.path.expanduser(req.cwd) if req.cwd else None
     if cwd and not os.path.isdir(cwd):
         raise HTTPException(400, f"Working directory not found: {req.cwd}")
@@ -763,7 +960,6 @@ def dev_shell(req: DevShellRequest):
 
 @app.post("/dev/search")
 def dev_search(req: DevSearchRequest):
-    """Grep for a pattern within a project directory."""
     expanded = os.path.expanduser(req.directory)
     if not os.path.isdir(expanded):
         raise HTTPException(404, f"Directory not found: {req.directory}")

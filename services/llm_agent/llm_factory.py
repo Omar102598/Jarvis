@@ -3,43 +3,68 @@
 Centralizes provider selection so the main agent, sub-agents, and any tool
 that needs an LLM all build models the same way.
 
-    LLM_MODEL=claude-opus-4-5 | claude-sonnet-4-5 | gpt-4.1 | gpt-4o-mini ...
+    LLM_MODEL=claude-sonnet-4-6 | claude-opus-4-8 | gpt-4.1 | gpt-4o-mini ...
 
-Selection rules:
-  - explicit "claude*"/"anthropic*" → Anthropic
-  - explicit "gpt*"/"o*"            → OpenAI
-  - unset → Claude haiku if only ANTHROPIC_API_KEY present, else gpt-4.1-mini
+Tiers (Anthropic only):
+  haiku  → claude-haiku-4-5-20251001   fast/cheap  — simple commands & device control
+  sonnet → claude-sonnet-4-6           default     — conversational & moderate tool use
+  opus   → claude-opus-4-8             powerful    — complex reasoning, code, research
+
+Prompt caching is enabled for Anthropic models via the beta header.
 """
 
 import os
+
+# Canonical model IDs per tier
+TIER_MODELS = {
+    "haiku":  "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-4-6",
+    "opus":   "claude-opus-4-8",
+}
+
+# Header that enables Anthropic prompt caching (beta)
+_CACHE_HEADER = {"anthropic-beta": "prompt-caching-2024-07-31"}
 
 
 def resolve_model(default_override: str = "") -> str:
     """Return the model name to use, applying defaults."""
     model_name = (default_override or os.environ.get("LLM_MODEL", "")).strip()
     if model_name:
-        return model_name
+        return TIER_MODELS.get(model_name, model_name)
 
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    openai_key    = os.environ.get("OPENAI_API_KEY", "")
     if anthropic_key and not openai_key:
-        return "claude-haiku-4-5"
+        return TIER_MODELS["sonnet"]
     return "gpt-4.1-mini"
 
 
-def build_llm(model: str = "", temperature: float = 0.3):
-    """Build a LangChain chat model for the given (or default) model name."""
-    model_name = resolve_model(model)
+def build_llm(model: str = "", temperature: float = 0.3, enable_cache: bool = True):
+    """Build a LangChain chat model.
+
+    Args:
+        model: explicit model name OR tier key ("haiku" / "sonnet" / "opus")
+        temperature: sampling temperature
+        enable_cache: attach Anthropic prompt-caching beta header (no-op for OpenAI)
+    """
+    model_name = TIER_MODELS.get(model, model) if model else resolve_model()
 
     if "claude" in model_name.lower() or model_name.startswith("anthropic"):
         from langchain_anthropic import ChatAnthropic
 
+        # Opus 4.7, Opus 4.8, and Fable 5 don't accept temperature (returns 400)
+        _no_temp_models = ("opus-4-7", "opus-4-8", "fable-5")
+        supports_temperature = not any(m in model_name for m in _no_temp_models)
+
         print(f"[LLM] Using Anthropic: {model_name}")
-        return ChatAnthropic(
+        kwargs = dict(
             model=model_name,
-            temperature=temperature,
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            default_headers=_CACHE_HEADER if enable_cache else {},
         )
+        if supports_temperature:
+            kwargs["temperature"] = temperature
+        return ChatAnthropic(**kwargs)
 
     from langchain_openai import ChatOpenAI
 

@@ -18,6 +18,8 @@ import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from ambient_agent import AmbientAgent
+from grocery_agent import GroceryAgent
 from job_monitor_agent import JobMonitorAgent
 from newsletter_agent import NewsletterAgent
 from price_monitor_agent import PriceMonitorAgent
@@ -35,12 +37,14 @@ REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 CONFIG_PATH = Path(os.environ.get("AGENTS_CONFIG", "/config/agents.yml"))
 
 AGENT_CLASSES = {
+    "ambient": AmbientAgent,
     "newsletter": NewsletterAgent,
     "job_monitor": JobMonitorAgent,
     "web_monitor": WebMonitorAgent,
     "research": ResearchAgent,
     "task": TaskAgent,
     "price_monitor": PriceMonitorAgent,
+    "grocery": GroceryAgent,
 }
 
 # Agents that can be dispatched on demand with params from the trigger payload

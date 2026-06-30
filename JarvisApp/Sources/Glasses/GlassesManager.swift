@@ -1,5 +1,4 @@
 import Foundation
-import Combine
 import MWDATCore
 import MWDATCamera
 import MWDATDisplay
@@ -41,8 +40,8 @@ final class GlassesManager: ObservableObject {
 
     private var session: DeviceSession?
     private var display: Display?
-    private var cameraStream: Stream?
-    private var cancellables = Set<AnyCancellable>()
+    private var cameraStream: MWDATCamera.Stream?
+    private var displayListenerToken: (any AnyListenerToken)?
     private var stateTask: Task<Void, Never>?
 
     private let wearables = Wearables.shared
@@ -54,7 +53,7 @@ final class GlassesManager: ObservableObject {
         do {
             try await wearables.startRegistration()
             let status = try await wearables.requestPermission(.camera)
-            guard status == .authorized else {
+            guard status == .granted else {
                 errorMessage = "Camera permission denied by user."
                 return
             }
@@ -78,7 +77,7 @@ final class GlassesManager: ObservableObject {
         session = nil
         display = nil
         cameraStream = nil
-        cancellables.removeAll()
+        displayListenerToken = nil
         isConnected = false
         sessionState = .stopped
         displayState = .stopped
@@ -121,16 +120,15 @@ final class GlassesManager: ObservableObject {
         let newDisplay = try session.addDisplay()
         self.display = newDisplay
 
-        newDisplay.statePublisher
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
+        self.displayListenerToken = newDisplay.statePublisher.listen { [weak self] state in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.displayState = state
                 if state == .started {
-                    Task { @MainActor in try? await self.showIdleHUD() }
+                    try? await self.showIdleHUD()
                 }
             }
-            .store(in: &cancellables)
+        }
 
         await newDisplay.start()
 
@@ -160,21 +158,13 @@ final class GlassesManager: ObservableObject {
         guard let stream = cameraStream else { throw GlassesError.notConnected }
 
         return try await withCheckedThrowingContinuation { continuation in
-            var captureToken: AnyCancellable?
-            captureToken = stream.photoDataPublisher
-                .first()
-                .sink(
-                    receiveCompletion: { completion in
-                        if case .failure(let error) = completion {
-                            continuation.resume(throwing: error)
-                        }
-                        captureToken?.cancel()
-                    },
-                    receiveValue: { photo in
-                        continuation.resume(returning: photo.data)
-                        captureToken?.cancel()
-                    }
-                )
+            var resumed = false
+            let token = stream.photoDataPublisher.listen { photo in
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: photo.data)
+            }
+            _ = token  // keep token alive until callback fires
             stream.capturePhoto(format: .jpeg)
         }
     }

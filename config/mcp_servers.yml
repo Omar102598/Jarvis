@@ -1,0 +1,101 @@
+# ==============================================================================
+# JARVIS MCP Server Registry
+# ==============================================================================
+# Each entry defines one MCP server Jarvis connects to at startup.
+# Tools from enabled servers are added to Jarvis's core tool list automatically.
+#
+# Transport types:
+#   stdio          — spawns a local process (requires command + args)
+#   streamable_http — connects to a running HTTP server (requires url)
+#   sse            — Server-Sent Events transport (requires url)
+#
+# stdio servers require Node.js in the llm_agent container.
+# The Dockerfile installs Node.js, so npx-based servers work out of the box.
+#
+# To activate a server: set enabled: true and rebuild llm_agent.
+# To add a server at runtime: tell Jarvis "install MCP server <package>".
+# ==============================================================================
+
+servers:
+
+  # ---------------------------------------------------------------------------
+  # Filesystem — structured read/write within a safe directory.
+  # Complements Jarvis's existing file tools with MCP-standard operations.
+  # ---------------------------------------------------------------------------
+  filesystem:
+    enabled: false
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-filesystem"
+      - "/data/workspace"   # directory Jarvis is allowed to access
+    description: "MCP filesystem access under /data/workspace"
+
+  # ---------------------------------------------------------------------------
+  # Fetch — clean web page fetching with Markdown conversion.
+  # Better than the raw fetch_url tool for reading articles/docs.
+  # ---------------------------------------------------------------------------
+  fetch:
+    enabled: false
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-fetch"
+    description: "MCP web fetching with Markdown conversion"
+
+  # ---------------------------------------------------------------------------
+  # GitHub — issues, PRs, repos, code search.
+  # Set GITHUB_TOKEN in .env. Replaces custom github_tool.py once stable.
+  # ---------------------------------------------------------------------------
+  github:
+    enabled: false
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-github"
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+    description: "MCP GitHub — issues, PRs, code search"
+
+  # ---------------------------------------------------------------------------
+  # Playwright — browser automation via MCP.
+  # Replaces mac_browser_* tools with a maintained upstream implementation.
+  # Requires: npm install -g @playwright/mcp
+  # ---------------------------------------------------------------------------
+  playwright:
+    enabled: false
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@playwright/mcp"
+    description: "MCP Playwright browser automation"
+
+  # ---------------------------------------------------------------------------
+  # Slack — read channels, post messages, search.
+  # Requires SLACK_BOT_TOKEN and SLACK_TEAM_ID in .env.
+  # ---------------------------------------------------------------------------
+  slack:
+    enabled: false
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-slack"
+    env:
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+      SLACK_TEAM_ID: "${SLACK_TEAM_ID}"
+    description: "MCP Slack — channels, messages, search"
+
+  # ---------------------------------------------------------------------------
+  # Custom SSE server — for your own MCP server running locally or on VPS.
+  # Example: a private MCP server you build for Jarvis-specific tools.
+  # ---------------------------------------------------------------------------
+  # custom:
+  #   enabled: false
+  #   transport: streamable_http
+  #   url: "http://localhost:9000/mcp"
+  #   description: "Custom Jarvis MCP server"

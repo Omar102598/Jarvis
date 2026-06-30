@@ -9,6 +9,26 @@
 agents:
 
   # ---------------------------------------------------------------------------
+  # Ambient Agent
+  # Proactive monitoring: calendar countdowns, weather alerts, morning briefing,
+  # and user-defined Redis-keyed triggers. Runs every 5 minutes.
+  # ---------------------------------------------------------------------------
+  - name: ambient
+    display_name: "Ambient Monitor"
+    description: >
+      Proactive monitoring agent. Announces upcoming calendar events, weather
+      changes, daily morning briefing, and user-defined triggers without being
+      asked. Runs every 5 minutes with per-trigger cooldowns to avoid spam.
+    enabled: true
+    schedule: "*/5 * * * *"   # Every 5 minutes
+    params:
+      room: "office"                # Room to announce to (ACTIVE_ROOM when idle)
+      calendar_lookahead_min: 30    # Warn this many minutes before an event
+      morning_hour: 8               # Hour (local) to fire the morning briefing
+      weather_enabled: true         # Monitor for significant weather changes
+
+
+  # ---------------------------------------------------------------------------
   # Newsletter Digest
   # Searches the web for news on your chosen topics and produces a daily brief.
   # ---------------------------------------------------------------------------
@@ -61,16 +81,10 @@ agents:
     schedule: "0 * * * *"   # Every hour
     params:
       queries: []
-      # Examples:
-      # queries:
-      #   - "OpenAI GPT-5 release date"
-      #   - "Apple WWDC 2026 announcements"
-      #   - "Nvidia Blackwell GPU availability"
 
   # ---------------------------------------------------------------------------
   # Price Monitor
   # Watches product pages and reports price drops. Runs twice a day.
-  # Add products as {name, url} pairs below.
   # ---------------------------------------------------------------------------
   - name: price_monitor
     display_name: "Price Monitor"
@@ -80,16 +94,58 @@ agents:
     schedule: "0 9,18 * * *"   # 9 AM and 6 PM daily
     params:
       products: []
-      # Examples:
-      # products:
-      #   - name: "Standing desk"
-      #     url: "https://www.example.com/standing-desk"
 
   # ---------------------------------------------------------------------------
-  # Research & Task agents (dispatch targets)
-  # These have NO schedule — JARVIS dispatches them on demand via spawn_task
-  # when you ask it to "go research X" or "figure out Y". Listed here only so
-  # the dashboard can show them; they run when triggered, not on a clock.
+  # Smart Weekly Grocery Agent — v5
+  #
+  # What's new in v5:
+  #   • Fitness profile loaded from Redis user:profile (configure via Jarvis).
+  #   • TDEE + macro calculation (Mifflin-St Jeor) for calorie/protein/fiber targets.
+  #   • Target redsky public API for reliable prices (no CSS scraping).
+  #   • HEB digital API with headless-scraper fallback.
+  #   • Greedy 1-store-first consolidation (minimises number of stores).
+  #   • Persistent browser login sessions across weekly runs.
+  #   • Cart links included in report.
+  #   • Report delivered via iMessage + Jarvis iOS app.
+  #   • Approval flow: say "approve grocery order" to place orders.
+  #
+  # Configure your profile via Jarvis:
+  #   "Set my weight to 195 lbs"
+  #   "Update my activity level to very active"
+  #   "Set my iMessage number to +15551234567"
+  #   "Set my grocery budget to $120"
+  #
+  # Runs every Monday at 8:00 AM CDT (13:00 UTC).
+  # ---------------------------------------------------------------------------
+  - name: grocery
+    display_name: "Smart Grocery Agent"
+    description: >
+      Builds a fitness-optimised weekly grocery list from your health profile
+      (TDEE, protein/fiber targets) and past purchases. Compares prices across
+      Target, HEB, Amazon Fresh, and Whole Foods. Selects the fewest stores,
+      builds carts, and sends a report with cart links via iMessage and the
+      Jarvis iOS app. Say "approve grocery order" to proceed to checkout.
+    enabled: true
+    schedule: "0 13 * * 1"   # Every Monday at 8:00 AM CDT (13:00 UTC)
+    params:
+      notify_on_complete: true
+      # All fitness/profile settings are loaded from Redis user:profile.
+      # Set them via Jarvis: "update my weight to 195 lbs"
+      # or directly: update_user_profile("weight_lbs", "195")
+      #
+      # Key profile fields (with defaults if not set):
+      #   weight_lbs:            201
+      #   height_in:             72       (72 = 6'0")
+      #   age:                   25
+      #   activity_level:        moderately_active
+      #   goal:                  cutting  (cutting / maintaining / bulking)
+      #   weekly_budget_usd:     150.0
+      #   protein_goal_g_per_lb: 1.0
+      #   fiber_goal_g:          35
+      #   imessage_to:           ""       (set to your phone number for iMessage delivery)
+
+  # ---------------------------------------------------------------------------
+  # Research & Task agents (dispatch targets — no schedule, on-demand only)
   # ---------------------------------------------------------------------------
   - name: research
     display_name: "Research Agent"

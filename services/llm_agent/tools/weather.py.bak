@@ -1,0 +1,82 @@
+"""Weather tool for JARVIS — uses Home Assistant weather integration."""
+
+import os
+
+import aiohttp
+from langchain_core.tools import tool
+
+HA_URL = os.environ.get("HA_URL", "http://homeassistant.local:8123")
+HA_TOKEN = os.environ.get("HA_TOKEN")
+
+
+@tool
+async def get_weather(entity_id: str = "weather.home") -> str:
+    """Get the current weather and forecast.
+
+    Args:
+        entity_id: Weather entity ID in Home Assistant, e.g. 'weather.home'
+    """
+    if not HA_TOKEN:
+        return "Error: HA_TOKEN is not set. Please configure your Home Assistant token."
+
+    headers = {
+        "Authorization": f"Bearer {HA_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{HA_URL}/api/states/{entity_id}",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 401:
+                    return "Error: Unauthorized — check your HA_TOKEN."
+                if resp.status == 404:
+                    return (
+                        f"Error: Entity '{entity_id}' not found in Home Assistant. "
+                        "Check the entity ID (e.g. 'weather.home')."
+                    )
+                if resp.status != 200:
+                    text = await resp.text()
+                    return f"Error: Home Assistant returned status {resp.status}: {text}"
+                data = await resp.json()
+
+    except aiohttp.ClientConnectorError:
+        return (
+            f"Error: Could not connect to Home Assistant at {HA_URL}. "
+            "Check that HA is running and HA_URL is correct."
+        )
+    except aiohttp.ServerTimeoutError:
+        return "Error: Request to Home Assistant timed out. It may be unreachable."
+    except Exception as e:
+        return f"Unexpected error fetching weather: {e}"
+
+    state = data.get("state", "unknown")
+    attrs = data.get("attributes", {})
+    temp = attrs.get("temperature", "?")
+    temp_unit = attrs.get("temperature_unit", "°F")
+    humidity = attrs.get("humidity", "?")
+    wind_speed = attrs.get("wind_speed", "?")
+    wind_unit = attrs.get("wind_speed_unit", "mph")
+
+    result = (
+        f"Current: {state}, {temp}{temp_unit}, "
+        f"Humidity: {humidity}%, Wind: {wind_speed} {wind_unit}"
+    )
+
+    # Include forecast if available
+    forecast = attrs.get("forecast", [])
+    if forecast:
+        result += "\n\nForecast:"
+        for day in forecast[:5]:
+            date = day.get("datetime", "?")[:10]
+            condition = day.get("condition", "?")
+            high = day.get("temperature", "?")
+            low = day.get("templow", "?")
+            result += (
+                f"\n  {date}: {condition}, High {high}{temp_unit}, Low {low}{temp_unit}"
+            )
+
+    return result

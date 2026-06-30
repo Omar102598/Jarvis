@@ -43,6 +43,44 @@ from pydantic import BaseModel
 # Configuration
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# STT hallucination filter — faster-whisper emits these on silence/noise
+# ---------------------------------------------------------------------------
+
+_HALLUCINATION_PHRASES = {
+    "thank you for watching",
+    "thanks for watching",
+    "please subscribe",
+    "like and subscribe",
+    "subscribe to my channel",
+    "thanks for listening",
+    "thank you for listening",
+    "don't forget to subscribe",
+    "see you in the next video",
+    "see you next time",
+    "you",
+    ".",
+    "",
+}
+
+_REPEAT_PATTERN = re.compile(r"(.{10,}?)\1{2,}", re.DOTALL)
+
+
+def _is_hallucination(text: str) -> bool:
+    lower = text.lower().strip().rstrip(".,!?")
+    if lower in _HALLUCINATION_PHRASES:
+        return True
+    if len(text.strip()) < 3:
+        return True
+    if _REPEAT_PATTERN.search(text):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
@@ -82,7 +120,11 @@ def transcribe_audio(audio_bytes: bytes, filename: str = "audio.wav") -> str:
         tmp_path = tmp.name
     try:
         segments, _ = _stt_model.transcribe(tmp_path, language="en", vad_filter=True)
-        return " ".join(s.text for s in segments).strip()
+        text = " ".join(s.text for s in segments).strip()
+        if _is_hallucination(text):
+            print(f"[Gateway] STT hallucination filtered: '{text}'")
+            return ""
+        return text
     finally:
         os.unlink(tmp_path)
 
@@ -219,7 +261,8 @@ def _on_surface_push(client, userdata, msg):
         text = data.get("text", "")
         if not text:
             return
-        payload = DisplayPayload("text", "Jarvis", text[:200], None, text)
+        title = data.get("title", "Jarvis")
+        payload = DisplayPayload("text", title, text[:200], None, text)
         if _event_loop is not None:
             asyncio.run_coroutine_threadsafe(_push_display_payload(payload), _event_loop)
     except Exception as exc:
@@ -622,6 +665,99 @@ async def list_surfaces(x_api_key: str = Header(default="")):
                 meta["active"] = active
                 surfaces.append(meta)
         return {"surfaces": surfaces}
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# HealthKit ingestion (Month 4a)
+# ---------------------------------------------------------------------------
+
+class HealthSnapshotRequest(BaseModel):
+    steps: Optional[float] = None
+    active_energy_kcal: Optional[float] = None
+    resting_heart_rate: Optional[float] = None
+    hrv_ms: Optional[float] = None
+    sleep_hours: Optional[float] = None
+    body_mass_lbs: Optional[float] = None
+    workouts_today: Optional[int] = None
+    workout_minutes_today: Optional[float] = None
+    source: str = "ios_healthkit"
+
+
+@app.post("/health/snapshot", summary="[iOS app] Push a HealthKit fitness snapshot")
+async def health_snapshot(req: HealthSnapshotRequest, x_api_key: str = Header(default="")):
+    """Store the latest HealthKit snapshot in Redis.
+
+    - ``user:health:latest`` — most recent snapshot (consumed by grocery + ambient agents)
+    - ``user:health:history`` — rolling list of the last 60 snapshots
+    - If body mass is present, ``user:profile.weight_lbs`` is updated so the
+      grocery agent's TDEE calculation always uses the user's current weight.
+    """
+    _check_api_key(x_api_key)
+    snapshot = {k: v for k, v in req.model_dump().items() if v is not None}
+    snapshot["ts"] = datetime.now(timezone.utc).timestamp()
+
+    try:
+        _redis.set("user:health:latest", json.dumps(snapshot))
+        _redis.lpush("user:health:history", json.dumps(snapshot))
+        _redis.ltrim("user:health:history", 0, 59)
+
+        # Keep the user profile's weight in sync with HealthKit body mass
+        if req.body_mass_lbs:
+            raw = _redis.get("user:profile") or "{}"
+            try:
+                profile = json.loads(raw)
+            except Exception:
+                profile = {}
+            profile["weight_lbs"] = round(float(req.body_mass_lbs), 1)
+            _redis.set("user:profile", json.dumps(profile))
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+
+    return {"ok": True, "stored": list(snapshot.keys())}
+
+
+# ---------------------------------------------------------------------------
+# Calendar ingestion (Month 4c) — feeds the ambient agent's countdown trigger
+# ---------------------------------------------------------------------------
+
+class NextCalendarEventRequest(BaseModel):
+    title: str
+    start: str                       # ISO-8601
+    location: Optional[str] = None
+
+
+@app.post("/calendar/next-event", summary="[iOS app] Push the next upcoming calendar event")
+async def calendar_next_event(req: NextCalendarEventRequest, x_api_key: str = Header(default="")):
+    """Store the next upcoming event so the ambient agent can warn before it starts.
+
+    Written to ``jarvis:calendar:next_event`` — the exact key AmbientAgent reads.
+    """
+    _check_api_key(x_api_key)
+    try:
+        _redis.set("jarvis:calendar:next_event", json.dumps({
+            "title": req.title,
+            "start": req.start,
+            "location": req.location or "",
+        }))
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+    return {"ok": True}
+
+
+@app.get("/tool-events", summary="Recent tool call events for iOS timeline")
+async def get_tool_events(x_api_key: str = Header(default=""), limit: int = 30):
+    _check_api_key(x_api_key)
+    try:
+        raw = _redis.lrange("jarvis:tool_events", 0, min(limit, 50) - 1)
+        events = []
+        for item in raw:
+            try:
+                events.append(json.loads(item))
+            except Exception:
+                pass
+        return {"events": events}
     except Exception as exc:
         raise HTTPException(503, f"Redis unavailable: {exc}")
 

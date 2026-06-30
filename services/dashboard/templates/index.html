@@ -10,34 +10,174 @@
       --j-blue:    #00d4ff;
       --j-blue-d:  #0088aa;
       --j-blue-dd: #003344;
-      --j-bg:      #060c18;
-      --j-card:    #0a1220;
-      --j-border:  #142038;
+      --j-bg:      #030810;
+      --j-card:    #070f1c;
+      --j-border:  #0e2035;
       --j-gold:    #f0a020;
       --j-red:     #cc3344;
       --j-green:   #00aa88;
+      --j-dim:     rgba(0,212,255,0.08);
     }
 
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       background: var(--j-bg);
       color: #cdd6e8;
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
       min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Hex grid background ────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.18;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100'%3E%3Cpolygon points='28,2 54,16 54,44 28,58 2,44 2,16' fill='none' stroke='%2300d4ff' stroke-width='0.5'/%3E%3Cpolygon points='28,52 54,66 54,94 28,108 2,94 2,66' fill='none' stroke='%2300d4ff' stroke-width='0.5'/%3E%3C/svg%3E");
+      background-size: 56px 100px;
+    }
+
+    /* ── Page-wide horizontal scan line ── */
+    .scan-line {
+      position: fixed;
+      top: -2px;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent 0%, rgba(0,212,255,0.6) 40%, rgba(0,212,255,0.9) 50%, rgba(0,212,255,0.6) 60%, transparent 100%);
+      pointer-events: none;
+      z-index: 9000;
+      animation: scan-sweep 8s linear infinite;
+    }
+    @keyframes scan-sweep {
+      0%   { top: -2px; opacity: 0; }
+      2%   { opacity: 1; }
+      98%  { opacity: 1; }
+      100% { top: 100vh; opacity: 0; }
+    }
+
+    /* ══════════════════════════════════════════
+       BOOT OVERLAY
+    ══════════════════════════════════════════ */
+    #boot-overlay {
+      position: fixed;
+      inset: 0;
+      background: #000;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      animation: boot-fade-out 0.6s ease-in 3.6s forwards;
+      pointer-events: none;
+    }
+    @keyframes boot-fade-out {
+      to { opacity: 0; visibility: hidden; }
+    }
+
+    /* Boot scan line that sweeps once */
+    #boot-scan {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, transparent, var(--j-blue), transparent);
+      animation: boot-scan-sweep 1.2s ease-in-out 0.2s forwards;
+      opacity: 0;
+    }
+    @keyframes boot-scan-sweep {
+      0%   { top: 0;    opacity: 0; }
+      5%   { opacity: 1; }
+      95%  { opacity: 1; }
+      100% { top: 100vh; opacity: 0; }
+    }
+
+    #boot-content {
+      text-align: center;
+      max-width: 500px;
+      width: 90%;
+    }
+    #boot-logo {
+      font-size: clamp(2rem, 8vw, 3.5rem);
+      font-weight: 900;
+      letter-spacing: 14px;
+      color: var(--j-blue);
+      text-shadow: 0 0 30px rgba(0,212,255,0.8), 0 0 60px rgba(0,212,255,0.4);
+      animation: boot-appear 0.5s ease-out 0.6s both;
+    }
+    #boot-sub {
+      font-size: 0.6rem;
+      letter-spacing: 5px;
+      color: rgba(0,212,255,0.45);
+      margin-top: 6px;
+      animation: boot-appear 0.5s ease-out 0.9s both;
+    }
+    @keyframes boot-appear {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    #boot-lines {
+      margin-top: 28px;
+      font-size: 0.68rem;
+      letter-spacing: 2px;
+      color: rgba(0,212,255,0.5);
+      font-family: monospace;
+      text-align: left;
+      display: inline-block;
+      min-width: 320px;
+    }
+    .boot-line {
+      opacity: 0;
+      display: block;
+      padding: 1px 0;
+    }
+    .boot-line.ok::after { content: ' [ OK ]'; color: var(--j-green); }
+
+    #boot-bar-wrap {
+      margin-top: 20px;
+      width: 100%;
+      height: 3px;
+      background: rgba(0,212,255,0.1);
+      border-radius: 2px;
+      animation: boot-appear 0.3s ease-out 1.2s both;
+    }
+    #boot-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--j-blue-d), var(--j-blue));
+      border-radius: 2px;
+      box-shadow: 0 0 8px rgba(0,212,255,0.6);
+      animation: boot-progress 2.2s ease-in-out 1.4s forwards;
+    }
+    @keyframes boot-progress { to { width: 100%; } }
+
+    #boot-status {
+      margin-top: 10px;
+      font-size: 0.62rem;
+      letter-spacing: 4px;
+      color: rgba(0,212,255,0.4);
+      font-family: monospace;
+      animation: boot-appear 0.3s ease-out 1.4s both;
     }
 
     /* ── Navbar ─────────────────────────────── */
     .navbar {
-      background: #040a14 !important;
-      border-bottom: 1px solid var(--j-blue-d);
+      background: rgba(3,8,16,0.96) !important;
+      border-bottom: 1px solid rgba(0,212,255,0.2);
       padding: 10px 24px;
+      position: relative;
+      z-index: 100;
     }
     .brand-name {
       color: var(--j-blue);
       font-weight: 800;
       letter-spacing: 6px;
       font-size: 1rem;
+      text-shadow: 0 0 12px rgba(0,212,255,0.4);
     }
     .brand-sub {
       color: #446688;
@@ -51,173 +191,295 @@
       font-variant-numeric: tabular-nums;
     }
 
-    /* ── Hero: Voice Visualizer ──────────────── */
+    /* ══════════════════════════════════════════
+       HERO + HUD
+    ══════════════════════════════════════════ */
     .hero {
       display: flex;
       flex-direction: column;
       align-items: center;
       padding: 40px 20px 24px;
       position: relative;
+      z-index: 1;
     }
 
-    /* Outer scan-line rings */
-    .rings {
+    /* HUD corner brackets */
+    .hud-corner {
+      position: absolute;
+      width: 32px;
+      height: 32px;
+      pointer-events: none;
+    }
+    .hud-corner.tl { top: 10px;  left: 16px;  border-top: 1.5px solid var(--j-blue); border-left: 1.5px solid var(--j-blue); }
+    .hud-corner.tr { top: 10px;  right: 16px; border-top: 1.5px solid var(--j-blue); border-right: 1.5px solid var(--j-blue); }
+    .hud-corner.bl { bottom: 0;  left: 16px;  border-bottom: 1.5px solid var(--j-blue); border-left: 1.5px solid var(--j-blue); }
+    .hud-corner.br { bottom: 0;  right: 16px; border-bottom: 1.5px solid var(--j-blue); border-right: 1.5px solid var(--j-blue); }
+    .hud-corner::after {
+      content: '';
+      position: absolute;
+      background: var(--j-blue);
+      opacity: 0.5;
+    }
+    .hud-corner.tl::after, .hud-corner.tr::after { top: -1px; height: 1px; width: 6px; }
+    .hud-corner.tl::after { left: -1px; }
+    .hud-corner.tr::after { right: -1px; }
+    .hud-corner.bl::after, .hud-corner.br::after { bottom: -1px; height: 1px; width: 6px; }
+    .hud-corner.bl::after { left: -1px; }
+    .hud-corner.br::after { right: -1px; }
+
+    /* Hero inner row: side panels + orb */
+    .hero-row {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      width: 100%;
+      max-width: 820px;
+      justify-content: center;
+    }
+
+    /* ── Side data panels ── */
+    .side-panel {
+      flex: 0 0 160px;
+      font-family: monospace;
+      font-size: 0.62rem;
+      letter-spacing: 1px;
+      color: rgba(0,212,255,0.45);
+      line-height: 1.9;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .side-panel.right { text-align: right; }
+    @media (max-width: 640px) { .side-panel { display: none; } }
+
+    .sp-label {
+      font-size: 0.58rem;
+      letter-spacing: 3px;
+      color: rgba(0,212,255,0.25);
+      border-bottom: 1px solid rgba(0,212,255,0.12);
+      padding-bottom: 3px;
+      margin-bottom: 4px;
+    }
+    .sp-row { display: flex; justify-content: space-between; gap: 8px; }
+    .side-panel.right .sp-row { flex-direction: row-reverse; }
+    .sp-key { color: rgba(0,212,255,0.28); }
+    .sp-val { color: rgba(0,212,255,0.65); }
+    .sp-bar {
+      display: inline-block;
+      width: 40px;
+      height: 3px;
+      background: rgba(0,212,255,0.1);
+      vertical-align: middle;
       position: relative;
-      width: 280px;
-      height: 280px;
+      margin-left: 3px;
+    }
+    .sp-bar-fill {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      background: var(--j-blue);
+      box-shadow: 0 0 4px rgba(0,212,255,0.6);
+      transition: width 0.8s ease;
+    }
+
+    /* ── Orb scene (SVG arcs + canvas + core) ── */
+    .orb-scene {
+      width: 300px;
+      height: 300px;
+      perspective: 800px;
+      position: relative;
       display: flex;
       align-items: center;
       justify-content: center;
+      flex-shrink: 0;
     }
-    .ring {
-      position: absolute;
-      border-radius: 50%;
-      border: 1px solid var(--j-blue-d);
-      opacity: 0.2;
-    }
-    .ring:nth-child(1) { width: 100%; height: 100%; }
-    .ring:nth-child(2) { width: 80%;  height: 80%;  }
-    .ring:nth-child(3) { width: 60%;  height: 60%;  }
 
-    /* Animated pulse rings — shown when speaking */
-    .pulse-ring {
+    /* SVG arc overlay — positioned over the full orb-scene */
+    .arc-svg {
       position: absolute;
-      border-radius: 50%;
-      border: 2px solid var(--j-blue);
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      overflow: visible;
+    }
+
+    /* Arc animation groups */
+    .arc-outer { animation: arc-cw  18s linear infinite; transform-origin: center; }
+    .arc-mid   { animation: arc-ccw 12s linear infinite; transform-origin: center; }
+    .arc-inner { animation: arc-cw   7s linear infinite; transform-origin: center; }
+    .arc-dot   { animation: arc-cw  18s linear infinite; transform-origin: center; }
+
+    @keyframes arc-cw  { from { transform: rotate(0deg);   } to { transform: rotate(360deg);  } }
+    @keyframes arc-ccw { from { transform: rotate(0deg);   } to { transform: rotate(-360deg); } }
+
+    /* Pulse arcs on speaking/listening */
+    body.speaking  .arc-outer { animation-duration: 10s; }
+    body.speaking  .arc-mid   { animation-duration: 6s;  }
+    body.speaking  .arc-inner { animation-duration: 3s;  }
+    body.listening .arc-outer { animation-duration: 14s; }
+    body.listening .arc-inner { animation-duration: 5s;  }
+
+    /* Scan sweep line that rotates over the orb during thinking */
+    .arc-sweep {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
       opacity: 0;
+      transition: opacity 0.3s;
     }
-    .pulse-ring:nth-child(4) { width: 105%; height: 105%; }
-    .pulse-ring:nth-child(5) { width: 120%; height: 120%; animation-delay: 0.3s; }
-    .pulse-ring:nth-child(6) { width: 140%; height: 140%; animation-delay: 0.6s; }
+    body.listening .arc-sweep,
+    body.thinking  .arc-sweep  { opacity: 1; }
+    .arc-sweep-line {
+      animation: sweep-spin 2.5s linear infinite;
+      transform-origin: center;
+    }
+    body.speaking .arc-sweep-line { animation-duration: 1.2s; }
+    @keyframes sweep-spin { to { transform: rotate(360deg); } }
 
-    body.speaking .pulse-ring {
-      animation: expand 1.8s ease-out infinite;
+    /* Pulse halos */
+    .halo {
+      position: absolute;
+      border-radius: 50%;
+      border: 1.5px solid var(--j-blue);
+      opacity: 0;
+      pointer-events: none;
     }
-    body.listening .pulse-ring {
-      animation: expand-slow 3s ease-out infinite;
+    .halo:nth-child(1) { width: 200px; height: 200px; }
+    .halo:nth-child(2) { width: 240px; height: 240px; }
+    .halo:nth-child(3) { width: 280px; height: 280px; }
+
+    body.speaking .halo {
+      animation: halo-pulse 2s ease-out infinite;
+      border-color: var(--j-blue);
+    }
+    body.speaking .halo:nth-child(2) { animation-delay: 0.5s; }
+    body.speaking .halo:nth-child(3) { animation-delay: 1.0s; }
+
+    body.listening .halo {
+      animation: halo-pulse 3s ease-out infinite;
       border-color: var(--j-gold);
     }
+    body.listening .halo:nth-child(2) { animation-delay: 0.8s; }
+    body.listening .halo:nth-child(3) { animation-delay: 1.6s; }
 
-    @keyframes expand {
-      0%   { opacity: 0.7; transform: scale(0.85); }
-      100% { opacity: 0;   transform: scale(1.15); }
-    }
-    @keyframes expand-slow {
-      0%   { opacity: 0.4; transform: scale(0.95); }
-      100% { opacity: 0;   transform: scale(1.08); }
+    @keyframes halo-pulse {
+      0%   { opacity: 0.6; transform: scale(0.85); }
+      100% { opacity: 0;   transform: scale(1.2);  }
     }
 
-    /* Waveform bars inside the circle */
-    .waveform {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-      height: 60px;
-      margin-bottom: 8px;
-    }
-    .bar {
-      width: 4px;
-      border-radius: 2px;
-      background: var(--j-blue);
-      height: 8px;
-      opacity: 0.35;
-      transition: height 0.1s ease;
-    }
-    body.speaking .bar {
-      opacity: 1;
-      animation: wave 0.8s ease-in-out infinite alternate;
-    }
-    body.speaking .bar:nth-child(1)  { animation-delay: 0.00s; }
-    body.speaking .bar:nth-child(2)  { animation-delay: 0.07s; }
-    body.speaking .bar:nth-child(3)  { animation-delay: 0.14s; }
-    body.speaking .bar:nth-child(4)  { animation-delay: 0.21s; }
-    body.speaking .bar:nth-child(5)  { animation-delay: 0.28s; }
-    body.speaking .bar:nth-child(6)  { animation-delay: 0.21s; }
-    body.speaking .bar:nth-child(7)  { animation-delay: 0.14s; }
-    body.speaking .bar:nth-child(8)  { animation-delay: 0.07s; }
-    body.speaking .bar:nth-child(9)  { animation-delay: 0.00s; }
-    body.listening .bar {
-      opacity: 0.7;
-      background: var(--j-gold);
-      animation: wave-slow 1.4s ease-in-out infinite alternate;
+    /* ── Ring waveform canvas ── */
+    #orb-canvas {
+      position: absolute;
+      left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
     }
 
-    @keyframes wave      { from { height: 8px; }  to { height: 48px; } }
-    @keyframes wave-slow { from { height: 6px; }  to { height: 24px; } }
-
-    /* Core circle */
-    .core {
-      width: 160px;
-      height: 160px;
+    /* ── Status text overlay (sits in the dark void center of the ring) ── */
+    .orb-core {
+      width: 90px;
+      height: 90px;
       border-radius: 50%;
-      background: radial-gradient(circle at 40% 35%, #0a1e35, #040a14);
-      border: 2px solid var(--j-blue-d);
+      position: relative;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      position: relative;
-      box-shadow: 0 0 30px rgba(0,212,255,0.08), inset 0 0 20px rgba(0,212,255,0.04);
-      transition: box-shadow 0.4s, border-color 0.4s;
+      z-index: 10;
+      pointer-events: none;
+      /* Subtle dark well so text stays readable over the inner glow */
+      background: radial-gradient(circle, rgba(3,8,16,0.6) 40%, transparent 100%);
     }
-    body.speaking .core {
-      border-color: var(--j-blue);
-      box-shadow: 0 0 50px rgba(0,212,255,0.25), inset 0 0 30px rgba(0,212,255,0.08);
-    }
-    body.listening .core {
-      border-color: var(--j-gold);
-      box-shadow: 0 0 40px rgba(240,160,32,0.2), inset 0 0 20px rgba(240,160,32,0.06);
-    }
-    .core-label {
-      font-size: 0.6rem;
+
+    .orb-label {
+      font-size: 0.48rem;
       letter-spacing: 5px;
-      color: var(--j-blue-d);
-      margin-bottom: 2px;
+      color: rgba(0,212,255,0.45);
+      margin-bottom: 4px;
+      user-select: none;
     }
-    .core-status {
-      font-size: 0.75rem;
-      letter-spacing: 3px;
-      font-weight: 600;
+    .orb-status {
+      font-size: 0.68rem;
+      letter-spacing: 4px;
+      font-weight: 700;
       color: var(--j-blue);
       transition: color 0.3s;
+      user-select: none;
     }
-    body.speaking .core-status  { color: var(--j-blue); }
-    body.listening .core-status { color: var(--j-gold); }
+    body.listening .orb-status { color: var(--j-gold); }
 
-    /* ── Last response text ──────────────────── */
+    /* ── Last response ── */
     .last-response {
       max-width: 680px;
       width: 100%;
       text-align: center;
       color: #7dc8e8;
-      font-size: 0.95rem;
+      font-size: 0.9rem;
       line-height: 1.6;
-      min-height: 48px;
+      min-height: 44px;
       padding: 0 12px;
-      margin-top: 20px;
+      margin-top: 24px;
       font-style: italic;
-      opacity: 0.85;
+      opacity: 0.8;
       transition: opacity 0.4s;
     }
     .last-response.fresh { opacity: 1; color: #aadeee; }
 
-    /* ── Conversation feed ───────────────────── */
+    /* ── Telemetry bar below hero ── */
+    .hud-bar {
+      width: 100%;
+      max-width: 820px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-family: monospace;
+      font-size: 0.6rem;
+      letter-spacing: 2px;
+      color: rgba(0,212,255,0.28);
+      padding: 8px 20px 0;
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
+    }
+    .hud-bar::before, .hud-bar::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(0,212,255,0.2));
+    }
+    .hud-bar::after {
+      background: linear-gradient(270deg, transparent, rgba(0,212,255,0.2));
+    }
+    .hud-bar-item { color: rgba(0,212,255,0.4); white-space: nowrap; }
+    .hud-bar-item span { color: rgba(0,212,255,0.7); }
+
+    /* ── Conversation ── */
     .conv-section {
       max-width: 760px;
       width: 100%;
-      margin: 0 auto 32px;
+      margin: 12px auto 28px;
       padding: 0 20px;
+      position: relative;
+      z-index: 1;
     }
     .conv-section-label {
-      font-size: 0.65rem;
+      font-size: 0.62rem;
       letter-spacing: 4px;
       color: #334455;
       text-transform: uppercase;
       border-bottom: 1px solid var(--j-border);
       padding-bottom: 6px;
       margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
+    .conv-section-label::before {
+      content: '◈';
+      color: rgba(0,212,255,0.3);
+      font-size: 0.7rem;
+    }
+
     #conv-feed {
       display: flex;
       flex-direction: column;
@@ -226,143 +488,195 @@
       overflow-y: auto;
       padding-right: 4px;
     }
-    #conv-feed::-webkit-scrollbar { width: 4px; }
-    #conv-feed::-webkit-scrollbar-track { background: transparent; }
+    #conv-feed::-webkit-scrollbar { width: 3px; }
     #conv-feed::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 2px; }
 
-    .conv-row {
+    .conv-row { display: flex; gap: 10px; align-items: flex-start; }
+    .conv-row.user { flex-direction: row-reverse; }
+    .conv-avatar {
+      width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.55rem; font-weight: 700; letter-spacing: 0.5px;
+    }
+    .avatar-j { background: var(--j-blue-dd); border: 1px solid var(--j-blue-d); color: var(--j-blue); }
+    .avatar-u { background: #111f2a; border: 1px solid #224466; color: #6699aa; }
+    .conv-bubble {
+      max-width: 75%; padding: 7px 13px; border-radius: 10px;
+      font-size: 0.8rem; line-height: 1.55;
+    }
+    .bubble-j { background: #06101e; border: 1px solid #0e2a40; color: #8dcce8; border-bottom-left-radius: 3px; }
+    .bubble-u { background: #080e1c; border: 1px solid #152838; color: #99aabb; border-bottom-right-radius: 3px; }
+
+    /* ── Divider ── */
+    .divider {
+      width: 100%; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--j-border), transparent);
+      margin: 0 0 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ── Agents ── */
+    .agents-section { padding: 0 20px 40px; position: relative; z-index: 1; }
+    .section-label {
+      font-size: 0.62rem; letter-spacing: 4px; color: #334455;
+      text-transform: uppercase; border-bottom: 1px solid var(--j-border);
+      padding-bottom: 6px; margin-bottom: 18px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .section-label::before { content: '◈'; color: rgba(0,212,255,0.25); font-size: 0.68rem; }
+
+    .agents-grid { display: flex; flex-wrap: wrap; gap: 14px; }
+    .agent-card {
+      flex: 1 1 260px; background: var(--j-card);
+      border: 1px solid var(--j-border); border-radius: 6px;
+      padding: 14px 16px; transition: border-color 0.2s, box-shadow 0.2s;
+      position: relative; overflow: hidden;
+    }
+    .agent-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(0,212,255,0.15), transparent);
+    }
+    .agent-card:hover   { border-color: rgba(0,212,255,0.3); box-shadow: 0 0 12px rgba(0,212,255,0.07); }
+    .agent-card.running { border-color: rgba(240,160,32,0.4); box-shadow: 0 0 10px rgba(240,160,32,0.1); }
+    .agent-card.err     { border-color: var(--j-red); }
+    .agent-name  { color: var(--j-blue); font-weight: 600; font-size: 0.83rem; letter-spacing: 1px; }
+    .agent-desc  { font-size: 0.76rem; color: #4a6077; margin-top: 2px; }
+    .agent-sched { font-size: 0.68rem; color: #2d4055; font-family: monospace; margin-top: 4px; }
+    .last-run    { font-size: 0.66rem; color: #2d4055; margin-top: 4px; }
+    .preview-text {
+      font-size: 0.73rem; color: #556677; margin-top: 6px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+
+    .sbadge { font-size: 0.63rem; font-weight: 700; letter-spacing: 1px; padding: 2px 7px; border-radius: 10px; }
+    .s-idle    { background: #040e18; color: var(--j-blue);  border: 1px solid var(--j-blue-d); }
+    .s-running { background: #100a00; color: var(--j-gold);  border: 1px solid #5a3800; animation: blink 1.4s infinite; }
+    .s-error   { background: #100006; color: #ff4466;        border: 1px solid #661122; }
+    .s-unknown { background: #080e18; color: #334455;        border: 1px solid #0e1e2a; }
+    .s-on      { background: #041410; color: var(--j-green); border: 1px solid #003a28; font-size: 0.6rem; }
+    .s-off     { background: #0a0a0a; color: #334455;        border: 1px solid #141414; font-size: 0.6rem; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+    .btn-run {
+      background: transparent; border: 1px solid rgba(0,136,170,0.5);
+      color: var(--j-blue); font-size: 0.68rem; letter-spacing: 1px;
+      padding: 3px 10px; border-radius: 4px; cursor: pointer;
+      transition: background 0.2s, box-shadow 0.2s;
+    }
+    .btn-run:hover    { background: rgba(0,212,255,0.07); box-shadow: 0 0 6px rgba(0,212,255,0.2); color: #fff; }
+    .btn-run:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    #toast { font-size: 0.82rem; }
+    ::-webkit-scrollbar       { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 2px; }
+
+    /* ── Tool event timeline ── */
+    .timeline-section {
+      max-width: 760px;
+      width: 100%;
+      margin: 0 auto 28px;
+      padding: 0 20px;
+      position: relative;
+      z-index: 1;
+    }
+
+    #tool-timeline {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      max-height: 320px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    #tool-timeline::-webkit-scrollbar { width: 3px; }
+    #tool-timeline::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 2px; }
+
+    .tl-entry {
       display: flex;
       gap: 10px;
       align-items: flex-start;
     }
-    .conv-row.user    { flex-direction: row-reverse; }
-    .conv-avatar {
-      width: 28px;
-      height: 28px;
+    .tl-spine {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 14px;
+      flex-shrink: 0;
+      padding-top: 3px;
+    }
+    .tl-dot {
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
       flex-shrink: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.6rem;
-      font-weight: 700;
-      letter-spacing: 0.5px;
     }
-    .avatar-j { background: var(--j-blue-dd); border: 1px solid var(--j-blue-d); color: var(--j-blue); }
-    .avatar-u { background: #111f2a; border: 1px solid #224466; color: #6699aa; }
-
-    .conv-bubble {
-      max-width: 75%;
-      padding: 8px 14px;
-      border-radius: 12px;
-      font-size: 0.82rem;
-      line-height: 1.55;
+    .tl-dot.done    { background: var(--j-green); box-shadow: 0 0 5px rgba(0,170,136,0.6); }
+    .tl-dot.calling { background: var(--j-gold);  box-shadow: 0 0 5px rgba(240,160,32,0.6); animation: blink 1s infinite; }
+    .tl-dot.error   { background: var(--j-red);   box-shadow: 0 0 5px rgba(204,51,68,0.6); }
+    .tl-line {
+      width: 1px;
+      flex: 1;
+      min-height: 14px;
+      background: var(--j-border);
     }
-    .bubble-j {
-      background: #0a1828;
-      border: 1px solid #1a3a5a;
-      color: #8dcce8;
-      border-bottom-left-radius: 3px;
+    .tl-content {
+      flex: 1;
+      padding-bottom: 10px;
     }
-    .bubble-u {
-      background: #0c1c28;
-      border: 1px solid #1e3a50;
-      color: #99aabb;
-      border-bottom-right-radius: 3px;
-    }
-
-    /* ── Divider ─────────────────────────────── */
-    .divider {
-      width: 100%;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, var(--j-border), transparent);
-      margin: 4px 0 28px;
-    }
-
-    /* ── Agent section ───────────────────────── */
-    .agents-section {
-      padding: 0 20px 40px;
-    }
-    .section-label {
-      font-size: 0.65rem;
-      letter-spacing: 4px;
-      color: #334455;
-      text-transform: uppercase;
-      border-bottom: 1px solid var(--j-border);
-      padding-bottom: 6px;
-      margin-bottom: 18px;
-    }
-    .agents-grid {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 14px;
-    }
-    .agent-card {
-      flex: 1 1 260px;
-      background: var(--j-card);
-      border: 1px solid var(--j-border);
-      border-radius: 8px;
-      padding: 14px 16px;
-      transition: border-color 0.2s, box-shadow 0.2s;
-    }
-    .agent-card:hover      { border-color: var(--j-blue); box-shadow: 0 0 12px rgba(0,212,255,0.1); }
-    .agent-card.running    { border-color: var(--j-gold); box-shadow: 0 0 10px rgba(240,160,32,0.12); }
-    .agent-card.err        { border-color: var(--j-red); }
-    .agent-name {
-      color: var(--j-blue);
+    .tl-tool {
+      font-size: 0.73rem;
+      font-family: monospace;
+      letter-spacing: 1px;
       font-weight: 600;
-      font-size: 0.85rem;
-      letter-spacing: 1px;
     }
-    .agent-desc  { font-size: 0.78rem; color: #556677; margin-top: 2px; }
-    .agent-sched { font-size: 0.7rem; color: #334455; font-family: monospace; margin-top: 4px; }
-    .last-run    { font-size: 0.68rem; color: #334455; margin-top: 4px; }
-    .preview-text {
-      font-size: 0.75rem; color: #667788; margin-top: 6px;
-      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    .tl-tool.done    { color: var(--j-green); }
+    .tl-tool.calling { color: var(--j-gold); }
+    .tl-args {
+      font-size: 0.63rem;
+      font-family: monospace;
+      color: rgba(0,212,255,0.35);
+      margin-top: 2px;
+      word-break: break-all;
     }
-
-    /* Status badges */
-    .sbadge {
-      font-size: 0.65rem; font-weight: 700; letter-spacing: 1px;
-      padding: 2px 7px; border-radius: 10px;
+    .tl-result {
+      font-size: 0.66rem;
+      color: #4a6c78;
+      margin-top: 3px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
-    .s-idle    { background: #071820; color: var(--j-blue);  border: 1px solid var(--j-blue-d); }
-    .s-running { background: #1e1200; color: var(--j-gold);  border: 1px solid #7a5000; animation: pulse 1.4s infinite; }
-    .s-error   { background: #1e0008; color: #ff4466;        border: 1px solid #882233; }
-    .s-unknown { background: #101820; color: #334455;        border: 1px solid #1a2a38; }
-    .s-on      { background: #071e18; color: var(--j-green); border: 1px solid #005544; font-size: 0.62rem; }
-    .s-off     { background: #111111; color: #334455;        border: 1px solid #1a1a1a; font-size: 0.62rem; }
-
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
-
-    /* Run button */
-    .btn-run {
-      background: transparent;
-      border: 1px solid var(--j-blue-d);
-      color: var(--j-blue);
-      font-size: 0.7rem;
-      letter-spacing: 1px;
-      padding: 3px 10px;
-      border-radius: 4px;
-      cursor: pointer;
-      transition: background 0.2s, box-shadow 0.2s;
+    .tl-ts {
+      font-size: 0.58rem;
+      color: rgba(0,212,255,0.2);
+      font-family: monospace;
+      margin-top: 2px;
     }
-    .btn-run:hover    { background: rgba(0,212,255,0.08); box-shadow: 0 0 6px rgba(0,212,255,0.25); color: #fff; }
-    .btn-run:disabled { opacity: 0.35; cursor: not-allowed; }
-
-    /* Toast */
-    #toast { font-size: 0.82rem; }
-
-    /* Scrollbar global */
-    ::-webkit-scrollbar       { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 3px; }
   </style>
 </head>
 <body>
 
-<!-- ── Navbar ───────────────────────────────── -->
+<!-- Boot overlay -->
+<div id="boot-overlay">
+  <div id="boot-scan"></div>
+  <div id="boot-content">
+    <div id="boot-logo">J.A.R.V.I.S</div>
+    <div id="boot-sub">JUST A RATHER VERY INTELLIGENT SYSTEM</div>
+    <div id="boot-lines"></div>
+    <div id="boot-bar-wrap"><div id="boot-bar"></div></div>
+    <div id="boot-status">INITIALIZING...</div>
+  </div>
+</div>
+
+<!-- Page-wide scan line -->
+<div class="scan-line"></div>
+
+<!-- ── Navbar ── -->
 <nav class="navbar navbar-expand-lg">
   <span class="brand-name">J.A.R.V.I.S</span>
   <span class="brand-sub ms-3">CONTROL INTERFACE</span>
@@ -372,46 +686,177 @@
   </div>
 </nav>
 
-<!-- ── Hero: Voice Visualizer ──────────────── -->
+<!-- ══════════════════════════════════════════
+     HERO
+══════════════════════════════════════════ -->
 <div class="hero">
-  <div class="rings">
-    <!-- static rings -->
-    <div class="ring"></div>
-    <div class="ring"></div>
-    <div class="ring"></div>
-    <!-- animated pulse rings -->
-    <div class="pulse-ring"></div>
-    <div class="pulse-ring"></div>
-    <div class="pulse-ring"></div>
-    <!-- core -->
-    <div class="core">
-      <div class="waveform">
-        <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-        <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-        <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-      </div>
-      <div class="core-label">J.A.R.V.I.S</div>
-      <div class="core-status" id="core-status">READY</div>
-    </div>
-  </div>
+  <!-- HUD corner brackets -->
+  <div class="hud-corner tl"></div>
+  <div class="hud-corner tr"></div>
+  <div class="hud-corner bl"></div>
+  <div class="hud-corner br"></div>
 
-  <!-- Last Jarvis response shown prominently below the circle -->
+  <div class="hero-row">
+
+    <!-- Left data panel -->
+    <div class="side-panel left" id="panel-left">
+      <div class="sp-label">SYS STATUS</div>
+      <div class="sp-row"><span class="sp-key">STATE</span><span class="sp-val" id="sp-state">READY</span></div>
+      <div class="sp-row"><span class="sp-key">UPTIME</span><span class="sp-val" id="sp-uptime">00:00:00</span></div>
+      <div class="sp-row"><span class="sp-key">AGENTS</span><span class="sp-val" id="sp-agents">—</span></div>
+      <div class="sp-row"><span class="sp-key">MEM</span>
+        <span class="sp-val">
+          <span class="sp-bar"><span class="sp-bar-fill" id="sp-mem-bar" style="width:42%"></span></span>
+        </span>
+      </div>
+      <br>
+      <div class="sp-label">NETWORK</div>
+      <div class="sp-row"><span class="sp-key">MQTT</span><span class="sp-val" id="sp-mqtt" style="color:var(--j-green)">ONLINE</span></div>
+      <div class="sp-row"><span class="sp-key">REDIS</span><span class="sp-val" id="sp-redis" style="color:var(--j-green)">ONLINE</span></div>
+      <div class="sp-row"><span class="sp-key">API</span><span class="sp-val" style="color:var(--j-green)">ACTIVE</span></div>
+    </div>
+
+    <!-- Orb scene -->
+    <div class="orb-scene">
+
+      <!-- Halo pulse rings -->
+      <div class="halo"></div>
+      <div class="halo"></div>
+      <div class="halo"></div>
+
+      <!-- SVG arc reticles -->
+      <svg class="arc-svg" viewBox="-150 -150 300 300" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="2.5" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <filter id="glow-sm" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="1.5" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+
+        <!-- Outer arc: broken, rotating CW slowly -->
+        <g class="arc-outer">
+          <circle cx="0" cy="0" r="138"
+            fill="none" stroke="rgba(0,212,255,0.22)" stroke-width="1"
+            stroke-dasharray="180 20 60 20 40 20 80 20"/>
+          <!-- bright arc segment with glow -->
+          <path d="M 0,-138 A 138,138 0 0,1 138,0"
+            fill="none" stroke="rgba(0,212,255,0.55)" stroke-width="1.5"
+            filter="url(#glow-sm)"/>
+          <!-- orbiting dot -->
+          <circle cx="138" cy="0" r="3.5" fill="var(--j-blue)" filter="url(#glow)"/>
+        </g>
+
+        <!-- Mid arc: dashes, rotating CCW -->
+        <g class="arc-mid">
+          <circle cx="0" cy="0" r="118"
+            fill="none" stroke="rgba(0,212,255,0.18)" stroke-width="1"
+            stroke-dasharray="12 10 40 10 8 10"/>
+          <!-- second bright spot on mid -->
+          <circle cx="0" cy="-118" r="2.5" fill="rgba(0,212,255,0.7)" filter="url(#glow-sm)"/>
+        </g>
+
+        <!-- Inner ring: tick marks, fast CW -->
+        <g class="arc-inner">
+          <circle cx="0" cy="0" r="98"
+            fill="none" stroke="rgba(0,212,255,0.12)" stroke-width="0.8"
+            stroke-dasharray="3 22"/>
+          <circle cx="98" cy="0" r="1.8" fill="rgba(0,212,255,0.5)"/>
+        </g>
+
+        <!-- Scan sweep line (shows on listening/thinking) -->
+        <g class="arc-sweep">
+          <g class="arc-sweep-line">
+            <line x1="0" y1="0" x2="0" y2="-130"
+              stroke="url(#sweep-grad)" stroke-width="1.5" opacity="0.6"/>
+            <circle cx="0" cy="-130" r="2" fill="rgba(0,212,255,0.8)"/>
+          </line>
+          <!-- gradient for sweep arm -->
+          <defs>
+            <linearGradient id="sweep-grad" x1="0" y1="1" x2="0" y2="0" gradientUnits="objectBoundingBox">
+              <stop offset="0%"   stop-color="rgba(0,212,255,0)"/>
+              <stop offset="100%" stop-color="rgba(0,212,255,0.7)"/>
+            </linearGradient>
+          </defs>
+        </g>
+
+        <!-- Cardinal tick marks (static, at N/E/S/W) -->
+        <g stroke="rgba(0,212,255,0.3)" stroke-width="1">
+          <line x1="0"    y1="-148" x2="0"    y2="-138"/>
+          <line x1="0"    y1="138"  x2="0"    y2="148"/>
+          <line x1="-148" y1="0"    x2="-138" y2="0"/>
+          <line x1="138"  y1="0"    x2="148"  y2="0"/>
+        </g>
+        <!-- Diagonal ticks at 45° -->
+        <g stroke="rgba(0,212,255,0.15)" stroke-width="0.8">
+          <line x1="95"  y1="-95"  x2="100" y2="-100"/>
+          <line x1="-95" y1="-95"  x2="-100" y2="-100"/>
+          <line x1="95"  y1="95"   x2="100" y2="100"/>
+          <line x1="-95" y1="95"   x2="-100" y2="100"/>
+        </g>
+      </svg>
+
+      <!-- Ring waveform canvas -->
+      <canvas id="orb-canvas" width="290" height="290"></canvas>
+
+      <!-- Core sphere -->
+      <div class="orb-core" id="orb-core">
+        <div class="orb-label">J.A.R.V.I.S</div>
+        <div class="orb-status" id="core-status">READY</div>
+      </div>
+    </div>
+
+    <!-- Right data panel -->
+    <div class="side-panel right" id="panel-right">
+      <div class="sp-label">VOICE PIPELINE</div>
+      <div class="sp-row"><span class="sp-val" id="sp-stt">STT</span><span class="sp-key">WHISPER</span></div>
+      <div class="sp-row"><span class="sp-val" id="sp-tts">TTS</span><span class="sp-key">EDGE-TTS</span></div>
+      <div class="sp-row"><span class="sp-val" id="sp-llm">LLM</span><span class="sp-key">CLAUDE</span></div>
+      <br>
+      <div class="sp-label">SURFACES</div>
+      <div class="sp-row"><span class="sp-val" id="sp-mac">MAC</span><span class="sp-key">ACTIVE</span></div>
+      <div class="sp-row"><span class="sp-val" id="sp-phone">PHONE</span><span class="sp-key">STANDBY</span></div>
+      <br>
+      <div class="sp-label">LAST QUERY</div>
+      <div id="sp-last-q" style="color:rgba(0,212,255,0.4);font-size:0.58rem;line-height:1.5;word-break:break-word;text-align:right">—</div>
+    </div>
+
+  </div><!-- /hero-row -->
+
   <div class="last-response" id="last-response">
-    Say <strong>"Hey Jarvis"</strong> to begin.
+    Say <strong style="color:var(--j-blue)">"Hey Jarvis"</strong> to begin.
   </div>
 </div>
 
-<!-- ── Conversation History ─────────────────── -->
+<!-- ── HUD telemetry bar ── -->
+<div class="hud-bar">
+  <span class="hud-bar-item">CORE <span id="hb-state">READY</span></span>
+  <span class="hud-bar-item">MSG <span id="hb-msgs">0</span></span>
+  <span class="hud-bar-item">T+ <span id="hb-up">00:00</span></span>
+</div>
+
+<!-- ── Conversation ── -->
 <div class="conv-section">
-  <div class="conv-section-label">Conversation</div>
+  <div class="conv-section-label">Conversation Feed</div>
   <div id="conv-feed">
-    <div style="font-size:0.8rem;color:#334455">No conversation yet…</div>
+    <div style="font-size:0.78rem;color:#2d4055">No conversation yet…</div>
+  </div>
+</div>
+
+<!-- ── Tool Event Timeline ── -->
+<div class="timeline-section">
+  <div class="conv-section-label">Tool Events</div>
+  <div id="tool-timeline">
+    <div style="font-size:0.78rem;color:#2d4055">No tool events yet…</div>
   </div>
 </div>
 
 <div class="divider"></div>
 
-<!-- ── Agents ────────────────────────────────── -->
+<!-- ── Agents ── -->
 <div class="agents-section">
   <div class="section-label">Background Agents</div>
   <div class="agents-grid" id="agents-grid">
@@ -439,32 +884,24 @@
           </button>
         </div>
       </div>
-      {% if agent.schedule %}
-      <div class="agent-sched mt-2">⏱ {{ agent.schedule }}</div>
-      {% endif %}
-      {% if agent.last_run %}
-      <div class="last-run">Last run: {{ agent.last_run }}</div>
-      {% endif %}
-      {% if agent.last_error %}
-      <div class="mt-1 small" style="color:#ff4466;font-size:0.72rem">⚠ {{ agent.last_error }}</div>
-      {% endif %}
-      {% if agent.latest_report_preview %}
-      <div class="preview-text">{{ agent.latest_report_preview }}…</div>
-      {% endif %}
+      {% if agent.schedule %}<div class="agent-sched mt-2">⏱ {{ agent.schedule }}</div>{% endif %}
+      {% if agent.last_run %}<div class="last-run">Last run: {{ agent.last_run }}</div>{% endif %}
+      {% if agent.last_error %}<div class="mt-1 small" style="color:#cc3344;font-size:0.7rem">⚠ {{ agent.last_error }}</div>{% endif %}
+      {% if agent.latest_report_preview %}<div class="preview-text">{{ agent.latest_report_preview }}…</div>{% endif %}
     </div>
     {% else %}
-    <div style="color:#334455;font-size:0.82rem">No agents registered yet. Start the agent_runner service.</div>
+    <div style="color:#2d4055;font-size:0.8rem">No agents registered yet.</div>
     {% endfor %}
   </div>
 </div>
 
-<!-- ── Dynamic Widgets ───────────────────────── -->
+<!-- ── Dynamic Widgets ── -->
 <div class="agents-section" id="widget-section" style="display:none">
   <div class="section-label">Live Widgets</div>
   <div id="widget-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px"></div>
 </div>
 
-<!-- ── Toast ─────────────────────────────────── -->
+<!-- ── Toast ── -->
 <div class="position-fixed bottom-0 end-0 p-3" style="z-index:9999">
   <div id="toast" class="toast align-items-center text-bg-dark border-0" role="alert" aria-live="assertive">
     <div class="d-flex">
@@ -476,102 +913,396 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-// ── Utilities ──────────────────────────────────────────────
-function esc(s) {
-  return String(s||'')
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
+// ══════════════════════════════════════════════════════════
+//  BOOT SEQUENCE
+// ══════════════════════════════════════════════════════════
+(function () {
+  const lines = [
+    { t: 1000, text: 'LOADING AI CORE MODULE...',       ok: true  },
+    { t: 1350, text: 'INITIALIZING NEURAL NETWORKS...',  ok: true  },
+    { t: 1650, text: 'CONNECTING MQTT MESSAGE BUS...',   ok: true  },
+    { t: 1900, text: 'ATTACHING VOICE PIPELINE...',      ok: true  },
+    { t: 2150, text: 'SEMANTIC MEMORY ONLINE...',        ok: true  },
+    { t: 2400, text: 'ALL SYSTEMS NOMINAL',              ok: true  },
+  ];
+  const container = document.getElementById('boot-lines');
+  const statusEl  = document.getElementById('boot-status');
+  const statuses  = ['INITIALIZING...', 'LOADING MODULES...', 'CALIBRATING...', 'ONLINE'];
+  let si = 0;
+  const stInt = setInterval(() => {
+    si++;
+    if (si < statuses.length) statusEl.textContent = statuses[si];
+    else clearInterval(stInt);
+  }, 900);
 
+  lines.forEach(({ t, text, ok }) => {
+    setTimeout(() => {
+      const el = document.createElement('span');
+      el.className = 'boot-line' + (ok ? ' ok' : '');
+      el.textContent = '› ' + text;
+      el.style.animation = 'boot-appear 0.3s ease-out both';
+      container.appendChild(el);
+    }, t);
+  });
+})();
+
+// ══════════════════════════════════════════════════════════
+//  RING WAVEFORM — voice-reactive torus particle field
+// ══════════════════════════════════════════════════════════
+(function () {
+  const canvas = document.getElementById('orb-canvas');
+  const ctx    = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cx = W / 2, cy = H / 2;
+
+  // Ring geometry
+  const BASE_R = 98;   // center radius of the ring
+  const TUBE_R = 15;   // half-width of the ring band (radial)
+  const TUBE_H = 9;    // half-height of ring tube (for 3D parallax)
+  const N_PATH = 320;  // waveform stroke resolution
+
+  let amplitude = 0.04, targetAmplitude = 0.04;
+  let phaseT    = 0;
+  let _state    = 'ready';
+
+  window._setOrbState = function (s) {
+    _state = s;
+    targetAmplitude = s === 'speaking'  ? 1.0
+                    : s === 'listening' ? 0.55
+                    : s === 'thinking'  ? 0.3
+                    : 0.04;
+  };
+
+  // — Particles scattered throughout the ring tube —
+  const N_PARTICLES = 950;
+  const parts = Array.from({ length: N_PARTICLES }, () => {
+    const sparkle = Math.random() < 0.07;
+    return {
+      a:       Math.random() * Math.PI * 2,  // angle around ring
+      u:       Math.random() * 2 - 1,        // radial offset in tube [-1..1]
+      v:       Math.random() * 2 - 1,        // height offset in tube [-1..1]
+      spd:     (0.25 + Math.random() * 0.55) * (Math.random() < 0.5 ? 1 : -1),
+      sz:      sparkle ? 1.6 + Math.random() * 1.1 : 0.55 + Math.random() * 0.85,
+      base:    sparkle ? 0.55 + Math.random() * 0.4 : 0.18 + Math.random() * 0.38,
+      sparkle,
+    };
+  });
+
+  // — Multi-harmonic voice waveform —
+  function wave(angle, t) {
+    return (
+      Math.sin(angle * 5  + t * 1.9)  * 0.38 +
+      Math.sin(angle * 9  + t * 2.7)  * 0.22 +
+      Math.sin(angle * 13 + t * 1.15) * 0.14 +
+      Math.sin(angle * 3  + t * 0.65) * 0.18 +
+      Math.sin(angle * 19 + t * 3.4)  * 0.08
+    );
+  }
+
+  // ── Speech envelope: makes the ring pulse like a real voice waveform ──
+  // Sum of incommensurate frequencies creates an irregular syllabic pattern.
+  function _speechEnvelope(t) {
+    const raw = (
+      Math.abs(Math.sin(t * 3.7))  * 0.38 +
+      Math.abs(Math.sin(t * 5.1))  * 0.28 +
+      Math.abs(Math.sin(t * 2.3))  * 0.20 +
+      Math.abs(Math.sin(t * 7.9))  * 0.14
+    ); // 0..1 range (approx)
+    return Math.min(raw, 1.0);
+  }
+
+  let lastTime = 0;
+  function draw(ts) {
+    const dt = Math.min((ts - lastTime) / 16.67, 3);
+    lastTime = ts;
+
+    amplitude += (targetAmplitude - amplitude) * 0.055 * dt;
+    phaseT    += (0.018 + amplitude * 0.052) * dt;
+
+    ctx.clearRect(0, 0, W, H);
+
+    const col = _state === 'listening' ? [240, 160, 32] : [0, 212, 255];
+    const [r, g, b] = col;
+
+    // When speaking, modulate amplitude with speech-like syllabic envelope
+    let envAmplitude = amplitude;
+    if (_state === 'speaking' && amplitude > 0.2) {
+      const t = ts * 0.001;
+      const env = _speechEnvelope(t);
+      // Blend: keep a base floor (0.25) so ring never goes silent, peak drives full amplitude
+      envAmplitude = amplitude * (0.25 + 0.75 * env);
+    }
+
+    // Max waveform displacement scales with (envelope-modulated) amplitude
+    const maxD = TUBE_R * 0.45 + envAmplitude * TUBE_R * 2.6;
+
+    // — Outer ambient bloom —
+    const bloomR = BASE_R + TUBE_R + maxD;
+    const bloom  = ctx.createRadialGradient(cx, cy, BASE_R * 0.35, cx, cy, bloomR * 1.4);
+    bloom.addColorStop(0,    'transparent');
+    bloom.addColorStop(0.45, `rgba(${r},${g},${b},${0.012 + amplitude * 0.028})`);
+    bloom.addColorStop(0.78, `rgba(${r},${g},${b},${0.038 + amplitude * 0.07})`);
+    bloom.addColorStop(1,    'transparent');
+    ctx.fillStyle = bloom;
+    ctx.beginPath();
+    ctx.arc(cx, cy, bloomR * 1.45, 0, Math.PI * 2);
+    ctx.fill();
+
+    // — Dark center void —
+    const voidR = Math.max(BASE_R - TUBE_R - maxD * 0.25 - 4, 8);
+    const void_ = ctx.createRadialGradient(cx, cy, 0, cx, cy, voidR + 8);
+    void_.addColorStop(0,    'rgba(3,8,16,1)');
+    void_.addColorStop(0.82, 'rgba(3,8,16,0.97)');
+    void_.addColorStop(1,    'rgba(3,8,16,0)');
+    ctx.fillStyle = void_;
+    ctx.beginPath();
+    ctx.arc(cx, cy, voidR + 8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // — Ring stroke layers (outer edge + inner edge, 3 depth passes) —
+    for (let layer = 2; layer >= 0; layer--) {
+      const pOff = layer * 0.65;
+      const rOff = layer * 3.5;
+      const alp  = (0.58 - layer * 0.14) * (0.22 + amplitude * 0.78);
+
+      // Outer waveform path
+      ctx.beginPath();
+      for (let i = 0; i <= N_PATH; i++) {
+        const ang = (i / N_PATH) * Math.PI * 2;
+        const wv  = wave(ang, phaseT + pOff) * maxD;
+        const rad = BASE_R + TUBE_R * 0.65 + rOff + wv;
+        const x   = cx + rad * Math.cos(ang);
+        const y   = cy + rad * Math.sin(ang) * 0.87;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = `rgba(${r},${g},${b},${alp})`;
+      ctx.lineWidth   = 1.2 + envAmplitude * 0.9;
+      ctx.stroke();
+
+      // Inner waveform path (opposite phase, lower amplitude)
+      ctx.beginPath();
+      for (let i = 0; i <= N_PATH; i++) {
+        const ang = (i / N_PATH) * Math.PI * 2;
+        const wv  = wave(ang, phaseT + pOff + 1.1) * maxD * 0.5;
+        const rad = BASE_R - TUBE_R * 0.45 + rOff * 0.4 + wv;
+        if (rad < 4) continue;
+        const x   = cx + rad * Math.cos(ang);
+        const y   = cy + rad * Math.sin(ang) * 0.87;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = `rgba(${r},${g},${b},${alp * 0.42})`;
+      ctx.lineWidth   = 0.75;
+      ctx.stroke();
+    }
+
+    // — Particle field —
+    for (const p of parts) {
+      // Drift particles slowly around the ring
+      p.a += p.spd * 0.001 * (1 + amplitude * 2.8) * dt;
+
+      const wv  = wave(p.a, phaseT) * maxD;
+      const rad = BASE_R + p.u * TUBE_R + wv;
+      if (rad < 0) continue;
+
+      // Project torus point: slight y-squash for 3D feel
+      const px  = cx + rad * Math.cos(p.a);
+      const py  = cy + (rad * Math.sin(p.a) + p.v * TUBE_H) * 0.87;
+
+      // Brightness: higher at waveform peaks + sparkle boost
+      const dispFactor = Math.min(Math.abs(wv) / (maxD + 1), 1);
+      const baseBright = p.base * (0.3 + envAmplitude * 0.7);
+      const finalA     = Math.min(baseBright + dispFactor * 0.35 + (p.sparkle ? 0.1 : 0), 0.92);
+
+      ctx.beginPath();
+      ctx.arc(px, py, p.sz * (0.75 + envAmplitude * 0.45), 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${r},${g},${b},${finalA})`;
+      ctx.fill();
+    }
+
+    // — Subtle inner-ring glow (center-facing ambient) —
+    const igR  = BASE_R - TUBE_R * 0.2;
+    const iglow = ctx.createRadialGradient(cx, cy, igR * 0.55, cx, cy, igR);
+    iglow.addColorStop(0, 'transparent');
+    iglow.addColorStop(1, `rgba(${r},${g},${b},${0.04 + amplitude * 0.08})`);
+    ctx.fillStyle = iglow;
+    ctx.beginPath();
+    ctx.arc(cx, cy, igR, 0, Math.PI * 2);
+    ctx.fill();
+
+    requestAnimationFrame(draw);
+  }
+
+  requestAnimationFrame(draw);
+})();
+
+// ══════════════════════════════════════════════════════════
+//  UTILITIES
+// ══════════════════════════════════════════════════════════
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 function showToast(msg) {
   document.getElementById('toast-msg').textContent = msg;
   new bootstrap.Toast(document.getElementById('toast'), { delay: 3500 }).show();
 }
 
 // Live clock
+const _startTime = Date.now();
 (function tickClock() {
+  const now = new Date();
   document.getElementById('live-clock').textContent =
-    new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  // HUD bar uptime
+  const elapsed = Math.floor((Date.now() - _startTime) / 1000);
+  const h = String(Math.floor(elapsed / 3600)).padStart(2,'0');
+  const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2,'0');
+  const s = String(elapsed % 60).padStart(2,'0');
+  const upStr = `${h}:${m}:${s}`;
+  document.getElementById('hb-up').textContent = upStr;
+  document.getElementById('sp-uptime').textContent = upStr;
   setTimeout(tickClock, 1000);
 })();
 
-// ── State ──────────────────────────────────────────────────
-let _convCount   = 0;
+// Simulate memory bar drift
+setInterval(() => {
+  const pct = 35 + Math.sin(Date.now() / 8000) * 10 + Math.random() * 5;
+  document.getElementById('sp-mem-bar').style.width = pct.toFixed(0) + '%';
+}, 3000);
+
+// ══════════════════════════════════════════════════════════
+//  STATE MACHINE
+// ══════════════════════════════════════════════════════════
+let _convCount    = 0;
 let _currentState = 'ready';
 
-// ── Voice animation state machine ─────────────────────────
-// States: 'ready' | 'listening' | 'thinking' | 'speaking'
-function setState(state) {
-  if (state === _currentState) return;
+const STATE_COLORS = {
+  speaking:  'var(--j-blue)',
+  listening: 'var(--j-gold)',
+  thinking:  'rgba(0,180,255,0.8)',
+  ready:     'rgba(0,212,255,0.5)',
+};
+
+function setState(state, thinkingWord) {
   _currentState = state;
-  document.body.classList.remove('speaking', 'listening', 'thinking');
-  const status = document.getElementById('core-status');
-  if (state === 'speaking') {
-    document.body.classList.add('speaking');
-    status.textContent = 'SPEAKING';
-  } else if (state === 'listening') {
-    document.body.classList.add('listening');
-    status.textContent = 'LISTENING';
-  } else if (state === 'thinking') {
-    document.body.classList.add('listening'); // reuse gold animation for thinking
-    status.textContent = 'THINKING';
-  } else {
-    status.textContent = 'READY';
+  document.body.classList.remove('speaking','listening','thinking');
+  const statusEl = document.getElementById('core-status');
+  const spState  = document.getElementById('sp-state');
+  const hbState  = document.getElementById('hb-state');
+
+  if (state === 'speaking')       document.body.classList.add('speaking');
+  else if (state === 'listening') document.body.classList.add('listening');
+  else if (state === 'thinking')  document.body.classList.add('thinking');
+
+  // Show rotating thinking word instead of static "THINKING"
+  const label = (state === 'thinking' && thinkingWord)
+    ? thinkingWord.toUpperCase()
+    : state.toUpperCase();
+
+  statusEl.textContent = label;
+  statusEl.style.color = STATE_COLORS[state] || 'var(--j-blue)';
+  if (spState) spState.textContent = label;
+  if (hbState) hbState.textContent = state.toUpperCase();
+  window._setOrbState(state);
+}
+
+// ══════════════════════════════════════════════════════════
+//  REAL-TIME SSE STREAM  (conv + tools + voice state)
+// ══════════════════════════════════════════════════════════
+function renderConversation(msgs) {
+  if (msgs.length === _convCount) return;
+  _convCount = msgs.length;
+
+  document.getElementById('hb-msgs').textContent = msgs.length;
+  const feed = document.getElementById('conv-feed');
+  const lastResponse = document.getElementById('last-response');
+
+  if (msgs.length === 0) {
+    feed.innerHTML = '<div style="font-size:0.78rem;color:#2d4055">No conversation yet…</div>';
+    return;
+  }
+  const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 100;
+  feed.innerHTML = msgs.map(m => {
+    const isJ = m.role === 'assistant';
+    return `<div class="conv-row ${isJ ? '' : 'user'}">
+      <div class="conv-avatar ${isJ ? 'avatar-j' : 'avatar-u'}">${isJ ? 'AI' : 'YOU'}</div>
+      <div class="conv-bubble ${isJ ? 'bubble-j' : 'bubble-u'}">${esc(m.content)}</div>
+    </div>`;
+  }).join('');
+  if (atBottom) feed.scrollTop = feed.scrollHeight;
+
+  const last = msgs[msgs.length - 1];
+  if (last.role === 'assistant') {
+    lastResponse.textContent = last.content;
+    lastResponse.classList.add('fresh');
+    setTimeout(() => lastResponse.classList.remove('fresh'), 8000);
+  }
+  const lastUser = [...msgs].reverse().find(m => m.role === 'user');
+  if (lastUser) {
+    const el = document.getElementById('sp-last-q');
+    if (el) el.textContent = lastUser.content.slice(0, 60) + (lastUser.content.length > 60 ? '…' : '');
   }
 }
 
-// ── Poll real-time voice state from Redis (1s interval) ───
+function renderToolEvents(events) {
+  const tl = document.getElementById('tool-timeline');
+  if (!events || events.length === 0) {
+    tl.innerHTML = '<div style="font-size:0.78rem;color:#2d4055">No tool events yet…</div>';
+    return;
+  }
+  tl.innerHTML = events.map((e, idx) => {
+    const isLast   = idx === events.length - 1;
+    const dotClass = e.status === 'done' ? 'done' : e.status === 'calling' ? 'calling' : 'error';
+    const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
+    return `<div class="tl-entry">
+      <div class="tl-spine">
+        <div class="tl-dot ${dotClass}"></div>
+        ${!isLast ? '<div class="tl-line"></div>' : ''}
+      </div>
+      <div class="tl-content">
+        <div class="tl-tool ${dotClass}">${esc(e.tool)}</div>
+        ${e.args_preview ? `<div class="tl-args">${esc(e.args_preview)}</div>` : ''}
+        ${e.result_preview && e.status === 'done' ? `<div class="tl-result">${esc(e.result_preview)}</div>` : ''}
+        <div class="tl-ts">${ts}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// SSE connection with polling fallback
+function connectSSE() {
+  const evtSource = new EventSource('/api/stream');
+  evtSource.onmessage = function(e) {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.messages)     renderConversation(data.messages);
+      if (data.tool_events)  renderToolEvents(data.tool_events);
+      if (data.voice_state)  setState(data.voice_state, data.thinking_word);
+    } catch(err) { console.warn('SSE parse error', err); }
+  };
+  evtSource.onerror = function() {
+    console.warn('SSE disconnected, reconnecting in 5s');
+    evtSource.close();
+    setTimeout(connectSSE, 5000);
+  };
+}
+
+// Fallback polling for agents and widgets (SSE handles conv+tools+voice)
 async function refreshVoiceState() {
   try {
     const resp = await fetch('/api/voice-state?room=office');
     const data = await resp.json();
-    setState(data.state || 'ready');
-  } catch(e) { /* ignore */ }
+    setState(data.state || 'ready', data.thinking_word);
+  } catch(e) {}
 }
 
-// ── Conversation feed ──────────────────────────────────────
-async function refreshConversation() {
-  try {
-    const resp = await fetch('/api/conversation?room=office&limit=30');
-    const data = await resp.json();
-    const msgs = data.messages || [];
-
-    if (msgs.length === _convCount) return;
-    _convCount = msgs.length;
-
-    const feed = document.getElementById('conv-feed');
-    const lastResponse = document.getElementById('last-response');
-
-    if (msgs.length === 0) {
-      feed.innerHTML = '<div style="font-size:0.8rem;color:#334455">No conversation yet…</div>';
-      return;
-    }
-
-    const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 100;
-    feed.innerHTML = msgs.map(m => {
-      const isJ = m.role === 'assistant';
-      return `<div class="conv-row ${isJ ? '' : 'user'}">
-        <div class="conv-avatar ${isJ ? 'avatar-j' : 'avatar-u'}">${isJ ? 'AI' : 'YOU'}</div>
-        <div class="conv-bubble ${isJ ? 'bubble-j' : 'bubble-u'}">${esc(m.content)}</div>
-      </div>`;
-    }).join('');
-    if (atBottom) feed.scrollTop = feed.scrollHeight;
-
-    // Update hero last Jarvis response
-    const last = msgs[msgs.length - 1];
-    if (last.role === 'assistant') {
-      lastResponse.textContent = last.content;
-      lastResponse.classList.add('fresh');
-    }
-
-  } catch(e) { console.warn('conv refresh failed', e); }
-}
-
-// ── Agent status refresh ───────────────────────────────────
 async function refreshAgents() {
   try {
     const resp = await fetch('/api/agents');
     const agents = await resp.json();
+    const running = agents.filter(a => a.status === 'running').length;
+    document.getElementById('sp-agents').textContent = agents.length + (running ? ` (${running} ▶)` : '');
     for (const a of agents) {
       const badge = document.getElementById('status-' + a.name);
       const btn   = document.getElementById('btn-'    + a.name);
@@ -585,7 +1316,6 @@ async function refreshAgents() {
   } catch(e) { console.warn('agents refresh failed', e); }
 }
 
-// ── Trigger agent ──────────────────────────────────────────
 async function triggerAgent(name) {
   const btn = document.getElementById('btn-' + name);
   btn.disabled = true; btn.textContent = '⏳';
@@ -598,39 +1328,31 @@ async function triggerAgent(name) {
   }
 }
 
-// ── Dynamic widgets ────────────────────────────────────────
 async function loadWidgets() {
   try {
     const resp = await fetch('/api/widgets');
     const { widgets } = await resp.json();
     if (!widgets || widgets.length === 0) return;
-
     const grid = document.getElementById('widget-grid');
     document.getElementById('widget-section').style.display = '';
-
     for (const w of widgets) {
-      const existing = document.getElementById('widget-' + w.name);
-      if (existing) continue; // already rendered
-
+      if (document.getElementById('widget-' + w.name)) continue;
       let html = '';
       try {
         const r = await fetch(`/widgets/${w.name}/html`);
         html = r.ok ? await r.text() : `<p style="color:#446688">${esc(w.name)} widget</p>`;
-      } catch(e) { html = `<p style="color:#cc3344">Failed to load ${esc(w.name)}</p>`; }
-
+      } catch(e) { html = `<p style="color:#cc3344">Failed: ${esc(w.name)}</p>`; }
       const card = document.createElement('div');
       card.id = 'widget-' + w.name;
       card.className = 'agent-card';
       card.style.cssText = 'padding:14px';
-      card.innerHTML = `<div style="color:var(--j-blue);font-size:0.72rem;letter-spacing:2px;margin-bottom:8px">${esc(w.title || w.name).toUpperCase()}</div>${html}`;
+      card.innerHTML = `<div style="color:var(--j-blue);font-size:0.7rem;letter-spacing:2px;margin-bottom:8px">${esc(w.title||w.name).toUpperCase()}</div>${html}`;
       grid.appendChild(card);
-
-      // Schedule auto-refresh if widget requests it
       if (w.refresh_secs && w.refresh_secs > 0) {
         setInterval(async () => {
           try {
             const r2 = await fetch(`/widgets/${w.name}/html`);
-            if (r2.ok) card.querySelector(':scope > div:last-child')?.replaceWith(...new DOMParser().parseFromString(await r2.text(), 'text/html').body.childNodes);
+            if (r2.ok) { const el = card.querySelector(':scope > div:last-child'); if(el) el.innerHTML = await r2.text(); }
           } catch(e) {}
         }, w.refresh_secs * 1000);
       }
@@ -638,15 +1360,14 @@ async function loadWidgets() {
   } catch(e) { console.warn('widget load failed', e); }
 }
 
-// ── Boot ───────────────────────────────────────────────────
-refreshVoiceState();
-refreshConversation();
+// ── Boot ──
+connectSSE();           // real-time conv + tools + voice state
 refreshAgents();
 loadWidgets();
-setInterval(refreshVoiceState,    1000);
-setInterval(refreshConversation,  3000);
-setInterval(refreshAgents,       10000);
-setInterval(loadWidgets,         30000);
+// Fallback polling for voice state (SSE handles it too, this is a safety net)
+setInterval(refreshVoiceState, 5000);
+setInterval(refreshAgents,    10000);
+setInterval(loadWidgets,      30000);
 </script>
 </body>
 </html>

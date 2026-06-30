@@ -7,14 +7,26 @@ response for TTS synthesis.
 Supports hot-reload of plugins: drop a .py file into services/llm_agent/plugins/
 and push its name to the Redis key jarvis:plugin:reload_queue. New tools become
 active within ~3 seconds — no container rebuild needed.
+
+Voice responses stream sentence-by-sentence to TTS so the first word plays
+within seconds of the LLM starting to generate, rather than after the full
+response is ready.
+
+Model routing:
+  Haiku  — simple commands, device control, quick lookups (cheap + fast)
+  Sonnet — default conversational + moderate tool use
+  Opus   — code, complex reasoning, long research queries (powerful)
 """
 
 import asyncio
 import functools
 import json
 import os
+import random
+import re
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -26,7 +38,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
-from llm_factory import build_llm
+from llm_factory import TIER_MODELS, build_llm
 from plugin_registry import PluginRegistry
 from tools.agents import get_agent_report, trigger_agent
 from tools.smart_home import control_device, get_device_states, get_presence, set_scene
@@ -59,15 +71,19 @@ from tools.mac import (
     mac_shell, mac_screenshot, mac_spotlight, mac_system_info, mac_type,
 )
 from tools.plugins import (
-    install_plugin, create_dashboard_widget, jarvis_restart_safe, list_plugins,
+    install_plugin, install_mcp_server, create_dashboard_widget,
+    jarvis_restart_safe, list_plugins, test_tool,
 )
 from tools.profile import get_user_profile, update_user_profile
+from tools.grocery import approve_grocery_order, get_grocery_status, trigger_grocery_run
+from mcp_loader import load_mcp_tools
 
-MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
-MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+MQTT_HOST  = os.environ.get("MQTT_HOST", "localhost")
+MQTT_PORT  = int(os.environ.get("MQTT_PORT", "1883"))
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+USER_ID    = os.environ.get("JARVIS_USER_ID", "default")
 
-# Load system prompt from file
+# Load system prompt from file — static portion is eligible for prompt caching
 _PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "system.txt")
 try:
     with open(_PROMPT_PATH) as _f:
@@ -78,16 +94,78 @@ except FileNotFoundError:
         "You are British, witty, efficient, and loyal."
     )
 
-SYSTEM_PROMPT = _BASE_PROMPT + """
+# ---------------------------------------------------------------------------
+# Model routing — classify request complexity into one of three tiers
+# ---------------------------------------------------------------------------
 
-Current time: {time}
-User location: {room}
-Active plugins: {active_plugins}
-Response style: {verbosity}
-"""
+# Keywords that force escalation to Opus
+_OPUS_TRIGGERS = frozenset([
+    "write", "code", "script", "function", "debug", "implement", "refactor",
+    "explain in detail", "explain why", "explain how", "how does", "why does",
+    "compare", "difference between", "analyze", "analyse", "research",
+    "plan", "design", "architect", "strategy", "outline",
+    "summarize", "summarise", "essay", "report",
+])
+
+# Keywords that allow Haiku (only for short, command-style queries)
+_HAIKU_TRIGGERS = frozenset([
+    "turn on", "turn off", "switch on", "switch off", "toggle",
+    "play", "pause", "stop music", "skip", "next track", "previous track",
+    "what time", "what's the time", "what is the time",
+    "set a timer", "set timer", "remind me",
+    "weather", "temperature outside",
+    "lights", "thermostat", "lock", "unlock",
+    "volume up", "volume down", "mute",
+    "open ", "close ",
+])
+
+
+def _classify_tier(text: str) -> str:
+    """Return 'haiku', 'sonnet', or 'opus' based on query complexity."""
+    lower  = text.lower().strip()
+    words  = lower.split()
+    n      = len(words)
+
+    # Long queries or explicit reasoning/code keywords → Opus
+    if n > 30 or any(t in lower for t in _OPUS_TRIGGERS):
+        return "opus"
+
+    # Short command-style queries → Haiku
+    if n <= 14 and any(lower.startswith(t) or t in lower for t in _HAIKU_TRIGGERS):
+        return "haiku"
+
+    return "sonnet"
+
 
 # ---------------------------------------------------------------------------
-# Static "core" tools — always available
+# Thinking words — shown in dashboard while processing
+# ---------------------------------------------------------------------------
+
+_THINKING_WORDS = [
+    "Analyzing", "Triangulating", "Computing", "Correlating", "Deducing",
+    "Synthesizing", "Cross-referencing", "Extrapolating", "Calibrating",
+    "Interfacing", "Scanning", "Sequencing", "Parsing", "Evaluating",
+    "Interpolating", "Resolving", "Mapping", "Inferring", "Modelling",
+    "Sifting", "Probing", "Querying", "Auditing", "Reconstructing",
+    "Assessing", "Determining", "Verifying", "Indexing", "Tracing",
+    "Classifying", "Profiling", "Decoding", "Translating", "Compiling",
+    "Vectorizing", "Tokenizing", "Hashing", "Routing", "Optimizing",
+]
+
+
+def _start_thinking_rotation(stop_event: threading.Event) -> None:
+    """Rotate through thinking words every ~2.5s while processing."""
+    words = random.sample(_THINKING_WORDS, len(_THINKING_WORDS))
+    idx = 0
+    while not stop_event.is_set():
+        r.set("jarvis:thinking:word", words[idx % len(words)], ex=10)
+        idx += 1
+        stop_event.wait(timeout=2.5)
+    r.delete("jarvis:thinking:word")
+
+
+# ---------------------------------------------------------------------------
+# Core tools — always available
 # ---------------------------------------------------------------------------
 
 _core_tools = [
@@ -119,61 +197,86 @@ _core_tools = [
     # Developer agent (any project on the Mac)
     dev_list_dir, dev_read_file, dev_write_file, dev_shell, dev_search_code,
     # Plugin management & personalization
-    install_plugin, create_dashboard_widget, jarvis_restart_safe, list_plugins,
+    install_plugin, install_mcp_server, create_dashboard_widget,
+    jarvis_restart_safe, list_plugins, test_tool,
     get_user_profile, update_user_profile,
+    # Grocery agent control
+    get_grocery_status, approve_grocery_order, trigger_grocery_run,
 ]
 
 # ---------------------------------------------------------------------------
 # Dynamic plugin registry
 # ---------------------------------------------------------------------------
 
-_registry = PluginRegistry()
+_registry  = PluginRegistry()
 _graph_lock = threading.RLock()
 
-# Globals that _rebuild_graph() replaces atomically
-llm = None
-tool_node = None
-agent = None
+# One compiled agent per model tier + a reference to the default for compat
+_agents: dict[str, object] = {}
+llm        = None
+tool_node  = None
+agent      = None
 
 
 def _call_model(llm_ref, state):
-    """Agent node: always closes over the llm instance it was built with."""
+    """Agent node: closed over the llm instance it was built with."""
     response = llm_ref.invoke(state["messages"])
     return {"messages": [response]}
 
 
 def _rebuild_graph() -> None:
-    """Recompile the LangGraph agent with all core + plugin tools."""
-    global llm, tool_node, agent
+    """Recompile one LangGraph agent per model tier sharing the same tool set."""
+    global _agents, llm, tool_node, agent
 
-    all_tools = _core_tools + _registry.get_all_tools()
-    new_llm = build_llm(temperature=0.3).bind_tools(all_tools)
+    mcp_tools = load_mcp_tools()
+    all_tools = _core_tools + _registry.get_all_tools() + mcp_tools
     new_tool_node = ToolNode(all_tools)
-    new_call_model = functools.partial(_call_model, new_llm)
+    new_agents: dict[str, object] = {}
 
-    workflow = StateGraph(AgentState)
-    workflow.add_node("agent", new_call_model)
-    workflow.add_node("tools", new_tool_node)
-    workflow.set_entry_point("agent")
-    workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
-    workflow.add_edge("tools", "agent")
-    new_agent = workflow.compile()
+    for tier in ("haiku", "sonnet", "opus"):
+        new_llm  = build_llm(model=tier, temperature=0.3).bind_tools(all_tools)
+        new_call = functools.partial(_call_model, new_llm)
+
+        workflow = StateGraph(AgentState)
+        workflow.add_node("agent", new_call)
+        workflow.add_node("tools", new_tool_node)
+        workflow.set_entry_point("agent")
+        workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+        workflow.add_edge("tools", "agent")
+        new_agents[tier] = workflow.compile()
 
     with _graph_lock:
-        llm = new_llm
+        _agents   = new_agents
+        agent     = new_agents["sonnet"]   # backward-compat global
         tool_node = new_tool_node
-        agent = new_agent
 
-    print(f"[LLM] Graph rebuilt — {len(all_tools)} tools active "
-          f"({len(_core_tools)} core + {len(_registry.get_all_tools())} plugins)")
+    print(f"[LLM] Graph rebuilt — {len(all_tools)} tools "
+          f"({len(_core_tools)} core + {len(_registry.get_all_tools())} plugins "
+          f"+ {len(mcp_tools)} MCP), "
+          f"3 model tiers: {', '.join(TIER_MODELS.values())}")
 
 
 # ---------------------------------------------------------------------------
 # LangGraph state
 # ---------------------------------------------------------------------------
 
-# Redis for conversation history
 r = redis.Redis(host=REDIS_HOST, decode_responses=True)
+
+
+def _push_tool_event(tool: str, args_preview: str, status: str, result_preview: str) -> None:
+    event = {
+        "id": str(uuid.uuid4())[:8],
+        "tool": tool,
+        "args_preview": args_preview,
+        "status": status,
+        "result_preview": result_preview,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        r.lpush("jarvis:tool_events", json.dumps(event))
+        r.ltrim("jarvis:tool_events", 0, 99)
+    except Exception:
+        pass
 
 
 class AgentState(TypedDict):
@@ -181,25 +284,23 @@ class AgentState(TypedDict):
 
 
 def should_continue(state: AgentState):
-    last_message = state["messages"][-1]
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+    last = state["messages"][-1]
+    if hasattr(last, "tool_calls") and last.tool_calls:
         return "tools"
     return END
 
 
-# Initial graph build
+# Initial build
 _registry.register_on_change(_rebuild_graph)
 _registry.load_all()
 _rebuild_graph()
 
 
 # ---------------------------------------------------------------------------
-# Plugin hot-reload watcher thread
+# Plugin hot-reload watcher
 # ---------------------------------------------------------------------------
 
 def _plugin_reload_watcher() -> None:
-    """Blocks on a Redis list; reloads the named plugin and rebuilds the graph."""
-    # socket_timeout must exceed the blpop timeout or redis-py raises TimeoutError
     watcher_r = redis.Redis(host=REDIS_HOST, decode_responses=True, socket_timeout=10)
     while True:
         try:
@@ -217,41 +318,81 @@ threading.Thread(target=_plugin_reload_watcher, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
+# Sentence streaming helpers
+# ---------------------------------------------------------------------------
+
+_SENT_END = re.compile(r'(?<=[.!?…])\s+')
+
+
+def _split_sentences(buf: str) -> tuple[list[str], str]:
+    parts = _SENT_END.split(buf)
+    if len(parts) == 1:
+        return [], buf
+    return [p.strip() for p in parts[:-1] if p.strip()], parts[-1]
+
+
+# ---------------------------------------------------------------------------
 # Request processing
 # ---------------------------------------------------------------------------
 
-def _build_system_prompt(room: str) -> str:
-    """Build system prompt with injected profile preferences."""
+def _build_system_prompt(room: str) -> list[dict]:
+    """Return a list of Anthropic content blocks for the system message.
+
+    Block 0 — the large static base prompt — is marked for prompt caching.
+    Block 1 — the small dynamic suffix (time, room, verbosity) — is not cached
+              because it changes every request.
+    """
     profile_raw = r.get("user:profile") or "{}"
     try:
         profile = json.loads(profile_raw)
     except Exception:
         profile = {}
-    prefs = profile.get("preferences", {})
+    prefs          = profile.get("preferences", {})
     active_plugins = ", ".join(profile.get("enabled_plugins", [])) or "none"
-    verbosity = prefs.get("response_verbosity", "balanced")
-    return SYSTEM_PROMPT.format(
-        time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        room=room,
-        active_plugins=active_plugins,
-        verbosity=verbosity,
+    verbosity      = prefs.get("response_verbosity", "balanced")
+
+    is_voice = not room.startswith(("mobile-", "glasses-"))
+    voice_note = (
+        "\nThis response will be spoken aloud. Keep it to 2-3 sentences maximum. "
+        "No bullet points, no markdown, no lists — plain spoken prose only."
+        if is_voice else ""
     )
 
+    dynamic = (
+        f"Current time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+        f"User location: {room}\n"
+        f"Active plugins: {active_plugins}\n"
+        f"Response style: {verbosity}"
+        f"{voice_note}"
+    )
 
-async def _process_async(text: str, room: str) -> str:
-    """Async core — allows async tools (Spotify, sub-agents, browser) to work."""
+    return [
+        # Static portion — eligible for Anthropic prompt caching (>= 1024 tokens for Sonnet/Opus)
+        {"type": "text", "text": _BASE_PROMPT, "cache_control": {"type": "ephemeral"}},
+        # Dynamic portion — changes every request, not cached
+        {"type": "text", "text": dynamic},
+    ]
+
+
+async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence=None) -> str:
+    """Stream response sentence-by-sentence via on_sentence callback.
+
+    Selects the agent compiled for the given model tier.
+    Always returns the full accumulated response for history storage.
+    """
     ACTIVE_ROOM["room"] = room
 
-    # Capture current agent reference so rebuild mid-request doesn't affect us
-    current_agent = agent
+    with _graph_lock:
+        current_agent = _agents.get(tier, _agents.get("sonnet"))
 
-    system = SystemMessage(content=_build_system_prompt(room))
+    system_blocks = _build_system_prompt(room)
+    system        = SystemMessage(content=system_blocks)
 
-    history_key = f"conversation:{room}"
+    history_key = f"conversation:{USER_ID}"
     history_raw = r.lrange(history_key, -20, -1)
     history = []
     for h in history_raw:
-        msg = json.loads(h)
+        msg     = json.loads(h)
         content = msg["content"]
         if isinstance(content, list):
             has_tool_use = any(
@@ -260,7 +401,6 @@ async def _process_async(text: str, room: str) -> str:
             )
             if has_tool_use:
                 continue
-            # Strip any image blocks (avoid re-sending large base64 payloads)
             content = [
                 item for item in content
                 if not (isinstance(item, dict) and item.get("type") == "image")
@@ -268,9 +408,7 @@ async def _process_async(text: str, room: str) -> str:
             if not content:
                 continue
         elif isinstance(content, str) and "[GLASSES_CAMERA_IMAGE:" in content:
-            # Strip stored camera image data URIs — keep only the text prompt
-            import re as _re
-            content = _re.sub(r"\[GLASSES_CAMERA_IMAGE:[^\]]*\]\n?", "", content).strip()
+            content = re.sub(r"\[GLASSES_CAMERA_IMAGE:[^\]]*\]\n?", "", content).strip()
             if not content:
                 continue
         if msg["role"] == "user":
@@ -280,26 +418,101 @@ async def _process_async(text: str, room: str) -> str:
 
     messages = [system] + history + [HumanMessage(content=text)]
 
-    result = await current_agent.ainvoke({"messages": messages})
-    raw = result["messages"][-1].content
+    full_response = ""
+    sentence_buf  = ""
+    _emitted_tc_ids: set = set()
 
-    if isinstance(raw, list):
-        response_text = " ".join(
+    try:
+        async for chunk, metadata in current_agent.astream(
+            {"messages": messages}, stream_mode="messages"
+        ):
+            node = metadata.get("langgraph_node")
+
+            # Capture tool results from the tools node
+            if node == "tools":
+                if hasattr(chunk, "name") and chunk.name:
+                    result = str(chunk.content)[:200] if chunk.content else ""
+                    _push_tool_event(chunk.name, "", "done", result)
+                continue
+
+            if node != "agent":
+                continue
+
+            # Capture new tool calls announced in agent AIMessage chunks
+            if hasattr(chunk, "tool_calls") and chunk.tool_calls:
+                for tc in chunk.tool_calls:
+                    tc_id = tc.get("id") or ""
+                    if tc_id and tc_id not in _emitted_tc_ids:
+                        _emitted_tc_ids.add(tc_id)
+                        args = tc.get("args", {})
+                        args_preview = json.dumps(args, ensure_ascii=False)[:120] if args else ""
+                        _push_tool_event(tc.get("name", "unknown"), args_preview, "calling", "")
+
+            if not hasattr(chunk, "content") or not chunk.content:
+                continue
+
+            # content can be a plain str (streaming text delta) or a list of
+            # Anthropic content blocks ({"type":"text","text":"..."}) which is
+            # what the API returns after a tool-use turn completes.
+            raw_content = chunk.content
+            if isinstance(raw_content, str):
+                text = raw_content
+            elif isinstance(raw_content, list):
+                text = "".join(
+                    item.get("text", "") if isinstance(item, dict) else ""
+                    for item in raw_content
+                    if isinstance(item, dict) and item.get("type") == "text"
+                )
+            else:
+                text = str(raw_content)
+
+            if not text:
+                continue
+
+            sentence_buf  += text
+            full_response += text
+
+            sentences, sentence_buf = _split_sentences(sentence_buf)
+            for s in sentences:
+                if on_sentence:
+                    on_sentence(s)
+
+        remainder = sentence_buf.strip()
+        if remainder:
+            if on_sentence:
+                on_sentence(remainder)
+
+    except Exception as exc:
+        print(f"[LLM] Streaming error ({exc}), falling back to ainvoke")
+        result = await current_agent.ainvoke({"messages": messages})
+        raw    = result["messages"][-1].content
+        if isinstance(raw, list):
+            full_response = " ".join(
+                item.get("text", "") if isinstance(item, dict) else str(item)
+                for item in raw
+                if isinstance(item, dict) and item.get("type") == "text"
+            ).strip() or "(no text response)"
+        else:
+            full_response = str(raw)
+        if on_sentence:
+            on_sentence(full_response)
+
+    if not full_response:
+        full_response = "(no text response)"
+
+    if isinstance(full_response, list):
+        full_response = " ".join(
             item.get("text", "") if isinstance(item, dict) else str(item)
-            for item in raw
+            for item in full_response
             if isinstance(item, dict) and item.get("type") == "text"
         ).strip() or "(no text response)"
-    else:
-        response_text = str(raw)
 
-    # Sanitize before storing: replace camera image data URIs with a short placeholder
-    import re as _re
-    stored_text = _re.sub(r"\[GLASSES_CAMERA_IMAGE:[^\]]*\]", "[camera image]", text)
-    r.rpush(history_key, json.dumps({"role": "user", "content": stored_text}))
-    r.rpush(history_key, json.dumps({"role": "assistant", "content": response_text}))
+    stored_text = re.sub(r"\[GLASSES_CAMERA_IMAGE:[^\]]*\]", "[camera image]", text)
+    r.rpush(history_key, json.dumps({"role": "user",      "content": stored_text}))
+    r.rpush(history_key, json.dumps({"role": "assistant", "content": full_response}))
     r.ltrim(history_key, -40, -1)
 
-    return response_text
+    return full_response
 
 
 def process_request(text: str, room: str) -> str:
@@ -310,72 +523,97 @@ def process_request(text: str, room: str) -> str:
 # MQTT handler
 # ---------------------------------------------------------------------------
 
-def _fanout_to_active_surfaces(client, response: str) -> None:
-    """Push response to any active non-voice surfaces (iPhone, Mac)."""
+def _fanout_to_active_surfaces(
+    client, response: str, source_room: str = "", title: str = "Jarvis"
+) -> None:
+    """Push a message to every active surface that didn't originate the request.
+
+    Used both after a user-initiated reply and (via on_agent_report) when a
+    background agent completes, so proactive results reach the iPhone / glasses
+    HUD instead of only being spoken in one room.
+    """
+    source_is_mobile = source_room.startswith(("mobile-", "glasses-"))
     try:
         active = r.smembers("jarvis:active_surfaces")
         for surface_id in active:
             meta_raw = r.get(f"jarvis:surface:{surface_id}:meta")
             if not meta_raw:
                 continue
-            meta = json.loads(meta_raw)
+            meta         = json.loads(meta_raw)
             surface_type = meta.get("type", "")
             if surface_type == "iphone":
+                if source_is_mobile:
+                    continue
                 client.publish(
                     "jarvis/surfaces/iphone/push",
-                    json.dumps({"text": response}),
+                    json.dumps({"text": response, "title": title}),
                 )
             elif surface_type == "mac":
-                client.publish(
-                    "jarvis/surfaces/mac/notify",
-                    json.dumps({"title": "Jarvis", "body": response[:200]}),
-                )
+                pass  # Mac already hears the spoken response
     except Exception as e:
         print(f"[LLM] Surface fanout error: {e}")
 
 
 def _handle_request(client, data):
-    """Process one LLM request in a background thread so the MQTT loop stays live."""
     text = data["text"]
     room = data["room"]
 
-    print(f"[LLM] Processing: '{text}' (from {room})")
+    tier = _classify_tier(text)
+    print(f"[LLM] Processing (tier={tier}): '{text}' (from {room})")
 
+    # Mark state + start rotating thinking words
     try:
-        r.set(f"jarvis:voice:state:{room}", "thinking", ex=60)
+        r.set(f"jarvis:voice:state:{room}", "thinking", ex=120)
     except Exception:
         pass
 
+    _stop_thinking = threading.Event()
+    threading.Thread(
+        target=_start_thinking_rotation, args=(_stop_thinking,), daemon=True
+    ).start()
+
+    _sentence_queue: list[str] = []
+
+    def on_sentence(sentence: str) -> None:
+        _sentence_queue.append(sentence)
+
+    response = ""
     try:
-        response = process_request(text, room)
+        response = asyncio.run(_process_async(text, room, tier=tier, on_sentence=on_sentence))
     except Exception as e:
         err_str = str(e)
         print(f"[LLM] Error: {err_str}")
         if "tool_use_id" in err_str or "tool_result" in err_str or "400" in err_str:
             try:
-                r.delete(f"conversation:{room}")
-                print(f"[LLM] Cleared corrupted history for {room}")
+                r.delete(f"conversation:{USER_ID}")
+                print(f"[LLM] Cleared corrupted history for user {USER_ID}")
             except Exception:
                 pass
         response = "I'm sorry, I encountered an error processing that request."
+        _sentence_queue.append(response)
+    finally:
+        _stop_thinking.set()
 
-    print(f"[LLM] Response: '{response[:100]}...'")
+    # Ensure we always have at least one sentence to publish (and a done signal fires)
+    if not _sentence_queue:
+        _sentence_queue.append(response or "(no response)")
 
-    word_count = len(response.split())
-    speak_secs = max(4, min(45, int(word_count / 140 * 60)))
+    # Set state to "speaking" — will be cleared when tts_mac publishes /done
     try:
-        r.set(f"jarvis:voice:state:{room}", "speaking", ex=speak_secs)
+        r.set(f"jarvis:voice:state:{room}", "speaking", ex=300)
     except Exception:
         pass
 
-    # 1. TTS for the originating room (voice output)
-    client.publish(
-        f"jarvis/tts/{room}/speak",
-        json.dumps({"text": response, "room": room}),
-    )
+    for i, sentence in enumerate(_sentence_queue):
+        is_final = (i == len(_sentence_queue) - 1)
+        client.publish(
+            f"jarvis/tts/{room}/speak",
+            json.dumps({"text": sentence, "room": room, "is_final": is_final}),
+        )
 
-    # 2. Fan out to active surfaces (iPhone push, Mac notification)
-    _fanout_to_active_surfaces(client, response)
+    print(f"[LLM] Tier={tier}, {len(_sentence_queue)} sentence(s): '{response[:80]}...'")
+
+    _fanout_to_active_surfaces(client, response, source_room=room)
 
 
 def on_llm_request(client, userdata, msg):
@@ -383,11 +621,59 @@ def on_llm_request(client, userdata, msg):
     threading.Thread(target=_handle_request, args=(client, data), daemon=True).start()
 
 
+def on_tts_done(client, userdata, msg):
+    """TTS has finished playing the final sentence — reset voice state to ready."""
+    try:
+        data = json.loads(msg.payload)
+        room = data.get("room", "office")
+        r.set(f"jarvis:voice:state:{room}", "ready")
+        print(f"[LLM] TTS done in '{room}' → state=ready")
+    except Exception as e:
+        print(f"[LLM] on_tts_done error: {e}")
+
+
+# Background agents whose reports are NOT auto-pushed to surfaces here:
+#   - newsletter/job_monitor/web_monitor/price_monitor: noisy/large — read in dashboard
+#   - grocery: pushes its own richer report (with cart links) to surfaces directly
+#   - ambient: fans its own alerts out directly
+_FANOUT_AGENT_BLOCKLIST = {
+    "newsletter", "job_monitor", "web_monitor", "price_monitor", "grocery", "ambient",
+}
+
+
+def on_agent_report(client, userdata, msg):
+    """A background agent finished — fan a short summary out to active surfaces.
+
+    This makes background-agent completions proactively visible on the iPhone /
+    glasses HUD (Month 4b), not just stored in Redis for the dashboard.
+    """
+    try:
+        data   = json.loads(msg.payload)
+        name   = data.get("agent", "agent")
+        report = (data.get("report") or "").strip()
+        if not report or name in _FANOUT_AGENT_BLOCKLIST:
+            return
+        summary = report if len(report) <= 240 else report[:237] + "…"
+        _fanout_to_active_surfaces(client, summary, title=name.replace("_", " ").title())
+        print(f"[LLM] Fanned out '{name}' report to surfaces.")
+    except Exception as e:
+        print(f"[LLM] on_agent_report error: {e}")
+
+
 def main():
     mqtt_client = mqtt.Client()
     mqtt_client.connect(MQTT_HOST, MQTT_PORT)
+
     mqtt_client.subscribe("jarvis/llm/request")
     mqtt_client.message_callback_add("jarvis/llm/request", on_llm_request)
+
+    # Subscribe to TTS done so we can reset voice state precisely
+    mqtt_client.subscribe("jarvis/tts/+/done")
+    mqtt_client.message_callback_add("jarvis/tts/+/done", on_tts_done)
+
+    # Proactive fanout: surface background-agent completions to active devices
+    mqtt_client.subscribe("jarvis/agents/+/report")
+    mqtt_client.message_callback_add("jarvis/agents/+/report", on_agent_report)
 
     print("[LLM] Agent ready, waiting for requests…")
     mqtt_client.loop_forever()

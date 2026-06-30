@@ -4,6 +4,10 @@ Subscribes to jarvis/tts/+/speak and uses edge-tts to synthesise speech
 through the Mac speakers. Defaults to en-GB-RyanNeural — a deep British male
 voice that sounds close to the Iron Man Jarvis.
 
+Audio playback runs in a dedicated worker thread so the MQTT loop is never
+blocked. This prevents keepalive timeouts on long multi-sentence responses and
+ensures the /done signal fires only after the last sentence has fully played.
+
 Environment variables:
   TTS_VOICE   — edge-tts voice name (default: en-GB-RyanNeural)
   TTS_RATE    — speech rate offset, e.g. +0% / -10% (default: -5%)
@@ -13,9 +17,11 @@ Environment variables:
 import asyncio
 import json
 import os
+import queue
 import re
 import subprocess
 import tempfile
+import threading
 
 import edge_tts
 import paho.mqtt.client as mqtt
@@ -38,21 +44,18 @@ _MD_PATTERN = re.compile(
 
 
 def _strip_markdown(text: str) -> str:
-    """Remove common markdown syntax so TTS reads cleanly."""
     text = _MD_PATTERN.sub(lambda m: m.group(1) or m.group(2) or "", text)
     text = re.sub(r"\n{2,}", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    return re.sub(r"\s+", " ", text).strip()
 
 
 async def _speak_async(text: str) -> None:
-    """Generate audio with edge-tts and play via afplay."""
     communicate = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
         tmp_path = f.name
     try:
         await communicate.save(tmp_path)
-        subprocess.run(["afplay", tmp_path], check=False, timeout=120)
+        subprocess.run(["afplay", tmp_path], check=False, timeout=180)
     finally:
         try:
             os.unlink(tmp_path)
@@ -64,27 +67,66 @@ def speak(text: str) -> None:
     asyncio.run(_speak_async(text))
 
 
+# ---------------------------------------------------------------------------
+# Worker queue — decouples MQTT receive from blocking audio playback
+# ---------------------------------------------------------------------------
+
+# Each item: (mqtt_client, room, text, is_final)
+_tts_queue: queue.Queue = queue.Queue()
+
+
+def _tts_worker() -> None:
+    """Drain the TTS queue sequentially; publish /done after the last sentence."""
+    while True:
+        try:
+            mqtt_client, room, text, is_final = _tts_queue.get()
+            if text:
+                print(f"[TTS] Speaking (is_final={is_final}): {text[:80]}...")
+                speak(text)
+            # Only signal after the very last sentence so STT opens the follow-up
+            # window only after the complete response has been spoken.
+            if is_final:
+                # Small settling pause to let room acoustics clear before mic opens
+                import time; time.sleep(0.4)
+                mqtt_client.publish(
+                    f"jarvis/tts/{room}/done",
+                    json.dumps({"room": room}),
+                )
+                print(f"[TTS] /done published for room '{room}'")
+        except Exception as e:
+            print(f"[TTS] Worker error: {e}")
+        finally:
+            _tts_queue.task_done()
+
+
+# Start the worker thread (daemon so it exits with the process)
+threading.Thread(target=_tts_worker, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# MQTT callbacks
+# ---------------------------------------------------------------------------
+
 def on_connect(client, userdata, flags, rc):
     print(f"[TTS] Connected (rc={rc}), voice={TTS_VOICE}")
     client.subscribe("jarvis/tts/+/speak")
 
 
 def on_message(client, userdata, msg):
+    """Enqueue the TTS job — never block the MQTT loop."""
     try:
-        payload = json.loads(msg.payload.decode())
-        raw = payload.get("text", "").strip()
-        room = payload.get("room", "office")
+        payload  = json.loads(msg.payload.decode())
+        raw      = payload.get("text", "").strip()
+        room     = payload.get("room", "office")
+        is_final = payload.get("is_final", True)
         if raw:
             clean = _strip_markdown(raw)
-            print(f"[TTS] Speaking: {clean[:80]}...")
-            speak(clean)
-            # Signal STT that TTS is done so it can listen for a follow-up
-            client.publish(
-                f"jarvis/tts/{room}/done",
-                json.dumps({"room": room}),
-            )
+            _tts_queue.put((client, room, clean, is_final))
+        elif is_final:
+            # Empty final message — still need to publish /done
+            _tts_queue.put((client, room, "", True))
     except Exception as e:
-        print(f"[TTS] Error: {e}")
+        print(f"[TTS] on_message error: {e}")
 
 
 def main():
@@ -92,7 +134,7 @@ def main():
     client = mqtt.Client()
     client.on_connect = on_connect
     client.on_message = on_message
-    client.connect(MQTT_HOST, MQTT_PORT, 60)
+    client.connect(MQTT_HOST, MQTT_PORT, keepalive=120)
     client.loop_forever()
 
 

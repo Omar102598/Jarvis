@@ -1,0 +1,26 @@
+<div id="finance-widget" style="font-family:system-ui;padding:8px">
+  <div id="finance-balance" style="font-size:1.4em;font-weight:600">—</div>
+  <div id="finance-status" style="color:#888;font-size:0.8em;margin:4px 0">Awaiting API connection…</div>
+  <ul id="finance-spending" style="list-style:none;padding:0;margin:8px 0;font-size:0.9em"></ul>
+</div>
+<script>
+async function refreshFinance(){
+  try{
+    const r = await fetch('/api/widgets/finance/data');
+    const d = await r.json();
+    document.getElementById('finance-balance').textContent = d.balance || '—';
+    document.getElementById('finance-status').textContent = d.status || '';
+    const ul = document.getElementById('finance-spending');
+    ul.innerHTML = '';
+    (d.spending||[]).forEach(s=>{
+      const li=document.createElement('li');
+      li.textContent = s.category + ': $' + s.amount;
+      ul.appendChild(li);
+    });
+  }catch(e){
+    document.getElementById('finance-status').textContent = 'Not connected yet.';
+  }
+}
+refreshFinance();
+setInterval(refreshFinance, 30000);
+</script>

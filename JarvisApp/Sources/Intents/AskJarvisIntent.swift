@@ -10,6 +10,11 @@ struct AskJarvisIntent: AppIntent {
         categoryName: "Jarvis"
     )
 
+    // Always route every query through the Jarvis engine in the background —
+    // never hand off to Siri's native answering or open the app. This keeps a
+    // single consistent brain across surfaces (Month 4c).
+    static let openAppWhenRun = false
+
     // Siri extracts the question from voice input automatically
     @Parameter(title: "Question", requestValueDialog: IntentDialog("What would you like to ask Jarvis?"))
     var question: String
@@ -30,8 +35,8 @@ struct JarvisShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: AskJarvisIntent(),
             phrases: [
-                "Ask \(.applicationName) \(\.$question)",
-                "Hey \(.applicationName), \(\.$question)",
+                "Ask \(.applicationName) something",
+                "Hey \(.applicationName)",
             ],
             shortTitle: "Ask Jarvis",
             systemImageName: "sparkles"

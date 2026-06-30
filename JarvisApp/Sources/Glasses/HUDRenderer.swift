@@ -60,7 +60,7 @@ struct HUDRenderer {
         case .image(let urlString):
             try await display.send(
                 FlexBox(direction: .column, spacing: 12) {
-                    Image(url: urlString, size: .large, cornerRadius: .medium)
+                    Image(uri: urlString, sizePreset: .fill, cornerRadius: .medium)
                     Button(label: "Back", style: .secondary, onClick: {
                         NotificationCenter.default.post(name: .jarvisActivateWake, object: nil)
                     })
@@ -98,7 +98,7 @@ struct HUDRenderer {
         try await display.send(
             FlexBox(direction: .column, spacing: 16) {
                 Text("Jarvis", style: .heading)
-                Button(label: "Ask Jarvis", style: .primary, iconName: .mic, onClick: {
+                Button(label: "Ask Jarvis", style: .primary, iconName: .speechBubble, onClick: {
                     NotificationCenter.default.post(name: .jarvisActivateWake, object: nil)
                 })
             }

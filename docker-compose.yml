@@ -33,6 +33,18 @@ services:
     command: redis-server --appendonly yes
     restart: always
 
+  chroma:
+    image: chromadb/chroma:0.6.3
+    container_name: jarvis-chroma
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - ANONYMIZED_TELEMETRY=false
+      - ALLOW_RESET=false
+    restart: always
+
   # --- Voice Pipeline ---
 
   wake_word:
@@ -89,9 +101,12 @@ services:
     depends_on:
       - mosquitto
       - redis
+      - chroma
     environment:
       - MQTT_HOST=mosquitto
       - REDIS_HOST=redis
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
@@ -122,6 +137,8 @@ services:
       # GitHub
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GITHUB_DEFAULT_REPO=${GITHUB_DEFAULT_REPO:-}
+      # User identity (namespaces memory and conversation history)
+      - JARVIS_USER_ID=${JARVIS_USER_ID:-default}
     volumes:
       - ./data:/data
       - ./services/llm_agent/plugins:/app/plugins
@@ -220,8 +237,10 @@ services:
       - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
       - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
       - WIDGETS_DIR=/app/widgets
+      - JARVIS_USER_ID=${JARVIS_USER_ID:-default}
     volumes:
       - ./services/dashboard/widgets:/app/widgets
+      - ./services/dashboard/templates:/app/templates
     restart: always
 
   # --- Wearable Bridge (Phase 4) ---
@@ -242,3 +261,4 @@ services:
 volumes:
   mosquitto_data:
   redis_data:
+  chroma_data:
