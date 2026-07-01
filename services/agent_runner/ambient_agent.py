@@ -56,6 +56,7 @@ class AmbientAgent(BaseAgent):
         triggered += await self._check_morning_briefing(morning_hour, room)
         triggered += self._check_user_triggers(room)
         triggered += self._check_health_anomalies(room)
+        triggered += self._check_classpass(room)
 
         if weather_enabled:
             triggered += await self._check_weather(room)
@@ -293,6 +294,58 @@ class AmbientAgent(BaseAgent):
             return ["health_anomaly"]
 
         return []
+
+    # ------------------------------------------------------------------
+    # ClassPass favorite-opened trigger
+    # ------------------------------------------------------------------
+
+    def _check_classpass(self, room: str) -> list[str]:
+        """Surface a favorite ClassPass class whose booking window has opened.
+
+        Reads the suggestions the ClassPass agent stored on its last scan. Only
+        favorites that are open, not already booked, and not yet alerted are
+        announced. Dedup is shared with the ClassPass agent via the
+        ``classpass:seen`` Redis set, so a class is announced exactly once
+        regardless of which loop notices it first.
+        """
+        raw = self.r.get("classpass:suggestions")
+        if not raw:
+            return []
+        try:
+            classes = json.loads(raw).get("classes", [])
+        except Exception:
+            return []
+
+        try:
+            booked = json.loads(self.r.get("classpass:booked") or "[]")
+        except Exception:
+            booked = []
+        booked_ids = {b.get("id") for b in booked}
+
+        fired: list[str] = []
+        for c in classes:
+            cid = c.get("id")
+            if not cid or not c.get("is_favorite") or not c.get("booking_open"):
+                continue
+            if cid in booked_ids or self.r.sismember("classpass:seen", cid):
+                continue
+
+            self.r.sadd("classpass:seen", cid)
+            self.r.expire("classpass:seen", 7 * 86400)
+
+            instr = f" with {c['instructor']}" if c.get("instructor") else ""
+            spots = f" ({c['spots']})" if c.get("spots") else ""
+            msg = (
+                f"Sir, a favorite just opened on ClassPass — {c.get('name','a class')} "
+                f"at {c.get('studio','')}{instr}, {c.get('start_human','')}{spots}. "
+                f"Say 'book it' to reserve."
+            )
+            self._publish(msg, room, title="ClassPass")
+            fired.append(f"classpass:{cid}")
+            if len(fired) >= 2:  # avoid a flood in a single tick
+                break
+
+        return fired
 
     # ------------------------------------------------------------------
     # Helpers

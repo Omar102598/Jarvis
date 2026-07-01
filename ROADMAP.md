@@ -49,7 +49,8 @@ only I/O-sensitive services (TTS, wake word, STT, bridges) native per-device.
 - `[x]` Create `config/mcp_servers.yml` — declarative MCP server registry
 - `[x]` Create `services/llm_agent/mcp_loader.py` — per-call proxy tool factory
 - `[x]` Wire MCP tools into `main.py` `_core_tools` at startup
-- `[ ]` Fix `plugin_registry.py` `_load_mcp_tools` lifecycle bug (tools invalid after context exits)
+- `[x]` Fix `plugin_registry.py` `_load_mcp_tools` lifecycle bug (tools invalid after context exits)
+        — now delegates to `mcp_loader.load_tools_for_server` (per-call proxy tools); single MCP path
 
 **MCP servers to activate (edit `config/mcp_servers.yml`):**
 - `@modelcontextprotocol/server-filesystem` — structured file ops
@@ -98,6 +99,13 @@ only I/O-sensitive services (TTS, wake word, STT, bridges) native per-device.
 - `[ ]` Add "private" routing tier in `_classify_tier()` for health/finance/location queries
 - `[ ]` Recommended models: Qwen2.5 72B (tool use), DeepSeek-V3 (reasoning)
 
+> ⚠️ **Reconsider before building.** iOS 27 (see Month 6) ships an on-device
+> Foundation Models LLM that can handle the private tier entirely on the iPhone —
+> free, offline, no VPS/Ollama. If we wait for iOS 27's public release, the
+> client-side on-device path likely replaces this server-side Ollama tier. Keep
+> this as the fallback only if we need a server-side private tier before iOS 27
+> is out, or for private queries that require the full Python tool ecosystem.
+
 ---
 
 ## Month 4 — Platform Integrations  ✅ Done (2026-06-29, ahead of Month 3)
@@ -136,6 +144,49 @@ only I/O-sensitive services (TTS, wake word, STT, bridges) native per-device.
 
 ---
 
+## Month 6 — iOS 27 Apple Intelligence  🔒 Blocked on OS release
+
+> **Status: research only — do NOT build yet.** iOS 27 is announced (WWDC June 2026)
+> but not publicly released. APIs are beta and may change; devices in the field are
+> still on iOS 26. Revisit once iOS 27 ships in the fall and enough of the user base
+> has upgraded. Research captured 2026-06-30.
+>
+> **What iOS 27 exposes (three distinct layers):**
+> - **Foundation Models framework** — high-level Swift API over Apple's sealed
+>   on-device LLM (AFM 3 Core 3B, Core Advanced 20B on Pro). Tool calling,
+>   structured output (`@Generable`), image input, streaming, Private Cloud
+>   Compute fallback. **iOS-only Swift — the Python backend cannot call it.**
+> - **Core AI** — bring-your-own-model on-device inference (`.aiasset`, explicit
+>   CPU/GPU/Neural Engine control). Path for a future custom persona model.
+> - **MLX** — build-pipeline framework to convert open-weight models → `.aiasset`.
+
+### 6a. On-device private tier (replaces Month 3b)
+- `[ ]` `FoundationModelsManager.swift` — wraps `LanguageModelSession` with native
+        Swift tools (HealthKit, Calendar, Contacts)
+- `[ ]` Client-side query classifier in the iOS app: private/fast/offline →
+        on-device AFM; complex/full-tool → existing Claude backend
+- `[ ]` Graceful fallback when Apple Intelligence unavailable (older device / iOS 26)
+- **Why it wins over 3b:** free, offline, nothing leaves the device, no VPS/Ollama.
+- **Limit:** 3B model — good for summarization/classification/structured extraction
+        over local health+calendar data; NOT a Claude replacement, no Python tools.
+
+### 6b. On-device Vision pre-filter for glasses
+- `[ ]` Insert Vision (OCR, barcode, object detection) before `/ask/image`
+- `[ ]` "Read this sign/menu/label" and barcode/QR handled locally; only escalate
+        reasoning-heavy frames to the cloud llm_agent
+- **Why:** cuts latency, API cost, and image exposure on the glasses camera path.
+
+### 6c. Siri AI intent enrichment
+- `[ ]` Adopt iOS 27 App Intents onscreen-awareness + personal-context params in
+        `AskJarvisIntent` so "ask Jarvis about *this*" passes screen context
+
+### 6d. Cost note
+- Small Business Program (<2M downloads — we qualify) gets **free** Private Cloud
+  Compute access to Apple's cloud Foundation Models. Zero marginal cost even for
+  the on-device model's cloud-escalation tier.
+
+---
+
 ## LLM Strategy
 
 **Recommended: Hybrid (API + local), defer fine-tuning**
@@ -145,7 +196,7 @@ only I/O-sensitive services (TTS, wake word, STT, bridges) native per-device.
 | Fast | `claude-haiku-4-5` | Simple commands, device control |
 | Default | `claude-sonnet-4-6` | Conversational, tool use |
 | Powerful | `claude-opus-4-8` | Complex reasoning, code |
-| Private | Local Ollama | Health, finance, location data |
+| Private | Local Ollama (VPS) *or* on-device AFM 3 (iOS 27, preferred once released) | Health, finance, location data |
 
 **Fine-tuning targets (Month 5+, only after 6mo of real query history):**
 1. **Persona LoRA** on 7B model for voice response style consistency (~2k examples)

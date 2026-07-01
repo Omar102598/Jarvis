@@ -82,34 +82,24 @@ class PluginRegistry:
             return False
 
     def _load_mcp_tools(self, plugin_name: str, config: dict) -> list[BaseTool]:
-        """Attempt to load tools from an MCP server config. Returns [] if MCP SDK unavailable."""
+        """Load tools from a plugin-declared MCP server as per-call proxy tools.
+
+        Delegates to ``mcp_loader.load_tools_for_server`` — the same machinery
+        used for config/mcp_servers.yml. This returns tools that open a fresh
+        connection on each call, so they remain valid after loading, fixing the
+        earlier bug where tools captured from a closed MultiServerMCPClient
+        context became unusable once the ``async with`` block exited.
+        """
         try:
-            from langchain_mcp_adapters.client import MultiServerMCPClient  # type: ignore
-            import asyncio
-
-            server_name = config.get("name", plugin_name)
-            client_config = {server_name: config}
-
-            async def _fetch():
-                async with MultiServerMCPClient(client_config) as client:
-                    return client.get_tools()
-
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # In async context — schedule in a new thread
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        future = pool.submit(asyncio.run, _fetch())
-                        return future.result(timeout=30)
-                else:
-                    return asyncio.run(_fetch())
-            except Exception as e:
-                print(f"[PluginRegistry] MCP tools fetch failed for '{plugin_name}': {e}")
-                return []
-        except ImportError:
-            print(f"[PluginRegistry] langchain_mcp_adapters not installed — skipping MCP for '{plugin_name}'")
+            from mcp_loader import load_tools_for_server
+        except ImportError as e:
+            print(f"[PluginRegistry] MCP loader unavailable — skipping MCP for '{plugin_name}': {e}")
             return []
+
+        server_name = config.get("name", plugin_name)
+        tools = load_tools_for_server(server_name, config)
+        print(f"[PluginRegistry] MCP '{server_name}': {len(tools)} proxy tool(s) for plugin '{plugin_name}'")
+        return tools
 
     def get_all_tools(self) -> list[BaseTool]:
         with self._lock:

@@ -76,6 +76,12 @@ from tools.plugins import (
 )
 from tools.profile import get_user_profile, update_user_profile
 from tools.grocery import approve_grocery_order, get_grocery_status, trigger_grocery_run
+from tools.classpass import (
+    book_class,
+    get_class_suggestions,
+    manage_classpass_favorites,
+    trigger_classpass_scan,
+)
 from mcp_loader import load_mcp_tools
 
 MQTT_HOST  = os.environ.get("MQTT_HOST", "localhost")
@@ -202,6 +208,7 @@ _core_tools = [
     get_user_profile, update_user_profile,
     # Grocery agent control
     get_grocery_status, approve_grocery_order, trigger_grocery_run,
+    trigger_classpass_scan, get_class_suggestions, book_class, manage_classpass_favorites,
 ]
 
 # ---------------------------------------------------------------------------
@@ -635,9 +642,11 @@ def on_tts_done(client, userdata, msg):
 # Background agents whose reports are NOT auto-pushed to surfaces here:
 #   - newsletter/job_monitor/web_monitor/price_monitor: noisy/large — read in dashboard
 #   - grocery: pushes its own richer report (with cart links) to surfaces directly
+#   - classpass: pushes its own favorite-opened / auto-booked alerts directly
 #   - ambient: fans its own alerts out directly
 _FANOUT_AGENT_BLOCKLIST = {
-    "newsletter", "job_monitor", "web_monitor", "price_monitor", "grocery", "ambient",
+    "newsletter", "job_monitor", "web_monitor", "price_monitor", "grocery",
+    "classpass", "ambient",
 }
 
 

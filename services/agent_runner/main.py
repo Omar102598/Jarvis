@@ -19,6 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from ambient_agent import AmbientAgent
+from classpass_agent import ClasspassAgent
 from grocery_agent import GroceryAgent
 from job_monitor_agent import JobMonitorAgent
 from newsletter_agent import NewsletterAgent
@@ -45,6 +46,7 @@ AGENT_CLASSES = {
     "task": TaskAgent,
     "price_monitor": PriceMonitorAgent,
     "grocery": GroceryAgent,
+    "classpass": ClasspassAgent,
 }
 
 # Agents that can be dispatched on demand with params from the trigger payload

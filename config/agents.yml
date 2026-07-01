@@ -145,6 +145,47 @@ agents:
       #   imessage_to:           ""       (set to your phone number for iMessage delivery)
 
   # ---------------------------------------------------------------------------
+  # ClassPass Agent — v1
+  #
+  # Scans your ClassPass schedule and ranks classes by:
+  #   • Recovery  — HealthKit HRV / resting-HR / sleep / today's workout load
+  #                 steer intensity (hard day vs. active-recovery day).
+  #   • Calendar  — only classes that fit an open slot are surfaced.
+  #   • Favorites — studios / instructors / class types you've marked favorite.
+  #
+  # Auto-books favorites whose booking window is open (allowlist only); all other
+  # classes are held as suggestions you confirm ("book the 6pm class").
+  #
+  # One-time setup:
+  #   1. Open the Jarvis browser and log in to ClassPass once (session persists).
+  #   2. Set your area:   "set my ClassPass location to Austin, TX"
+  #      (or update_user_profile("classpass_home_location", "Austin, TX"))
+  #   3. Add favorites:   "favorite SoulCycle spin classes and auto-book them"
+  #      (manage_classpass_favorites tool)
+  #
+  # Runs every 30 min from 6am–10pm to catch booking windows as they open.
+  # ---------------------------------------------------------------------------
+  - name: classpass
+    display_name: "ClassPass Agent"
+    description: >
+      Discovers and books ClassPass fitness studio classes ranked by your
+      recovery (HRV/sleep/resting-HR), open calendar slots, and favorite
+      studios/instructors. Auto-books favorites the moment their window opens;
+      suggests the rest for you to confirm. Proactively alerts via the ambient
+      loop when a favorite becomes available.
+    enabled: true
+    schedule: "*/30 6-22 * * *"   # Every 30 min, 6 AM – 10 PM
+    params:
+      action: "scan"
+      # Profile-driven config (set via Jarvis, stored in Redis user:profile):
+      #   classpass_home_location    e.g. "Austin, TX"
+      #   classpass_schedule_url     override the ClassPass entry URL (optional)
+      #   classpass_preferred_times  e.g. ["06:00-09:00", "17:00-20:00"]
+      #   classpass_lookahead_days   how many days ahead to scan (default 2)
+      #   imessage_to                phone number for booking confirmations
+      # Favorites allowlist lives in Redis classpass:favorites (managed via tool).
+
+  # ---------------------------------------------------------------------------
   # Research & Task agents (dispatch targets — no schedule, on-demand only)
   # ---------------------------------------------------------------------------
   - name: research

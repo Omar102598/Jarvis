@@ -21,6 +21,7 @@ Reloading:
     rebuild via the Redis plugin reload queue.
 """
 
+import asyncio
 import concurrent.futures
 import os
 from pathlib import Path
@@ -133,6 +134,38 @@ def _make_proxy_tool(schema: dict) -> BaseTool:
     )
 
 
+def load_tools_for_server(name: str, cfg: dict) -> list[BaseTool]:
+    """Discover one MCP server's tools and return per-call proxy tools.
+
+    This is the single, correct way to turn an MCP server config into usable
+    LangChain tools. The returned tools open a *fresh* connection on every
+    invocation (see ``_make_proxy_tool``), so they stay valid indefinitely —
+    unlike a tool captured from inside a closed ``MultiServerMCPClient`` context.
+
+    ``cfg`` may be either our YAML shape (``transport``/``command``/``args``/
+    ``env`` or ``url``) or an already-built MultiServerMCPClient entry. Discovery
+    runs in a dedicated event loop in a worker thread, so this is safe to call at
+    startup or from within another running loop.
+
+    Reused by both ``load_mcp_tools`` (mcp_servers.yml) and the plugin registry
+    (plugin-declared MCP servers) so there is exactly one MCP tool-loading path.
+    """
+    try:
+        client_cfg = _build_client_config(name, cfg)
+    except Exception:
+        client_cfg = cfg  # assume the plugin already supplied a client entry
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, _discover_server_tools(name, client_cfg))
+            schemas = future.result(timeout=30)
+    except Exception as e:
+        print(f"[MCP] Discovery timeout/error for '{name}': {e}")
+        return []
+
+    return [_make_proxy_tool(s) for s in schemas]
+
+
 def load_mcp_tools() -> list[BaseTool]:
     """Read mcp_servers.yml, discover tools from enabled servers, return proxy tools.
 
@@ -147,30 +180,12 @@ def load_mcp_tools() -> list[BaseTool]:
         print("[MCP] No servers enabled in mcp_servers.yml.")
         return []
 
-    import asyncio
-
-    all_schemas: list[dict] = []
-
+    tools: list[BaseTool] = []
     for name, cfg in enabled.items():
-        try:
-            client_cfg = _build_client_config(name, cfg)
-        except Exception as e:
-            print(f"[MCP] Bad config for server '{name}': {e}")
-            continue
+        server_tools = load_tools_for_server(name, cfg)
+        print(f"[MCP] '{name}': {len(server_tools)} tool(s) discovered")
+        tools.extend(server_tools)
 
-        # Discover in a fresh event loop (safe at startup, before LangGraph's loop)
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(
-                    asyncio.run, _discover_server_tools(name, client_cfg)
-                )
-                schemas = future.result(timeout=30)
-            all_schemas.extend(schemas)
-            print(f"[MCP] '{name}': {len(schemas)} tool(s) discovered")
-        except Exception as e:
-            print(f"[MCP] Discovery timeout/error for '{name}': {e}")
-
-    tools = [_make_proxy_tool(s) for s in all_schemas]
     print(f"[MCP] Total: {len(tools)} tool(s) from {len(enabled)} server(s)")
     return tools
 
