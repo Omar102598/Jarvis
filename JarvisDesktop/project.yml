@@ -13,10 +13,14 @@ targets:
   JarvisDesktop:
     type: application
     platform: macOS
+    # NOTE: xcodegen has no `resources:` target key (silently ignored) —
+    # resources go under `sources:` (Info.plist is excluded; it's referenced
+    # by INFOPLIST_FILE and must not also be copied as a resource).
     sources:
       - path: Sources
-    resources:
       - path: Resources
+        excludes:
+          - "Info.plist"
     entitlements:
       path: JarvisDesktop.entitlements
     settings:

@@ -1,5 +1,5 @@
 {
   "name": "finance",
-  "title": "SoFi Finance",
-  "refresh_secs": 30
+  "title": "Finance Overview",
+  "refresh_secs": 300
 }

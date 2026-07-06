@@ -31,6 +31,8 @@ struct JarvisApp: App {
                 .task {
                     await glassesManager.start()
                     await chatViewModel.connectWebSocket()
+                    await chatViewModel.loadHistory()
+                    chatViewModel.requestNotificationPermission()
                     PresenceManager.shared.startHeartbeat()
                     // Month 4: push HealthKit + calendar context to the backend
                     await HealthKitManager.shared.syncOnLaunch()
@@ -38,9 +40,11 @@ struct JarvisApp: App {
                 }
                 .onChange(of: scenePhase) { _, phase in
                     // Re-sync fitness + calendar context each time the app returns
-                    // to the foreground so the ambient agent always has fresh data.
+                    // to the foreground so the ambient agent always has fresh data,
+                    // and pull chat turns that happened on other surfaces meanwhile.
                     guard phase == .active else { return }
                     Task {
+                        await chatViewModel.refreshHistory()
                         await HealthKitManager.shared.pushSnapshot()
                         await CalendarManager.shared.pushNextEvent()
                     }

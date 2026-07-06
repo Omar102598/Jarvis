@@ -1,5 +1,7 @@
 import Foundation
 import AVFoundation
+import UIKit
+import UserNotifications
 
 @MainActor
 final class ChatViewModel: ObservableObject {
@@ -12,7 +14,7 @@ final class ChatViewModel: ObservableObject {
     private let recorder = VoiceRecorder()
     private var audioPlayer: AVAudioPlayer?
     private var audioDelegate: AudioDelegate?
-    private var webSocketTask: URLSessionWebSocketTask?
+    private let socket = JarvisSocket()
     private var toolPollingTask: Task<Void, Never>?
 
     weak var glassesManager: GlassesManager?
@@ -23,22 +25,84 @@ final class ChatViewModel: ObservableObject {
         toolPollingTask?.cancel()
         toolPollingTask = Task { [weak self] in
             while !Task.isCancelled {
+                guard let self else { return }
                 if let events = try? await JarvisClient.shared.fetchToolEvents() {
-                    self?.toolEvents = events
+                    self.toolEvents = events
                 }
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                // Fast while Jarvis is working (live timeline), slow when idle
+                // so the app isn't hammering the battery 24/7.
+                let interval: UInt64 = self.isProcessing ? 2_500_000_000 : 20_000_000_000
+                try? await Task.sleep(nanoseconds: interval)
             }
         }
     }
 
-    // MARK: WebSocket
+    // MARK: WebSocket (auto-reconnecting)
 
     func connectWebSocket() async {
-        webSocketTask?.cancel()
-        webSocketTask = JarvisClient.shared.connectWebSocket { [weak self] payload in
+        socket.start { [weak self] payload in
             Task { @MainActor in
                 await self?.glassesManager?.send(payload.hudState)
+                self?.notifyIfBackgrounded(payload)
+                self?.appendPush(payload)
             }
+        }
+    }
+
+    /// Proactive pushes (Sentry alerts, live views, agent reports) appear in
+    /// the chat as cards — tap to view snapshots full-screen / play streams.
+    private func appendPush(_ payload: DisplayPayload) {
+        guard payload.type != .audioOnly else { return }
+        let text = payload.body.isEmpty ? payload.title : payload.body
+        guard !text.isEmpty else { return }
+        messages.append(ChatMessage(role: .jarvis, text: text,
+                                    mediaURL: payload.mediaURL))
+    }
+
+    // MARK: Local notifications — surface pushes that arrive while backgrounded
+
+    func requestNotificationPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(
+            options: [.alert, .sound, .badge]
+        ) { _, _ in }
+    }
+
+    private func notifyIfBackgrounded(_ payload: DisplayPayload) {
+        guard UIApplication.shared.applicationState != .active else { return }
+        let body = payload.body.isEmpty ? payload.title : payload.body
+        guard !body.isEmpty else { return }
+        let content = UNMutableNotificationContent()
+        content.title = payload.title.isEmpty ? "Jarvis" : payload.title
+        content.body = String(body.prefix(200))
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        )
+    }
+
+    // MARK: Conversation history — restore on launch, refresh on foreground
+
+    func loadHistory() async {
+        guard messages.isEmpty else { return }
+        await refreshHistory()
+    }
+
+    /// Pull the shared backend history (other surfaces' turns included) and
+    /// replace the local chat if it changed. Skipped mid-request so an
+    /// in-flight loading bubble isn't clobbered.
+    func refreshHistory() async {
+        guard !isProcessing else { return }
+        guard let history = try? await JarvisClient.shared.fetchHistory() else { return }
+        let fresh = history.map {
+            ChatMessage(role: $0.role == "user" ? .user : .jarvis, text: $0.text)
+        }
+        guard !fresh.isEmpty else { return }
+        if fresh.count != messages.count || fresh.last?.text != messages.last?.text {
+            // Media cards (Sentry snapshots, live views) arrive via WebSocket
+            // pushes and are NOT in the backend conversation history — carry
+            // them across the replace or they silently vanish on foreground.
+            let mediaCards = messages.filter { $0.mediaURL != nil }
+            messages = fresh + mediaCards
         }
     }
 

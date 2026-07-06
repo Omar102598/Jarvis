@@ -53,6 +53,23 @@ public final class JarvisClient {
         return response.text
     }
 
+    // MARK: Conversation history — restore chat across app launches
+
+    public struct HistoryMessage: Codable {
+        public let role: String
+        public let text: String
+    }
+
+    private struct HistoryResponse: Codable {
+        let messages: [JarvisClient.HistoryMessage]
+    }
+
+    public func fetchHistory(limit: Int = 40) async throws -> [HistoryMessage] {
+        let request = baseRequest(path: "/history?limit=\(limit)")
+        let response: HistoryResponse = try await execute(request)
+        return response.messages
+    }
+
     // MARK: Presence heartbeat
 
     public func heartbeat(surfaceId: String, type: String, capabilities: [String]) async throws {

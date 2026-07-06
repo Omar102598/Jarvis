@@ -62,6 +62,8 @@ FAVORITES_KEY   = "classpass:favorites"        # JSON list of favorite rules
 SUGGESTIONS_KEY = "classpass:suggestions"      # JSON ranked suggestions from last scan
 PENDING_KEY     = "classpass:pending_booking"  # top suggestion awaiting confirmation
 BOOKED_KEY      = "classpass:booked"           # list of booked class records (history/dedup)
+SEARCH_KEY      = "classpass:search_result"    # latest targeted (studio/day) search
+WAITLIST_KEY    = "classpass:waitlist"         # classes the user is waitlisted on (+ auto_book flag)
 # NB: "classpass:seen" (favorite-alert dedup) is owned by the ambient agent.
 
 # Default ClassPass entry point (overridable via profile.classpass_schedule_url)
@@ -394,21 +396,33 @@ class ClassOffer:
         return self.__dict__.copy()
 
 
-async def _scrape_classes(session, profile: dict) -> list[dict]:
-    """Navigate ClassPass and return raw class dicts parsed from the page."""
+async def _scrape_classes(session, profile: dict, day: str = "") -> list[dict]:
+    """Navigate ClassPass and return raw class dicts parsed from the page.
+
+    If ``day`` is given (e.g. 'Friday', 'Jul 3', 'tomorrow'), click the matching
+    date tab first so the schedule shows that day before scraping.
+    """
     url = profile.get("classpass_schedule_url") or DEFAULT_SCHEDULE_URL
     location = profile.get("classpass_home_location", "")
-    _log(f"Navigating ClassPass: {url}")
+    _log(f"Navigating ClassPass: {url}{(' | day='+day) if day else ''}")
 
+    # ClassPass is a React SPA that streams data continuously, so it almost never
+    # reaches "networkidle" — waiting for it made scans hang ~45s and look "stuck".
+    # domcontentloaded + a fixed settle gives the client-side render time without hanging.
     nav = await _bridge_post(
         session, "/browser/navigate",
-        {"url": url, "wait_until": "networkidle", "timeout_ms": 45000},
-        timeout=60,
+        {"url": url, "wait_until": "domcontentloaded", "timeout_ms": 25000},
+        timeout=35,
     )
     if "error" in nav:
         _log(f"  ✗ Navigation failed: {nav['error']}")
         return []
     await asyncio.sleep(6)
+
+    if day:
+        picked = await _select_day(session, day)
+        _log(f"  date tab for '{day}': {'selected' if picked else 'not found — using default day'}")
+        await asyncio.sleep(3)
 
     # Detect a logged-out state so we can tell the user to sign in once.
     page = await _bridge_get(session, "/browser/read", timeout=25)
@@ -438,6 +452,282 @@ async def _scrape_classes(session, profile: dict) -> list[dict]:
     return await _llm_parse_classes(blob, location)
 
 
+STUDIO_SLUGS_KEY = "classpass:studio_slugs"   # cache: favorite studio name -> slug
+
+
+def _slugify(s: str) -> str:
+    s = s.lower().replace("'", "").replace("’", "")
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+
+
+def _studio_slug(studio: str, city: str) -> str:
+    """Derive a ClassPass slug: 'Barry's' + 'Dallas' -> 'barrys-dallas' (best-effort)."""
+    base, c = _slugify(studio), _slugify(city)
+    return f"{base}-{c}" if c and not base.endswith(f"-{c}") else base
+
+
+async def _refresh_favorite_slugs(session, r) -> dict:
+    """Scrape /profile/favorites → {studio_name_lower: slug} and cache it. The favorites
+    page carries the EXACT slugs (incl. ones we can't derive, e.g. Class Studios →
+    'class-studios-preston-center-dallas')."""
+    nav = await _bridge_post(session, "/browser/navigate",
+        {"url": "https://classpass.com/profile/favorites",
+         "wait_until": "domcontentloaded", "timeout_ms": 20000}, timeout=30)
+    if "error" in nav:
+        return {}
+    await asyncio.sleep(6)
+    js = (
+        "(function(){var links=Array.from(document.querySelectorAll('a[href*=\"/studios/\"]'));"
+        "var out={};links.forEach(function(a){var href=(a.getAttribute('href')||'').split('?')[0];"
+        "var slug=href.replace('/studios/','');var name=(a.innerText||'').replace(/\\s+/g,' ').trim();"
+        "if(slug&&name)out[name.toLowerCase()]=slug;});return out;})();"
+    )
+    res = await _bridge_post(session, "/browser/js", {"script": js}, timeout=20)
+    favs = res.get("result") or {}
+    if isinstance(favs, dict) and favs:
+        try:
+            r.set(STUDIO_SLUGS_KEY, json.dumps(favs))
+        except Exception:
+            pass
+        _log(f"  cached {len(favs)} favorite studio slug(s)")
+    return favs if isinstance(favs, dict) else {}
+
+
+async def _tavily_studio_slug(studio: str, city: str) -> Optional[str]:
+    """Web-search the exact ClassPass studio slug for a NON-favorited studio."""
+    try:
+        from llm_helper import tavily_search
+        results = await tavily_search(f"classpass.com studios {studio} {city}", max_results=5)
+    except Exception:
+        return None
+    for res in results or []:
+        m = re.search(r"classpass\.com/studios/([a-z0-9-]+)", str(res.get("url", "")))
+        if m:
+            return m.group(1)
+    return None
+
+
+def _now_local() -> datetime:
+    """Now in the USER'S timezone, not the container's UTC clock.
+
+    Critical for day math: at 9 PM Friday in Dallas, UTC is already Saturday —
+    naive datetime.now() made "Sunday" resolve to 1 day ahead instead of 2.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago")))
+    except Exception:
+        return datetime.now()
+
+
+def _days_ahead(day: str) -> int:
+    """Number of 'Next day' clicks to reach a day hint from today (0 = today)."""
+    day = (day or "").strip().lower()
+    now = _now_local()
+    if not day or day == "today":
+        return 0
+    if day in ("tomorrow", "tmrw"):
+        return 1
+    for i in range(0, 8):
+        d = now + timedelta(days=i)
+        wd, ab = d.strftime("%A").lower(), d.strftime("%a").lower()
+        if day in (wd, ab) or wd.startswith(day) or day.startswith(ab):
+            return i
+    for fmt in ("%b %d", "%B %d", "%m/%d", "%b %-d", "%B %-d"):
+        try:
+            p = datetime.strptime(day, fmt).replace(year=now.year)
+            delta = (p.date() - now.date()).days
+            if 0 <= delta <= 14:
+                return delta
+        except Exception:
+            continue
+    return 0
+
+
+async def _resolve_studio_slug(session, r, studio: str, city: str) -> list[str]:
+    """Ordered slug candidates to try: favorites cache → derived → web search."""
+    candidates: list[str] = []
+    # 1) favorites cache (refresh once if the studio isn't in it)
+    try:
+        cache = json.loads(r.get(STUDIO_SLUGS_KEY) or "{}")
+    except Exception:
+        cache = {}
+    def _fav_hit(c: dict) -> Optional[str]:
+        s = studio.lower()
+        for name, slug in c.items():
+            if s in name or name.split()[0] in s:
+                return slug
+        return None
+    hit = _fav_hit(cache)
+    if not hit:
+        cache = await _refresh_favorite_slugs(session, r)
+        hit = _fav_hit(cache)
+    if hit:
+        candidates.append(hit)
+    # 2) derived slug
+    derived = _studio_slug(studio, city)
+    if derived not in candidates:
+        candidates.append(derived)
+    # 3) web-search fallback (non-favorited, un-derivable slugs)
+    tav = await _tavily_studio_slug(studio, city)
+    if tav and tav not in candidates:
+        candidates.append(tav)
+    return candidates
+
+
+async def _scrape_studio_page(session, profile: dict, studio: str, day: str, r) -> Optional[list[dict]]:
+    """Scrape a specific studio's schedule from its own ClassPass schedule page
+    (/classes/<slug>), which the default feed omits. Resolves the slug via the
+    favorites cache → derivation → web search, then uses the page's Next-day arrow
+    to reach the requested day. Returns None if no candidate resolves.
+    """
+    city = (profile.get("classpass_home_location", "") or "").split(",")[0].strip()
+    first_word = studio.lower().replace("'", "").split()[0] if studio.split() else ""
+    for slug in await _resolve_studio_slug(session, r, studio, city):
+        url = f"https://classpass.com/classes/{slug}"
+        _log(f"  trying studio schedule: {url}")
+        nav = await _bridge_post(session, "/browser/navigate",
+            {"url": url, "wait_until": "domcontentloaded", "timeout_ms": 20000}, timeout=30)
+        if "error" in nav:
+            continue
+        await asyncio.sleep(6)
+        page = await _bridge_get(session, "/browser/read", timeout=25)
+        text = str(page.get("text") or "")
+        if "page not found" in text.lower() or (first_word and first_word not in text.lower()):
+            continue  # try next candidate slug
+
+        # Step forward to the requested day, VERIFYING the selected date after each
+        # action. Blind next-arrow clicking silently under-shot ("Sunday" landed on
+        # Saturday: the 2nd click fired before the re-render and was swallowed).
+        steps = _days_ahead(day)
+        if steps:
+            reached = await _advance_studio_day(session, steps)
+            _log(f"  day advance to '{day}' ({steps} day(s) ahead): "
+                 f"{'confirmed' if reached else 'UNCONFIRMED — page may show another day'}")
+            page = await _bridge_get(session, "/browser/read", timeout=25)
+            text = str(page.get("text") or "")
+        return await _llm_parse_classes(text[:7000], f"{studio}, {city}")
+    _log("  no studio-page candidate resolved — falling back to feed scrape")
+    return None
+
+
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+
+
+async def _shown_schedule_date(session):
+    """Read the date the studio schedule page is CURRENTLY showing.
+
+    The schedule heading renders like 'Sat, Jul 4' / 'Saturday, July 4' — the
+    first such pattern in the page text is the shown day. Returns a date or
+    None if unreadable.
+    """
+    page = await _bridge_get(session, "/browser/read", timeout=25)
+    text = str(page.get("text") or "")
+    m = re.search(
+        r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,?\s+"
+        r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})\b",
+        text,
+    )
+    if not m:
+        return None
+    now = _now_local()
+    month, day_num = _MONTHS[m.group(1).lower()], int(m.group(2))
+    year = now.year + (1 if (month == 1 and now.month == 12) else 0)
+    try:
+        return datetime(year, month, day_num).date()
+    except ValueError:
+        return None
+
+
+async def _advance_studio_day(session, steps: int) -> bool:
+    """Move a studio schedule page to today+steps, VERIFYING the shown date.
+
+    Reads the page's schedule heading after every action and steps forward or
+    BACK as needed — blind clicking both under-shot (swallowed clicks) and
+    over-shot (retries while the readout lagged) in the past.
+    """
+    target_d = (_now_local() + timedelta(days=steps)).date()
+
+    def _arrow_js(direction: str) -> str:
+        return (
+            "(function(){var nd=Array.from(document.querySelectorAll('button,[role=\"button\"],a'))"
+            ".filter(function(b){return /%s day/i.test((b.getAttribute('aria-label')||'')+' '+(b.innerText||''));});"
+            "if(nd.length){nd[0].click();return 1;}return 0;})();"
+        ) % direction
+
+    # Fast path: click the target date tab directly (tabs exist on studio pages)
+    await _select_day(session, target_d.strftime("%A"))
+    await asyncio.sleep(3)
+
+    blind_clicks = 0
+    for _ in range(steps + 4):
+        shown = await _shown_schedule_date(session)
+        if shown == target_d:
+            return True
+        if shown is None:
+            # Readout unreadable — allow at most exactly `steps` blind forward
+            # clicks total (never spare ones; that's what overshot to Tuesday).
+            if blind_clicks >= steps:
+                break
+            direction = "next"
+            blind_clicks += 1
+        else:
+            direction = "next" if shown < target_d else "previous"
+        res = await _bridge_post(session, "/browser/js",
+                                 {"script": _arrow_js(direction)}, timeout=12)
+        if not res.get("result"):
+            break
+        await asyncio.sleep(3.5)        # let the schedule re-render before re-checking
+
+    return (await _shown_schedule_date(session)) == target_d
+
+
+async def _scrape_for_search(session, profile: dict, studio: str, day: str) -> list[dict]:
+    """Targeted scrape: load the whole day (scroll), keep only cards matching the studio.
+
+    Filtering by studio in JS across the FULL scrolled page (not just the soonest ~20
+    classes) is what lets a specific studio deep in the schedule be found.
+    """
+    url = profile.get("classpass_schedule_url") or DEFAULT_SCHEDULE_URL
+    location = profile.get("classpass_home_location", "")
+    nav = await _bridge_post(
+        session, "/browser/navigate",
+        {"url": url, "wait_until": "domcontentloaded", "timeout_ms": 25000}, timeout=35,
+    )
+    if "error" in nav:
+        return []
+    await asyncio.sleep(6)
+
+    page = await _bridge_get(session, "/browser/read", timeout=25)
+    if _looks_logged_out(str(page.get("text") or "")):
+        return [{"__login_required__": True}]
+
+    if day:
+        await _select_day(session, day)
+        await asyncio.sleep(3)
+
+    # Scroll to load more of the day's schedule (ClassPass lazy-loads on scroll).
+    for _ in range(5):
+        await _bridge_post(session, "/browser/js",
+                           {"script": "window.scrollBy(0, document.body.scrollHeight);"}, timeout=10)
+        await asyncio.sleep(1.2)
+
+    extract_js = (
+        "(function(){ var studio=%s;"
+        "function grab(sel){return Array.from(document.querySelectorAll(sel))"
+        ".map(function(el){return (el.innerText||'').trim();})"
+        ".filter(function(t){return t.length>8 && (!studio || t.toLowerCase().indexOf(studio)>=0);});}"
+        "var cards=grab('[class*=\"ClassCard\"],[class*=\"class-card\"],[data-testid*=\"class\"],article,li');"
+        "return [...new Set(cards)].slice(0,40).join('\\n---\\n'); })();"
+    ) % json.dumps(studio.lower())
+    js = await _bridge_post(session, "/browser/js", {"script": extract_js}, timeout=20)
+    blob = str(js.get("result") or "")
+    if len(blob) < 20:
+        return []
+    return await _llm_parse_classes(blob, location)
+
+
 def _looks_logged_out(text: str) -> bool:
     t = text.lower()
     signals = ["log in to classpass", "sign up for classpass", "welcome back",
@@ -449,14 +739,23 @@ def _looks_logged_out(text: str) -> bool:
 
 
 async def _llm_parse_classes(page_blob: str, location: str) -> list[dict]:
-    """Use the LLM to turn messy schedule text into structured class dicts."""
+    """Use the LLM to turn messy schedule text into structured class dicts.
+
+    A busy metro schedule page can list 40-50+ classes in its rendered text.
+    Asking for all of them risks the model truncating the JSON array mid-object
+    under a small max_tokens budget (which then fails to parse). We bound the
+    problem on both ends: cap how many items we ask for, and give enough
+    max_tokens headroom for that cap, so the array always closes cleanly.
+    """
     if not page_blob.strip():
         return []
     today = datetime.now().strftime("%Y-%m-%d")
+    max_items = 25
     system = (
         "You extract fitness class listings from raw ClassPass schedule text. "
         f"Today is {today}. Location context: {location or 'unknown'}.\n"
-        "Return ONLY a JSON array. Each element:\n"
+        f"Return ONLY a JSON array of AT MOST {max_items} elements — if more classes "
+        "are present, keep the soonest-starting ones. Each element:\n"
         '{"studio": str, "name": str, "instructor": str, '
         '"start_iso": "YYYY-MM-DDTHH:MM:00" (local, infer date/time from text), '
         '"start_human": str, "spots": str, "booking_open": bool}\n'
@@ -464,16 +763,39 @@ async def _llm_parse_classes(page_blob: str, location: str) -> list[dict]:
         "(e.g. 'opens', 'available soon', 'waitlist only'). Skip anything that is not a "
         "bookable class. If nothing parseable, return []. No prose, no markdown."
     )
-    resp = await complete(system=system, user=page_blob[:7000], max_tokens=1500)
-    try:
-        match = re.search(r"\[.*\]", resp or "", re.DOTALL)
-        if not match:
-            return []
-        data = json.loads(match.group())
-        return data if isinstance(data, list) else []
-    except Exception:
+    resp = await complete(system=system, user=page_blob[:7000], max_tokens=4000)
+    data = _parse_json_array(resp or "")
+    if data is None:
         _log("  ⚠ LLM class parse failed.")
         return []
+    return data
+
+
+def _parse_json_array(resp: str) -> Optional[list]:
+    """Parse a JSON array from an LLM response, repairing a truncated tail.
+
+    If the model still hit its token limit mid-object, trim back to the last
+    complete ``}`` and close the array rather than discarding everything.
+    """
+    match = re.search(r"\[.*\]", resp, re.DOTALL)
+    candidate = match.group() if match else resp[resp.find("["):]
+    if not candidate.startswith("["):
+        return None
+    try:
+        data = json.loads(candidate)
+        return data if isinstance(data, list) else None
+    except json.JSONDecodeError:
+        pass
+
+    last_obj_end = candidate.rfind("}")
+    if last_obj_end == -1:
+        return None
+    repaired = candidate[: last_obj_end + 1] + "]"
+    try:
+        data = json.loads(repaired)
+        return data if isinstance(data, list) else None
+    except json.JSONDecodeError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +862,111 @@ async def _book_class_on_page(session, offer: ClassOffer) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Day selection + waitlist automation (best-effort, resilient selectors)
+# ---------------------------------------------------------------------------
+async def _select_day(session, day: str) -> bool:
+    """Click the ClassPass date tab matching a day hint ('Friday', 'Jul 3', 'tomorrow')."""
+    now = _now_local()
+    targets = [day.lower()]
+    dl = day.lower()
+    if dl in ("today",):
+        targets += [now.strftime("%a").lower(), now.strftime("%b %-d").lower()]
+    elif dl in ("tomorrow", "tmrw"):
+        t = now + timedelta(days=1)
+        targets += [t.strftime("%a").lower(), t.strftime("%b %-d").lower(), t.strftime("%b %d").lower()]
+    else:
+        # weekday name → next matching date; also try to normalise "jul 3"/"july 3"
+        for i in range(0, 8):
+            d = now + timedelta(days=i)
+            if d.strftime("%A").lower() == dl or d.strftime("%a").lower() == dl:
+                targets += [d.strftime("%a").lower(), d.strftime("%b %-d").lower()]
+                break
+    js = (
+        "(function(){ var targets=%s;"
+        "var els=Array.from(document.querySelectorAll('button,[role=\"tab\"],a,div,span'))"
+        ".filter(function(e){var t=(e.innerText||'').trim().toLowerCase(); return t.length>0 && t.length<24;});"
+        "for(var i=0;i<els.length;i++){var t=(els[i].innerText||'').trim().toLowerCase();"
+        "for(var j=0;j<targets.length;j++){ if(targets[j] && t.indexOf(targets[j])>=0){ els[i].click(); return true; } } }"
+        "return false; })();"
+    ) % json.dumps([t for t in targets if t])
+    res = await _bridge_post(session, "/browser/js", {"script": js}, timeout=15)
+    return bool(res.get("result"))
+
+
+def _card_finder_js(offer: "ClassOffer", action_js: str) -> str:
+    """Build JS that locates the class card by studio+time, then runs action_js on `scope`."""
+    needle = json.dumps([offer.studio.lower()[:12], offer.start_human.lower()[:8]])
+    return (
+        "(function(){ var needle=%s;"
+        "var cards=Array.from(document.querySelectorAll('[class*=\"ClassCard\"],[class*=\"class-card\"],article,li,div'));"
+        "var card=cards.find(function(c){var t=(c.innerText||'').toLowerCase();"
+        "return needle.every(function(n){return !n || t.indexOf(n)>=0;});});"
+        "var scope=card||document;" + action_js + " })();"
+    ) % needle
+
+
+async def _join_waitlist_on_page(session, offer: "ClassOffer", day: str = "") -> tuple[bool, str]:
+    """Navigate the schedule (for the class's day) and click Join Waitlist on the card."""
+    await _bridge_post(
+        session, "/browser/navigate",
+        {"url": DEFAULT_SCHEDULE_URL, "wait_until": "domcontentloaded", "timeout_ms": 25000},
+        timeout=35,
+    )
+    await asyncio.sleep(5)
+    if day:
+        await _select_day(session, day)
+        await asyncio.sleep(3)
+    action = (
+        "var btns=Array.from(scope.querySelectorAll('button,a')).filter(function(b){"
+        "return /waitlist|join wait/i.test(b.innerText||b.getAttribute('aria-label')||'');});"
+        "if(btns.length){btns[0].click(); return 'clicked';} return 'no_waitlist_button';"
+    )
+    res = await _bridge_post(session, "/browser/js", {"script": _card_finder_js(offer, action)}, timeout=20)
+    if "clicked" not in str(res.get("result", "")).lower():
+        return False, f"No waitlist button found ({res.get('result')})."
+    await asyncio.sleep(2)
+    confirm = (
+        "(function(){var b=Array.from(document.querySelectorAll('button')).filter(function(x){"
+        "return /confirm|join|yes|waitlist/i.test(x.innerText||'');}); if(b.length){b[0].click(); return 'confirmed';} return 'no_confirm';})();"
+    )
+    await _bridge_post(session, "/browser/js", {"script": confirm}, timeout=15)
+    await asyncio.sleep(2)
+    return True, "Joined waitlist."
+
+
+async def _waitlist_spot_open(session, offer: "ClassOffer", day: str = "") -> bool:
+    """Return True if the waitlisted class now shows a bookable spot (not full/waitlist)."""
+    await _bridge_post(
+        session, "/browser/navigate",
+        {"url": DEFAULT_SCHEDULE_URL, "wait_until": "domcontentloaded", "timeout_ms": 25000},
+        timeout=35,
+    )
+    await asyncio.sleep(5)
+    if day:
+        await _select_day(session, day)
+        await asyncio.sleep(3)
+    action = (
+        "var t=(scope.innerText||'').toLowerCase();"
+        "var hasBook=Array.from(scope.querySelectorAll('button,a')).some(function(b){"
+        "return /\\b(book|reserve)\\b/i.test(b.innerText||'');});"
+        "var full=/waitlist|\\bfull\\b|sold out/i.test(t);"
+        "return (hasBook && !full);"
+    )
+    res = await _bridge_post(session, "/browser/js", {"script": _card_finder_js(offer, "return (" + action + ");")}, timeout=20)
+    return bool(res.get("result"))
+
+
+def _class_in_past(offer: "ClassOffer") -> bool:
+    try:
+        start = datetime.fromisoformat(offer.start_iso)
+        if start.tzinfo is None:
+            start = start.astimezone()
+        return start < datetime.now().astimezone()
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Report / delivery
 # ---------------------------------------------------------------------------
 async def _send_imessage(session, phone: str, message: str) -> None:
@@ -576,6 +1003,12 @@ class ClasspassAgent(BaseAgent):
         action = (self.params or {}).get("action", "scan")
         if action == "book":
             return await self._run_book()
+        if action == "search":
+            return await self._run_search()
+        if action == "waitlist_join":
+            return await self._run_waitlist_join()
+        if action == "waitlist_check":
+            return await self._run_waitlist_check()
         return await self._run_scan()
 
     # -- scan -----------------------------------------------------------
@@ -675,6 +1108,175 @@ class ClasspassAgent(BaseAgent):
                 _push_to_surfaces(msg)
                 return msg
             return f"I couldn't complete the booking, sir: {note}"
+
+    # -- targeted search (specific studio / day) ------------------------
+    async def _run_search(self) -> str:
+        params  = self.params or {}
+        studio  = str(params.get("studio", "")).strip()
+        day     = str(params.get("day", "")).strip()
+        profile = _load_profile(self.r)
+        _log(f"=== ClassPass targeted search | studio='{studio}' day='{day}' ===")
+
+        async with aiohttp.ClientSession() as session:
+            if not await _check_bridge(session):
+                return f"Mac Bridge unreachable at {MAC_BRIDGE_URL}, sir."
+            # For a named studio: try its OWN studio page first (reliable, finds studios
+            # missing from the default feed like Barry's), then fall back to the
+            # scroll+filter feed scrape. No studio → the day's general schedule.
+            used_studio_page = False
+            if studio:
+                raw = await _scrape_studio_page(session, profile, studio, day, self.r)
+                used_studio_page = raw is not None
+                if raw is None:
+                    raw = await _scrape_for_search(session, profile, studio, day)
+            else:
+                raw = await _scrape_classes(session, profile, day=day)
+            if raw and raw[0].get("__login_required__"):
+                return "ClassPass needs a sign-in, sir — log in once in the Jarvis browser."
+
+        # On the studio page every class IS that studio, so don't re-filter (the LLM
+        # may label the studio differently); only filter when scraping the general feed.
+        matches = [
+            c for c in raw
+            if isinstance(c, dict) and c.get("name")
+            and (used_studio_page or not studio
+                 or studio.lower() in str(c.get("studio", "")).lower())
+        ]
+        matches.sort(key=lambda c: c.get("start_iso", ""))
+
+        self.r.set(SEARCH_KEY, json.dumps({
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "studio": studio, "day": day, "classes": matches[:20],
+        }), ex=86400)
+
+        where = f" at {studio}" if studio else ""
+        if not matches:
+            when = f" for {day}" if day else ""
+            return (f"No classes found{where}{when} on ClassPass, sir — the studio may not be "
+                    f"on ClassPass in your area, or has nothing scheduled that day.")
+
+        # Be honest about the day actually shown (studio pages default to today and don't
+        # always switch days), rather than blindly echoing the requested day.
+        shown_day = ""
+        try:
+            sd = datetime.fromisoformat(matches[0].get("start_iso", ""))
+            shown_day = sd.strftime("%A")
+        except Exception:
+            pass
+        if day and shown_day and day.strip().lower() not in shown_day.lower() \
+           and day.strip().lower() not in ("today", "tomorrow"):
+            header = (f"Classes{where} — I couldn't switch the studio page to {day}, so these "
+                      f"are its {shown_day} classes, sir:")
+        else:
+            header = f"Classes{where}{(' — ' + shown_day) if shown_day else ''}, sir:"
+        lines = [header]
+        for c in matches[:12]:
+            flag = "" if c.get("booking_open", True) else "  (full / window not open — waitlist available)"
+            instr = f" · {c['instructor']}" if c.get("instructor") else ""
+            lines.append(f"  {c.get('start_human','?')} — {c.get('name','?')}{instr}{flag}")
+        lines.append("Say 'book the <time> class', or 'join the waitlist for the <time>'.")
+        return "\n".join(lines)
+
+    # -- waitlist: join (opt-in auto-book) ------------------------------
+    async def _run_waitlist_join(self) -> str:
+        params    = self.params or {}
+        class_id  = params.get("class_id", "")
+        auto_book = bool(params.get("auto_book", False))
+        chosen = self._find_class(class_id)
+        if not chosen:
+            return ("I couldn't find that class to waitlist, sir. Search or scan ClassPass first, "
+                    "then tell me which class.")
+        offer = ClassOffer(**{k: chosen.get(k) for k in ClassOffer.__annotations__ if k in chosen})
+        day = chosen.get("day") or offer.start_human
+
+        async with aiohttp.ClientSession() as session:
+            if not await _check_bridge(session):
+                return f"Mac Bridge unreachable at {MAC_BRIDGE_URL}, sir."
+            ok, note = await _join_waitlist_on_page(session, offer, day=day)
+            await _bridge_post(session, "/browser/save-state", {}, timeout=15)
+        if not ok:
+            return f"I couldn't join the waitlist, sir: {note}"
+
+        entry = {**offer.to_dict(), "day": day, "auto_book": auto_book,
+                 "joined_at": datetime.now(timezone.utc).isoformat()}
+        wl = [w for w in self._load_waitlist() if w.get("id") != offer.id]
+        wl.append(entry)
+        self.r.set(WAITLIST_KEY, json.dumps(wl))
+        mode = ("and I'll AUTO-BOOK it the instant a spot opens"
+                if auto_book else "and I'll alert you the instant a spot opens")
+        return (f"You're on the waitlist for {offer.name} at {offer.studio} ({offer.start_human}), "
+                f"sir — {mode}.")
+
+    # -- waitlist: poll for open spots, auto-book opted-in --------------
+    async def _run_waitlist_check(self) -> str:
+        wl = self._load_waitlist()
+        if not wl:
+            return "No ClassPass waitlists to check."
+        profile = _load_profile(self.r)
+        phone   = profile.get("imessage_to", "")
+        _log(f"=== ClassPass waitlist check | {len(wl)} entr(ies) ===")
+
+        remaining: list[dict] = []
+        actioned:  list[str]  = []
+        async with aiohttp.ClientSession() as session:
+            if not await _check_bridge(session):
+                return "Mac Bridge unreachable — waitlist check skipped, sir."
+            for w in wl:
+                offer = ClassOffer(**{k: w.get(k) for k in ClassOffer.__annotations__ if k in w})
+                if _class_in_past(offer):
+                    continue  # drop expired waitlists
+                if not await _waitlist_spot_open(session, offer, day=w.get("day", "")):
+                    remaining.append(w)
+                    continue
+                if w.get("auto_book"):
+                    ok, note = await _book_class_on_page(session, offer)
+                    if ok:
+                        self._record_booked(offer)
+                        msg = (f"A spot opened and I booked it for you: {offer.name} at "
+                               f"{offer.studio} ({offer.start_human}), sir.")
+                        await _send_imessage(session, phone, msg)
+                        _push_to_surfaces(msg, title="ClassPass")
+                        actioned.append(f"booked {offer.studio} {offer.start_human}")
+                    else:
+                        remaining.append(w)
+                        _log(f"  ✗ waitlist auto-book failed: {note}")
+                else:
+                    msg = (f"A spot opened on your waitlisted class: {offer.name} at "
+                           f"{offer.studio} ({offer.start_human}). Say 'book it' to grab it, sir.")
+                    await _send_imessage(session, phone, msg)
+                    _push_to_surfaces(msg, title="ClassPass")
+                    actioned.append(f"alerted {offer.studio} {offer.start_human}")
+                    remaining.append(w)  # keep on watch until actually booked
+            await _bridge_post(session, "/browser/save-state", {}, timeout=15)
+
+        self.r.set(WAITLIST_KEY, json.dumps(remaining))
+        return ("Waitlist: " + "; ".join(actioned)) if actioned else \
+               f"Waitlist: checked {len(wl)}, no open spots yet, sir."
+
+    # -- lookup / persistence for search + waitlist ---------------------
+    def _find_class(self, class_id: str) -> Optional[dict]:
+        """Find a class dict by id from suggestions OR the latest targeted search."""
+        for key in (SUGGESTIONS_KEY, SEARCH_KEY):
+            raw = self.r.get(key)
+            if not raw:
+                continue
+            try:
+                classes = json.loads(raw).get("classes", [])
+            except Exception:
+                continue
+            if class_id:
+                hit = next((c for c in classes if c.get("id") == class_id), None)
+                if hit:
+                    return hit
+            elif classes:
+                return classes[0]
+        return None
+
+    def _load_waitlist(self) -> list[dict]:
+        try:
+            return json.loads(self.r.get(WAITLIST_KEY) or "[]")
+        except Exception:
+            return []
 
     # -- ranking --------------------------------------------------------
     def _rank(self, raw, favorites, recovery, busy, profile) -> list[ClassOffer]:

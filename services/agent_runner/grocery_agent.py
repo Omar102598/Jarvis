@@ -42,56 +42,45 @@ STORES = {
     "amazon": {
         "name": "Amazon Fresh",
         "search_url": "https://www.amazon.com/s?k={query}&i=amazonfresh",
-        "cart_url":   "https://www.amazon.com/cart/view",
+        # Amazon Fresh is its own shopping context. A plain /dp/ page loads in RETAIL
+        # mode (its #add-to-cart-button adds to the regular cart). Appending
+        # ?almBrandId=<brand>&fpw=alm switches the page into Fresh mode, where the add
+        # control is #freshAddToCartButton and the item lands in the Fresh cart below.
+        "cart_url":   "https://www.amazon.com/cart/localmarket?almBrandId=QW1hem9uIEZyZXNo",
+        "alm_brand_id": "QW1hem9uIEZyZXNo",   # base64 "Amazon Fresh"
         "orderable":  True,
-        "price_selectors": [
-            ".a-price .a-offscreen",
-            "[data-cy='price-recipe'] .a-offscreen",
-            ".s-price-instructions-style .a-offscreen",
-            ".a-color-price",
-            ".a-price-whole",
-        ],
+        "link_pattern": "/dp/",          # product-detail URL marker (for candidate extraction)
+        "product_base": "https://www.amazon.com",
     },
     "whole_foods": {
         "name": "Whole Foods",
         "search_url": "https://www.amazon.com/s?k={query}&i=wholefoods",
-        "cart_url":   "https://www.amazon.com/alm/storefront?almBrandId=V29sZSBGb29kcw==",
+        "cart_url":   "https://www.amazon.com/cart/localmarket?almBrandId=VUZHIFdob2xlIEZvb2Rz",
+        "alm_brand_id": "VUZHIFdob2xlIEZvb2Rz",   # base64 "UFG Whole Foods"
         "orderable":  True,
-        "price_selectors": [
-            ".a-price .a-offscreen",
-            "[data-cy='price-recipe'] .a-offscreen",
-            ".a-color-price",
-            ".a-price-whole",
-        ],
+        "link_pattern": "/dp/",
+        "product_base": "https://www.amazon.com",
     },
     "target": {
         "name": "Target",
         "search_url": "https://www.target.com/s?searchTerm={query}&category=5xt1a",
         "cart_url":   "https://www.target.com/cart",
         "orderable":  True,
-        "price_selectors": [
-            "[data-test='product-price']",
-            "[data-test='current-price']",
-            "span[class*='CurrentPrice']",
-            "span[class*='Price--']",
-            "[class*='ProductCardPrice']",
-        ],
+        "link_pattern": "/p/",
+        "product_base": "https://www.target.com",
     },
     "heb": {
         "name": "HEB",
         "search_url": "https://www.heb.com/search/?q={query}",
         "cart_url":   "https://www.heb.com/cart",
         "orderable":  True,
-        "price_selectors": [
-            "[data-qe-id='product-price']",
-            ".price-tag",
-            "[class*='ProductPrice']",
-            "[class*='product-price']",
-            "p[class*='price']",
-            "span[class*='price']",
-        ],
+        "link_pattern": "/product-detail/",
+        "product_base": "https://www.heb.com",
     },
 }
+
+# Stores queried each run, in preference order for tie-breaks
+STORE_KEYS = ("amazon", "whole_foods", "target", "heb")
 
 # Pending order Redis key
 PENDING_ORDER_KEY = "grocery:pending_order"
@@ -277,64 +266,6 @@ def _extract_price(text: str) -> Optional[float]:
     return float(match.group(1)) if match else None
 
 
-def _extract_price_from_page_text(page_text: str) -> Optional[float]:
-    prices = re.findall(r"\$\s*(\d{1,3}(?:\.\d{2})?)", str(page_text)[:8000])
-    valid = [float(p) for p in prices if 0.50 <= float(p) <= 80.0]
-    if valid:
-        valid.sort()
-        return valid[len(valid) // 2]
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Headless Playwright scraper — price extraction (fallback)
-# ---------------------------------------------------------------------------
-_PRICE_JS_TEMPLATE = """
-(function() {{
-    var selectors = {selectors_json};
-    for (var s of selectors) {{
-        var els = Array.from(document.querySelectorAll(s))
-            .map(function(el) {{ return el.innerText || el.textContent || ''; }})
-            .filter(function(t) {{ return t && t.includes('$'); }});
-        if (els.length > 0) return els[0].trim();
-    }}
-    return null;
-}})();
-"""
-
-
-async def _scrape_price_headless(
-    session: aiohttp.ClientSession, item: str, store_key: str
-) -> Optional[float]:
-    store = STORES[store_key]
-    url   = store["search_url"].format(query=item.replace(" ", "+"))
-    _log(f"  [headless] {store['name']} → {item}")
-
-    nav = await _bridge_post(
-        session,
-        "/scraper/navigate",
-        {"url": url, "wait_until": "networkidle", "timeout_ms": 30000},
-        timeout=45,
-    )
-    if "error" in nav or nav.get("status") != "ok":
-        return None
-
-    selectors_json = json.dumps(store["price_selectors"])
-    js_res = await _bridge_post(
-        session, "/scraper/js",
-        {"script": _PRICE_JS_TEMPLATE.format(selectors_json=selectors_json)},
-        timeout=15,
-    )
-    raw = js_res.get("result")
-    if raw:
-        price = _extract_price(str(raw))
-        if price:
-            return price
-
-    page_res = await _bridge_get(session, "/scraper/read", timeout=20)
-    return _extract_price_from_page_text(page_res.get("text") or "")
-
-
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -346,6 +277,9 @@ class PriceResult:
     price:      Optional[float] = None
     unit:       str = ""
     error:      str = ""
+    title:      str = ""          # actual matched product title
+    href:       str = ""          # product-detail URL (so the priced product IS the added one)
+    from_cache: bool = False      # True if the product identity came from the resolution cache
 
 
 @dataclass
@@ -357,29 +291,245 @@ class OrderResult:
     status:             str  # "added" | "not_found" | "error" | "budget_exceeded"
     note:               str = ""
     all_prices:         list[PriceResult] = field(default_factory=list)
+    title:              str = ""
+    href:               str = ""
 
 
 # ---------------------------------------------------------------------------
-# Per-store price fetching (all via headless Playwright scraper)
+# Product resolution cache (Redis)
+#
+# Staples repeat week to week, so once we've matched "chicken breast" → a
+# specific Target product we store that mapping and reuse it — refreshing only
+# the live price from the search page, never spending an LLM call again.
+#
+#   grocery:product_map   hash  field="{store}:{norm_item}"  value={href,title}
+#   grocery:favorites     hash  same shape — user-pinned, always wins, never
+#                               overwritten by the resolver.
 # ---------------------------------------------------------------------------
-async def _get_price(session: aiohttp.ClientSession, item: str, store_key: str) -> PriceResult:
-    result = PriceResult(store=store_key, store_name=STORES[store_key]["name"], item=item)
-    price  = await _scrape_price_headless(session, item, store_key)
-    if price:
-        result.price = price
-        result.unit  = f"${price:.2f}"
-        _log(f"  ✓ {result.store_name}: ${price:.2f}")
-    else:
-        _log(f"  ✗ {result.store_name}: no price found for '{item}'")
-    return result
+_PRODUCT_MAP_KEY = "grocery:product_map"
+_FAVORITES_KEY   = "grocery:favorites"
 
 
-async def _compare_prices(session: aiohttp.ClientSession, item: str) -> list[PriceResult]:
-    results: list[PriceResult] = []
-    for store_key in ("amazon", "whole_foods", "target", "heb"):
-        r = await _get_price(session, item, store_key)
-        results.append(r)
+def _norm_item(item: str) -> str:
+    return re.sub(r"\s+", " ", str(item).strip().lower())
+
+
+def _cache_field(store_key: str, item: str) -> str:
+    return f"{store_key}:{_norm_item(item)}"
+
+
+def _cached_href(r, key: str, store_key: str, item: str) -> Optional[str]:
+    try:
+        raw = r.hget(key, _cache_field(store_key, item))
+        return json.loads(raw).get("href") if raw else None
+    except Exception:
+        return None
+
+
+def _cache_put(r, store_key: str, item: str, href: str, title: str) -> None:
+    try:
+        r.hset(_PRODUCT_MAP_KEY, _cache_field(store_key, item),
+               json.dumps({"href": href, "title": title}))
+    except Exception as exc:
+        _log(f"  ⚠ cache write failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Candidate extraction — generic across stores
+#
+# Anchored on each store's product-detail URL marker (link_pattern). For every
+# product link we walk up to the largest ancestor that still contains exactly
+# ONE product and a price — the clean single-product card — and read its title
+# and price. This keeps title+price+href coupled to the SAME product, which is
+# the whole point: the item we price is the item we add.
+# ---------------------------------------------------------------------------
+_CANDIDATE_JS = r"""
+(function(){
+  var pat = "__PAT__";
+  var anchors = Array.from(document.querySelectorAll('a[href*="' + pat + '"]'));
+  var map = {};
+  anchors.forEach(function(a){
+    var href = (a.getAttribute('href') || '').split('?')[0];
+    if(!href) return;
+    // largest ancestor that still wraps exactly one product and has a price
+    var node = a, card = null;
+    for(var d=0; d<10 && node.parentElement; d++){
+      node = node.parentElement;
+      var hrefs = new Set(Array.from(node.querySelectorAll('a[href*="'+pat+'"]'))
+        .map(function(x){ return (x.getAttribute('href')||'').split('?')[0]; }));
+      if(hrefs.size > 1) break;                 // walked into a neighbouring product
+      if(/\$\s?\d/.test(node.innerText||'')) card = node;
+    }
+    if(!card) return;
+    var ctext = card.innerText || '';
+    var pm = ctext.match(/\$\s?[0-9]+(\.[0-9]{2})?/);
+    var atext = (a.innerText || '').replace(/\s+/g, ' ').trim();
+    // A title is descriptive text — not a price, rating, or button label.
+    var isTitle = atext.length > 10
+        && atext.charAt(0) !== '$'
+        && !/^\d/.test(atext)
+        && !/out of 5 stars|reviews|add to cart|\/each|\/ounce|\/fluid/i.test(atext)
+        && /[a-z]{4}/i.test(atext);
+    var cur = map[href] || { href: href, title: null, price: null,
+                             sponsored: /sponsored/i.test(ctext) };
+    if(pm && !cur.price) cur.price = pm[0];
+    if(isTitle && (!cur.title || atext.length > cur.title.length)) cur.title = atext;
+    map[href] = cur;
+  });
+  return Object.keys(map).map(function(h){ return map[h]; })
+    .filter(function(x){ return x.title && x.price; })
+    .slice(0, 12);
+})();
+"""
+
+
+# Strip quantity/size qualifiers ("4 lbs", "5 lb bag", "16 oz", "pack of 4") from a
+# search query — those over-constrain the store search and cause zero matches.
+_QTY_PATTERN = re.compile(
+    r"\b\d+(?:\.\d+)?\s?(?:lb|lbs|pound|pounds|oz|ounce|ounces|ct|count|"
+    r"pk|pack|pint|pints|quart|quarts|gallon|gallons|dozen|g|kg|ml|l|liter|liters)\b\.?",
+    re.IGNORECASE,
+)
+
+
+def _clean_query(item: str) -> str:
+    q = _QTY_PATTERN.sub(" ", item)
+    q = re.sub(r"\bpack of \d+\b", " ", q, flags=re.IGNORECASE)
+    q = re.sub(r"\s+", " ", q).strip(" ,-")
+    return q or item
+
+
+async def _extract_candidates(
+    session: aiohttp.ClientSession, item: str, store_key: str
+) -> list[dict]:
+    """Search the store (logged-in visible browser) and return candidate products."""
+    store = STORES[store_key]
+    url = store["search_url"].format(query=_clean_query(item).replace(" ", "+"))
+    nav = await _bridge_post(session, "/browser/navigate", {"url": url}, timeout=40)
+    if "error" in nav:
+        _log(f"  ✗ {store['name']}: nav failed for '{item}'")
+        return []
+    await asyncio.sleep(4)
+
+    js = _CANDIDATE_JS.replace("__PAT__", store["link_pattern"])
+    res = await _bridge_post(session, "/browser/js", {"script": js}, timeout=20)
+    cands = res.get("result") or []
+    if not isinstance(cands, list):
+        return []
+    # Attach a parsed float price and drop sponsored / unpriced rows
+    out = []
+    for c in cands:
+        price = _extract_price(c.get("price", ""))
+        if price is None or c.get("sponsored"):
+            continue
+        out.append({"href": c["href"], "title": c["title"], "price": price})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# LLM product matcher — one batched call per item (cache-miss stores only)
+# ---------------------------------------------------------------------------
+async def _llm_pick_products(item: str, cands_by_store: dict[str, list[dict]]) -> dict[str, int]:
+    """Return {store_key: chosen_index} picking the best real product per store.
+
+    Only called for stores with no cached/pinned match, and batched across those
+    stores in a single LLM call to keep token use low.
+    """
+    if not cands_by_store:
+        return {}
+
+    lines = [f'Grocery item to match: "{item}"', ""]
+    for store_key, cands in cands_by_store.items():
+        lines.append(f"Store: {store_key}")
+        for i, c in enumerate(cands):
+            lines.append(f"  [{i}] {c['title']} — ${c['price']:.2f}")
+        lines.append("")
+
+    system = (
+        "You match a grocery shopping item to the single best real product from a "
+        "store's search results. Prefer the plain, basic, raw staple version over "
+        "prepared, flavored, pre-cooked, frozen, or organic-premium variants UNLESS "
+        "the item name asks for them. Prefer a normal grocery pack size and a "
+        "sensible price. Never pick an obviously unrelated product.\n"
+        "Return ONLY JSON mapping each store to the chosen candidate index, e.g. "
+        '{"target": {"index": 2}, "amazon": {"index": 0}}. '
+        "Use index -1 for a store if none of its candidates is an acceptable match."
+    )
+    try:
+        resp = await complete(system=system, user="\n".join(lines), max_tokens=400)
+        match = re.search(r"\{.*\}", resp or "", re.DOTALL)
+        data = json.loads(match.group()) if match else {}
+    except Exception as exc:
+        _log(f"  ⚠ LLM product match failed: {exc}")
+        data = {}
+
+    picks: dict[str, int] = {}
+    for store_key in cands_by_store:
+        entry = data.get(store_key) or {}
+        idx = entry.get("index", -1) if isinstance(entry, dict) else -1
+        picks[store_key] = int(idx) if isinstance(idx, (int, float)) else -1
+    return picks
+
+
+# ---------------------------------------------------------------------------
+# Unified per-item resolution across all stores (cache-first, LLM on miss)
+# ---------------------------------------------------------------------------
+async def _resolve_item(
+    session: aiohttp.ClientSession, item: str, store_keys: tuple[str, ...], r
+) -> list[PriceResult]:
+    """For one grocery item, return a PriceResult per store with the actual
+    matched product (title + href + live price). Uses pinned favorites and the
+    resolution cache first; only unresolved stores hit the LLM, batched together.
+    """
+    cands_by_store: dict[str, list[dict]] = {}
+    for store_key in store_keys:
+        cands_by_store[store_key] = await _extract_candidates(session, item, store_key)
         await asyncio.sleep(0.3)
+
+    chosen: dict[str, dict] = {}
+    need_llm: dict[str, list[dict]] = {}
+
+    for store_key, cands in cands_by_store.items():
+        if not cands:
+            continue
+        href_index = {c["href"]: c for c in cands}
+        # 1) user-pinned favorite, if it's on the page
+        fav = _cached_href(r, _FAVORITES_KEY, store_key, item)
+        if fav and fav in href_index:
+            chosen[store_key] = {**href_index[fav], "from_cache": True}
+            continue
+        # 2) previously-resolved product, if still on the page
+        cached = _cached_href(r, _PRODUCT_MAP_KEY, store_key, item)
+        if cached and cached in href_index:
+            chosen[store_key] = {**href_index[cached], "from_cache": True}
+            continue
+        # 3) otherwise this store needs the LLM
+        need_llm[store_key] = cands
+
+    if need_llm:
+        picks = await _llm_pick_products(item, need_llm)
+        for store_key, idx in picks.items():
+            cands = need_llm[store_key]
+            if 0 <= idx < len(cands):
+                c = cands[idx]
+                chosen[store_key] = {**c, "from_cache": False}
+                _cache_put(r, store_key, item, c["href"], c["title"])
+
+    results: list[PriceResult] = []
+    for store_key in store_keys:
+        store_name = STORES[store_key]["name"]
+        c = chosen.get(store_key)
+        if c:
+            results.append(PriceResult(
+                store=store_key, store_name=store_name, item=item,
+                price=c["price"], unit=f"${c['price']:.2f}",
+                title=c["title"], href=c["href"], from_cache=c.get("from_cache", False),
+            ))
+            tag = "cache" if c.get("from_cache") else "LLM"
+            _log(f"  ✓ {store_name}: ${c['price']:.2f} [{tag}] {c['title'][:45]}")
+        else:
+            results.append(PriceResult(store=store_key, store_name=store_name, item=item))
+            _log(f"  ✗ {store_name}: no acceptable match for '{item}'")
     return results
 
 
@@ -466,202 +616,401 @@ async def _fetch_amazon_order_history(session: aiohttp.ClientSession) -> list[st
 
 
 # ---------------------------------------------------------------------------
-# LLM grocery list generation (fitness-aware)
+# Usual order — learned from the user's own Amazon Fresh cart
+#
+# The user builds a cart of their habitual items in Amazon Fresh, then says
+# "learn my fresh cart" (action=learn_cart). We scrape that cart, merge it into
+# grocery:usual_order (frequency-counted across scans), and every future list
+# generation biases toward those staples.
+# ---------------------------------------------------------------------------
+USUAL_ORDER_KEY = "grocery:usual_order"
+
+# The localmarket cart page renders the standard Amazon active-cart widget.
+# Try the modern selectors first, then legacy fallbacks.
+_CART_SCAN_JS = r"""
+(function() {
+    var rows = document.querySelectorAll(
+        '[data-name="Active Items"] [data-asin], .sc-list-body [data-asin], .sc-list-item[data-asin]'
+    );
+    var out = [];
+    rows.forEach(function(row) {
+        var asin = row.getAttribute('data-asin') || '';
+        if (!asin) return;
+        // Amazon nests .a-truncate-full AND .a-truncate-cut inside the title;
+        // reading the parent's textContent concatenates both copies. Prefer the
+        // innermost full-text span.
+        var titleEl = row.querySelector('.sc-product-title .a-truncate-full') ||
+                      row.querySelector('.a-truncate-full') ||
+                      row.querySelector('.sc-product-title, .a-truncate-cut, .sc-grid-item-product-title');
+        var title = titleEl ? titleEl.textContent.replace(/\s+/g, ' ').trim() : '';
+        if (!title) return;
+        // Guard: if the string is still two concatenated copies, halve it.
+        var half = Math.floor(title.length / 2);
+        var a = title.slice(0, half).trim(), b = title.slice(half).trim();
+        if (a.length > 10 && a === b) title = a;
+        var qty = 1;
+        var qtyEl = row.querySelector(
+            '[data-a-selector="value"], .sc-quantity-textfield, input[name="quantityBox"], .a-dropdown-prompt'
+        );
+        if (qtyEl) {
+            var q = parseInt(qtyEl.value || qtyEl.textContent, 10);
+            if (!isNaN(q) && q > 0) qty = q;
+        }
+        var priceEl = row.querySelector('.sc-product-price, .sc-badge-price-to-pay .a-offscreen');
+        var price = priceEl ? priceEl.textContent.trim() : '';
+        out.push({asin: asin, title: title.slice(0, 120), qty: qty, price: price});
+    });
+    // Dedupe by asin
+    var seen = {};
+    return out.filter(function(i) {
+        if (seen[i.asin]) return false;
+        seen[i.asin] = true;
+        return true;
+    }).slice(0, 80);
+})();
+"""
+
+
+async def _scan_amazon_cart(session: aiohttp.ClientSession, store_key: str) -> list[dict]:
+    """Scrape an Amazon localmarket cart (Fresh or Whole Foods) precisely.
+
+    Returns [{"asin", "title", "qty", "price"}] — empty list on failure.
+    """
+    cart_url = STORES[store_key]["cart_url"]
+    _log(f"Scanning {STORES[store_key]['name']} cart: {cart_url}")
+    nav = await _bridge_post(session, "/browser/navigate", {"url": cart_url}, timeout=40)
+    if "error" in nav:
+        _log(f"  ✗ Cart nav failed: {nav['error']}")
+        return []
+
+    # Cold browser starts render the cart slowly — poll up to ~30s.
+    items: list[dict] = []
+    for attempt in range(1, 6):
+        await asyncio.sleep(6)
+        res = await _bridge_post(session, "/browser/js", {"script": _CART_SCAN_JS}, timeout=20)
+        if "error" in res:
+            _log(f"  ⚠ Cart scan JS error (attempt {attempt}): {res['error']}")
+            continue
+        raw = res.get("result", [])
+        items = [
+            i for i in raw
+            if isinstance(i, dict) and i.get("title") and i.get("asin")
+        ] if isinstance(raw, list) else []
+        if items:
+            break
+        _log(f"  … attempt {attempt}: cart not rendered yet, retrying")
+
+    _log(f"  ✓ Scanned {len(items)} items from the {STORES[store_key]['name']} cart.")
+    return items
+
+
+_TEXT_CART_PROMPT = (
+    "The text below is a grocery store's cart page. Extract the CART ITEMS "
+    "(product name + quantity). Ignore recommendations, 'saved for later', ads, "
+    "nav, and totals. Return ONLY a JSON array like "
+    '[{"title": "H-E-B Ground Turkey 93/7", "qty": 1}] — empty array if the '
+    "cart is empty or this doesn't look like a cart."
+)
+
+
+async def _scan_text_cart(session: aiohttp.ClientSession, store_key: str) -> list[dict]:
+    """Scrape a non-Amazon cart (Target/HEB) via page text + LLM extraction.
+
+    DOM selectors for these carts churn constantly; reading the rendered text
+    and letting the LLM pick out the items is far more resilient.
+    Returns [{"title", "qty"}] — no stable per-item id, so titles are the key.
+    """
+    cart_url = STORES[store_key]["cart_url"]
+    _log(f"Scanning {STORES[store_key]['name']} cart: {cart_url}")
+    nav = await _bridge_post(session, "/browser/navigate", {"url": cart_url}, timeout=40)
+    if "error" in nav:
+        _log(f"  ✗ Cart nav failed: {nav['error']}")
+        return []
+
+    text = ""
+    for attempt in range(1, 5):
+        await asyncio.sleep(6)
+        page = await _bridge_get(session, "/browser/read", timeout=25)
+        text = str(page.get("text") or "").strip()
+        if len(text) > 400:
+            break
+        _log(f"  … attempt {attempt}: cart page still thin ({len(text)} chars), retrying")
+
+    if len(text) < 100:
+        _log("  ✗ Could not read the cart page.")
+        return []
+
+    try:
+        resp = await complete(_TEXT_CART_PROMPT, text[:9000], max_tokens=1200)
+        match = re.search(r"\[.*\]", resp or "", re.DOTALL)
+        raw = json.loads(match.group()) if match else []
+    except Exception as exc:
+        _log(f"  ✗ LLM cart extraction failed: {exc}")
+        return []
+
+    items = [
+        {"title": str(i.get("title", "")).strip()[:120],
+         "qty": int(i.get("qty", 1) or 1)}
+        for i in raw
+        if isinstance(i, dict) and str(i.get("title", "")).strip()
+    ][:60]
+    _log(f"  ✓ Extracted {len(items)} items from the {STORES[store_key]['name']} cart.")
+    return items
+
+
+# Which learn-cart scanner each store uses
+_LEARNABLE_STORES = {
+    "amazon":      "amazon_dom",
+    "whole_foods": "amazon_dom",
+    "target":      "text_llm",
+    "heb":         "text_llm",
+}
+
+
+def _norm_title(title: str) -> str:
+    return re.sub(r"\s+", " ", title.lower()).strip()
+
+
+async def _clean_item_names(titles: list[str]) -> dict[str, str]:
+    """LLM-normalize raw Amazon titles into short searchable names.
+
+    'Fairlife 2% Reduced Fat Ultra-Filtered Milk, 52 fl oz' → 'fairlife 2% milk'.
+    Returns {raw_title: clean_name}; falls back to the raw title on failure.
+    """
+    if not titles:
+        return {}
+    batch = titles[:40]
+    try:
+        resp = await complete(
+            system=(
+                "Convert each raw Amazon product title into a short plain product name "
+                "a grocery search box would find (keep brand if distinctive; drop sizes, "
+                "counts, marketing words). Return ONLY a JSON array of the short names, "
+                "in the SAME ORDER as the input array, same length. No other text."
+            ),
+            user=json.dumps(batch),
+            max_tokens=1800,
+        )
+        match = re.search(r"\[.*\]", resp or "", re.DOTALL)
+        if match:
+            names = json.loads(match.group())
+            if isinstance(names, list) and len(names) == len(batch):
+                return {t: str(n) for t, n in zip(batch, names) if n}
+        _log("  ⚠ Name cleanup returned a mismatched list — using raw titles.")
+    except Exception as exc:
+        _log(f"  ⚠ Name cleanup failed ({exc}) — using raw titles.")
+    return {}
+
+
+def _load_usual_order(r: redis_lib.Redis) -> list[dict]:
+    """Return the learned usual-order items (may be empty)."""
+    try:
+        data = json.loads(r.get(USUAL_ORDER_KEY) or "{}")
+        return data.get("items", []) or []
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# LLM meal planning + grocery list generation (fitness-aware, cohesive)
 # ---------------------------------------------------------------------------
 async def _generate_smart_list(
-    past_purchases: list[str], profile: dict, targets: dict
-) -> list[str]:
-    _log("Step 2: Generating fitness-aware grocery list via LLM…")
+    past_purchases: list[str], profile: dict, targets: dict,
+    usual_order: list[dict] | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Plan a cohesive week of meals, then derive the consolidated shopping list.
 
-    prefs  = profile.get("dietary_preferences", ["high protein"])
-    budget = float(profile.get("weekly_budget_usd", 150))
-    goal   = profile.get("goal", "cutting")
+    Returns (meals, grocery_list):
+      meals        — [{"name", "kind": breakfast|lunch|dinner|snack, "ingredients": [...]}]
+      grocery_list — deduped ingredient/staple strings to actually shop for
+
+    Planning meals FIRST (with deliberately overlapping ingredients) is what makes the
+    items cohesive — everything bought maps to real meals instead of a random pile.
+    """
+    _log("Step 2: Planning cohesive meals + grocery list via LLM…")
+
+    prefs      = profile.get("dietary_preferences", ["high protein"])
+    budget     = float(profile.get("weekly_budget_usd", 150))
+    goal       = profile.get("goal", "cutting")
+    fav_meals  = profile.get("favorite_meals", [])
+    preferred  = profile.get("preferred_items", [])
+    avoid      = profile.get("avoid_items", [])
+
+    pref_block = ""
+    if usual_order:
+        staples = ", ".join(
+            f"{u.get('name') or u.get('title')} (x{u.get('qty', 1)})"
+            for u in usual_order[:25]
+        )
+        pref_block += (
+            "The user's USUAL ORDER — items they habitually buy, learned from their own "
+            f"Amazon Fresh cart, with typical quantities: {staples}.\n"
+            "This is the STRONGEST signal of what they actually eat. Build the week's "
+            "meals and list AROUND these staples first (skip any that conflict with the "
+            "avoid list), then add only what's needed to complete the meals and hit the "
+            "macro targets.\n"
+        )
+    if fav_meals:
+        pref_block += f"The user EATS THESE MEALS OFTEN — feature them prominently: {'; '.join(fav_meals)}.\n"
+    if preferred:
+        pref_block += f"Strongly PREFER these exact staples: {', '.join(preferred)}.\n"
+    if avoid:
+        pref_block += f"AVOID / substitute these (use the preferred alternative instead): {', '.join(avoid)}.\n"
 
     system_prompt = (
-        f"You are JARVIS, a British AI assistant optimising a user's nutrition for {goal}.\n"
+        f"You are JARVIS, a British AI assistant planning a week of meals for {goal}.\n"
         f"User stats: {profile['weight_lbs']} lbs, {profile['height_in']} in, "
         f"age {profile.get('age', 25)}, {profile.get('activity_level', 'moderately_active')}.\n"
-        f"Daily targets: {targets['target_calories']} cal "
-        f"(TDEE {targets['tdee']} - {targets['deficit']} deficit), "
-        f"{targets['protein_g']}g protein, {targets['fiber_g']}g fiber.\n"
-        f"Dietary preferences: {', '.join(prefs)}.\n"
-        f"Weekly grocery budget: ${budget:.0f}.\n\n"
-        "Generate a smart weekly grocery list of 12-16 items. Prioritise:\n"
-        "1. High protein-per-dollar (chicken, eggs, tuna, cottage cheese, Greek yogurt)\n"
-        "2. High-fiber vegetables and fruits (broccoli, spinach, berries, sweet potato)\n"
-        "3. Variety across protein, vegetable, carb, and healthy-fat categories\n"
-        "4. Items the user has bought before (familiarity)\n"
-        "5. Staying within the weekly budget\n\n"
-        "Return ONLY a valid JSON array of item name strings. No explanation, no markdown.\n"
-        'Example: ["chicken breast boneless skinless", "large eggs", "non-fat greek yogurt", ...]'
+        f"Daily targets: {targets['target_calories']} cal, {targets['protein_g']}g protein, "
+        f"{targets['fiber_g']}g fiber. Dietary preferences: {', '.join(prefs)}. "
+        f"Weekly budget: ${budget:.0f}.\n\n"
+        f"{pref_block}\n"
+        "Plan a COHESIVE week of simple, repeatable meals whose ingredients deliberately "
+        "OVERLAP so the shop is efficient and nothing is wasted. Build the week AROUND the "
+        "user's favourite meals above, then add complementary meals reusing those ingredients. "
+        "THEN output the consolidated shopping list of exactly the ingredients those meals "
+        "require, plus any breakfast/snack staples.\n"
+        "Rules: 5-7 meals across breakfast/lunch/dinner/snack; high protein-per-dollar "
+        "proteins; high-fibre veg/fruit; reuse ingredients across meals; stay within budget; "
+        "favour items the user has bought before. Every grocery_list item must be used by at "
+        "least one meal.\n"
+        "CRITICAL — grocery_list items MUST be plain product names a store search box can find: "
+        "NO quantities, sizes, weights, or counts (write 'chicken tenderloins', NOT "
+        "'chicken tenderloins 4 lbs'; 'basmati rice', NOT 'basmati rice 5 lb bag').\n\n"
+        "Return ONLY valid JSON, no markdown:\n"
+        '{"meals": [{"name": "Basmati ground beef bowl with roasted veggies", "kind": "dinner", '
+        '"ingredients": ["ground beef", "basmati rice", "bell peppers", "herdez guacamole salsa"]}], '
+        '"grocery_list": ["ground beef", "basmati rice", "bell peppers", "herdez guacamole salsa"]}'
     )
 
     user_msg = (
         f"User's recent Amazon purchases:\n{json.dumps(past_purchases[:20], indent=2)}\n\n"
-        "Generate the weekly grocery list now."
+        "Plan the meals and consolidated shopping list now."
     )
 
-    response = await complete(system=system_prompt, user=user_msg, max_tokens=500)
+    response = await complete(system=system_prompt, user=user_msg, max_tokens=1400)
 
     try:
-        match = re.search(r"\[.*\]", response or "", re.DOTALL)
+        match = re.search(r"\{.*\}", response or "", re.DOTALL)
         if match:
-            items = json.loads(match.group())
-            if isinstance(items, list):
-                _log(f"  ✓ Generated list of {len(items)} items.")
-                return [str(i) for i in items[:16]]
+            data = json.loads(match.group())
+            if isinstance(data, dict):
+                meals = [m for m in data.get("meals", [])
+                         if isinstance(m, dict) and m.get("name")][:8]
+                glist = [str(i) for i in data.get("grocery_list", []) if i][:16]
+                if glist:
+                    _log(f"  ✓ Planned {len(meals)} meals, {len(glist)} grocery items.")
+                    return meals, glist
     except (json.JSONDecodeError, AttributeError):
         pass
 
-    _log("  ⚠ LLM list parse failed — using fallback staples.")
-    return [
+    _log("  ⚠ LLM meal-plan parse failed — using fallback staples (no meal plan).")
+    fallback = [
         "chicken breast boneless skinless", "large eggs", "non-fat greek yogurt",
         "low-fat cottage cheese", "93% lean ground beef", "tuna canned in water",
         "broccoli", "spinach", "sweet potato", "brown rice", "oatmeal rolled oats",
         "almonds", "blueberries", "olive oil",
     ]
+    return [], fallback
 
 
 # ---------------------------------------------------------------------------
-# Cart automation helpers (visible browser)
+# Cart automation — add the EXACT resolved product (visible browser)
+#
+# We navigate straight to the product-detail page we already matched and priced,
+# then click its Add-to-Cart control. Because we go to the resolved href (not
+# "first search result"), the item added is the item we compared on price.
 # ---------------------------------------------------------------------------
-async def _add_to_amazon_cart(
-    session: aiohttp.ClientSession, item: str, store_key: str
+_ADD_TO_CART_JS = r"""
+(function() {
+    var selectors = [
+        '#freshAddToCartButton',                     // Amazon Fresh (fpw=alm context)
+        '#addtodeliverystore',                       // Amazon Fresh "Add to Delivery"
+        '#add-to-cart-button',                       // Amazon retail
+        'input[name="submit.add-to-cart"]',
+        'button[name="submit.add-to-cart"]',
+        '[data-test="shippingButton"]',              // Target (ship)
+        '[data-test="orderPickupButton"]',           // Target (pickup)
+        '[data-test="addToCartButton"]',
+        'button[id*="addToCart"]',
+        'button[data-qe-id="addToCartButton"]',      // HEB
+    ];
+    for (var s of selectors) {
+        var btn = document.querySelector(s);
+        if (btn) { btn.click(); return 'clicked:' + s; }
+    }
+    var els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+    var m = els.find(function(el) {
+        return /add to cart|add item|add for|add to order/i.test(
+            el.innerText || el.value || el.getAttribute('aria-label') || ''
+        );
+    });
+    if (m) { m.click(); return 'clicked:text_match'; }
+    return 'no_add_button';
+})();
+"""
+
+
+async def _add_product_to_cart(
+    session: aiohttp.ClientSession, product: PriceResult
 ) -> tuple[str, str]:
-    store_name = STORES[store_key]["name"]
-    search_url = STORES[store_key]["search_url"].format(query=item.replace(" ", "+"))
-    _log(f"  [cart] {store_name}: {item}")
+    """Navigate to the resolved product page and click Add-to-Cart."""
+    store = STORES[product.store]
+    if not product.href:
+        return "not_found", "No resolved product URL to add."
 
-    nav = await _bridge_post(session, "/browser/navigate", {"url": search_url}, timeout=40)
+    url = product.href if product.href.startswith("http") else store["product_base"] + product.href
+    # For Amazon Fresh / Whole Foods, force the product page into its Fresh shopping
+    # context so the add lands in the Fresh cart (not the regular retail cart).
+    brand = store.get("alm_brand_id")
+    if brand:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}almBrandId={brand}&fpw=alm"
+    _log(f"  [cart] {store['name']}: {product.title[:45]}")
+
+    nav = await _bridge_post(session, "/browser/navigate", {"url": url}, timeout=40)
     if "error" in nav:
         return "error", f"Navigation failed: {nav['error']}"
     await asyncio.sleep(4)
 
-    click_js = """
-    (function() {
-        var links = Array.from(document.querySelectorAll(
-            'h2 a.a-link-normal, .s-product-image-container a, [data-cy="title-recipe"] a'
-        )).filter(function(a) { return a.href && a.href.includes('/dp/'); });
-        if (!links.length) return 'no_products_found';
-        links[0].click();
-        return 'clicked_product';
-    })();
-    """
-    res = await _bridge_post(session, "/browser/js", {"script": click_js}, timeout=15)
-    if "no_products" in str(res.get("result", "")).lower():
-        return "not_found", "No product results found."
-    await asyncio.sleep(4)
-
-    add_js = """
-    (function() {
-        var selectors = [
-            '#add-to-cart-button',
-            'input[name="submit.add-to-cart"]',
-            'button[name="submit.add-to-cart"]',
-        ];
-        for (var s of selectors) {
-            var btn = document.querySelector(s);
-            if (btn) { btn.click(); return 'clicked:' + s; }
-        }
-        var btns = Array.from(document.querySelectorAll('button, input[type="submit"]'))
-            .filter(function(el) { return /add to cart/i.test(el.innerText || el.value || ''); });
-        if (btns.length) { btns[0].click(); return 'clicked:text_match'; }
-        return 'no_add_button_found';
-    })();
-    """
-    res = await _bridge_post(session, "/browser/js", {"script": add_js}, timeout=15)
+    res = await _bridge_post(session, "/browser/js", {"script": _ADD_TO_CART_JS}, timeout=15)
     val = str(res.get("result", "")).lower()
     if "clicked" in val:
-        return "added", f"Added to {store_name}."
+        return "added", f"Added to {store['name']}."
     return "not_found", f"No Add-to-Cart button found ({val})."
 
 
-async def _add_to_target_cart(session: aiohttp.ClientSession, item: str) -> tuple[str, str]:
-    url = STORES["target"]["search_url"].format(query=item.replace(" ", "+"))
-    _log(f"  [cart] Target: {item}")
+async def _verify_cart(session: aiohttp.ClientSession, store_key: str) -> dict:
+    """Navigate to the store's REAL cart and read the actual item count + subtotal.
 
+    This is cart-truth: it catches adds that were clicked but didn't persist, and
+    surfaces the store's real subtotal (which can differ from our summed prices
+    due to unit sizes, promos, or unavailable items).
+    """
+    url = STORES[store_key]["cart_url"]
     nav = await _bridge_post(session, "/browser/navigate", {"url": url}, timeout=40)
     if "error" in nav:
-        return "error", f"Navigation failed: {nav['error']}"
-    await asyncio.sleep(5)
-
-    click_js = """
-    (function() {
-        var links = Array.from(document.querySelectorAll(
-            'a[data-test="product-title"], [data-test="product-details"] a, a[href*="/p/"]'
-        )).filter(function(a) { return a.href; });
-        if (!links.length) return 'no_products';
-        links[0].click();
-        return 'clicked_product';
-    })();
-    """
-    res = await _bridge_post(session, "/browser/js", {"script": click_js}, timeout=15)
-    if "no_products" in str(res.get("result", "")).lower():
-        return "not_found", "No product results found on Target."
+        return {}
     await asyncio.sleep(4)
+    page = await _bridge_get(session, "/browser/read", timeout=20)
+    text = str(page.get("text") or "")
 
-    add_js = """
-    (function() {
-        var selectors = [
-            '[data-test="shippingButton"]',
-            '[data-test="orderPickupButton"]',
-            '[data-test="addToCartButton"]',
-            'button[id*="addToCart"]',
-        ];
-        for (var s of selectors) {
-            var btn = document.querySelector(s);
-            if (btn) { btn.click(); return 'clicked:' + s; }
-        }
-        var btns = Array.from(document.querySelectorAll('button'))
-            .filter(function(b) { return /add to cart/i.test(b.innerText); });
-        if (btns.length) { btns[0].click(); return 'clicked:text_match'; }
-        return 'no_add_button';
-    })();
-    """
-    res = await _bridge_post(session, "/browser/js", {"script": add_js}, timeout=15)
-    val = str(res.get("result", "")).lower()
-    if "clicked" in val:
-        return "added", "Added to Target cart."
-    return "not_found", f"No Add-to-Cart button found on Target ({val})."
-
-
-async def _add_to_heb_cart(session: aiohttp.ClientSession, item: str) -> tuple[str, str]:
-    url = STORES["heb"]["search_url"].format(query=item.replace(" ", "+"))
-    _log(f"  [cart] HEB: {item}")
-
-    nav = await _bridge_post(session, "/browser/navigate", {"url": url}, timeout=40)
-    if "error" in nav:
-        return "error", f"Navigation failed: {nav['error']}"
-    await asyncio.sleep(5)
-
-    add_js = """
-    (function() {
-        var btns = Array.from(document.querySelectorAll('button'))
-            .filter(function(b) {
-                return /add to cart|add item/i.test(b.innerText || b.getAttribute('aria-label') || '');
-            });
-        if (!btns.length) return 'no_add_button';
-        btns[0].click();
-        return 'clicked_add_to_cart';
-    })();
-    """
-    res = await _bridge_post(session, "/browser/js", {"script": add_js}, timeout=15)
-    val = str(res.get("result", "")).lower()
-    if "clicked" in val:
-        return "added", "Added to HEB cart."
-    return "not_found", f"No Add-to-Cart button found on HEB ({val})."
-
-
-async def _add_to_store_cart(
-    session: aiohttp.ClientSession, item: str, store_key: str
-) -> tuple[str, str]:
-    if store_key in ("amazon", "whole_foods"):
-        return await _add_to_amazon_cart(session, item, store_key)
-    elif store_key == "target":
-        return await _add_to_target_cart(session, item)
-    elif store_key == "heb":
-        return await _add_to_heb_cart(session, item)
-    return "error", f"No cart handler for store: {store_key}"
+    out: dict = {}
+    # A cart page can carry several "Subtotal (N items): $X" lines (active cart,
+    # saved-for-later, buy-again). The main cart is the one with the most items.
+    pairs = re.findall(r"[Ss]ubtotal\s*\((\d+)\s*items?\)\s*:?\s*\$?([\d,]+\.\d{2})", text)
+    if pairs:
+        cnt, sub = max(pairs, key=lambda p: int(p[0]))
+        out["count"] = int(cnt)
+        out["subtotal"] = float(sub.replace(",", ""))
+        return out
+    mc = re.search(r"\((\d+)\s*items?\)", text)
+    if mc:
+        out["count"] = int(mc.group(1))
+    ms = re.search(r"[Ss]ubtotal[^$]{0,30}\$([\d,]+\.\d{2})", text)
+    if ms:
+        out["subtotal"] = float(ms.group(1).replace(",", ""))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -722,7 +1071,11 @@ def _build_report(
     order_results: list[OrderResult],
     total_spend: float,
     total_savings: float,
+    cart_truth: dict | None = None,
+    meals: list[dict] | None = None,
 ) -> str:
+    cart_truth = cart_truth or {}
+    meals = meals or []
     budget        = float(profile.get("weekly_budget_usd", 150))
     added         = [r for r in order_results if r.status == "added"]
     failed        = [r for r in order_results if r.status in ("not_found", "error")]
@@ -737,7 +1090,9 @@ def _build_report(
         if key not in store_lines:
             store_lines[key] = []
         price_str = f"${r.best_price:.2f}" if r.best_price else "N/A"
-        store_lines[key].append(f"  ✓ {r.item:<35} {price_str:>7}  {r.assigned_store_name}")
+        # Show the actual product matched/added, not just the search phrase
+        product = (r.title or r.item)[:40]
+        store_lines[key].append(f"  ✓ {product:<40} {price_str:>7}")
 
     height_ft  = int(profile["height_in"]) // 12
     height_in  = int(profile["height_in"]) % 12
@@ -779,6 +1134,37 @@ def _build_report(
     ]
     if total_savings > 0:
         lines.append(f"Savings vs. most expensive options: ${total_savings:.2f}")
+
+    # Meals you can make from this shop (cohesive plan the list was built from)
+    if meals:
+        lines += ["", f"MEALS THIS WEEK ({len(meals)})"]
+        for m in meals:
+            kind = m.get("kind", "")
+            tag = f"[{kind}] " if kind else ""
+            ings = ", ".join(m.get("ingredients", [])[:6])
+            lines.append(f"  • {tag}{m.get('name','')}")
+            if ings:
+                lines.append(f"      {ings}")
+        lines.append("  Ask Jarvis: “what can I make with my groceries?”")
+
+    # Cart-truth: what the store's real cart actually shows post-add
+    if any(cart_truth.get(s) for s in selected_stores):
+        lines += ["", "IN YOUR CART (verified)"]
+        n_added = len([r for r in order_results if r.status == "added"])
+        for s in selected_stores:
+            v = cart_truth.get(s) or {}
+            if not v:
+                continue
+            cnt = v.get("count")
+            sub = v.get("subtotal")
+            parts = []
+            if cnt is not None:
+                parts.append(f"{cnt} items")
+            if sub is not None:
+                parts.append(f"subtotal ${sub:.2f}")
+            lines.append(f"  {STORES[s]['name']:15} {', '.join(parts)}")
+            if cnt is not None and cnt != n_added:
+                lines.append(f"     ⚠ expected {n_added} added — cart shows {cnt}; review before checkout")
 
     lines += ["", "CART LINKS"]
     for s in selected_stores:
@@ -862,7 +1248,104 @@ class GroceryAgent(BaseAgent):
 
         if action == "checkout":
             return await self._run_checkout()
+        if action == "learn_cart":
+            return await self._run_learn_cart()
         return await self._run_full()
+
+    # ------------------------------------------------------------------
+    # Learn the user's usual order from their current Amazon Fresh cart
+    # ------------------------------------------------------------------
+
+    async def _run_learn_cart(self) -> str:
+        # Which carts to scan: params["stores"] = "all", one key, or a list.
+        req = (self.params or {}).get("stores", "amazon")
+        if req == "all":
+            store_keys = list(_LEARNABLE_STORES)
+        elif isinstance(req, str):
+            store_keys = [req]
+        else:
+            store_keys = list(req)
+        store_keys = [s for s in store_keys if s in _LEARNABLE_STORES]
+        if not store_keys:
+            return f"No scannable store in {req!r}. Options: {', '.join(_LEARNABLE_STORES)}, or 'all'."
+
+        _log(f"=== Grocery Agent | learn_cart: scanning {', '.join(store_keys)} ===")
+        async with aiohttp.ClientSession() as session:
+            if not await _check_bridge(session):
+                return f"Mac Bridge unreachable at {MAC_BRIDGE_URL}. Cannot scan carts."
+
+            scanned: list[dict] = []           # each: {title, qty, asin?, store}
+            per_store: dict[str, int] = {}
+            for sk in store_keys:
+                if _LEARNABLE_STORES[sk] == "amazon_dom":
+                    found = await _scan_amazon_cart(session, sk)
+                else:
+                    found = await _scan_text_cart(session, sk)
+                per_store[sk] = len(found)
+                for f in found:
+                    f["store"] = sk
+                scanned.extend(found)
+
+            if not scanned:
+                return (
+                    f"I couldn't read any items from the {', '.join(store_keys)} cart(s). "
+                    "Make sure the carts have items and the browser session is logged in "
+                    "(open the Jarvis browser and sign in once), then try again."
+                )
+
+            # Merge into the persistent usual-order profile
+            try:
+                data = json.loads(self.r.get(USUAL_ORDER_KEY) or "{}")
+            except Exception:
+                data = {}
+            existing: list[dict] = data.get("items", []) or []
+            by_norm = {_norm_title(e.get("title", "")): e for e in existing}
+
+            now = datetime.now(timezone.utc).isoformat()
+            new_titles = [
+                i["title"] for i in scanned
+                if _norm_title(i["title"]) not in by_norm
+            ]
+            clean_names = await _clean_item_names(new_titles)
+
+            added, updated = 0, 0
+            for item in scanned:
+                key = _norm_title(item["title"])
+                if key in by_norm:
+                    entry = by_norm[key]
+                    entry["count"] = int(entry.get("count", 1)) + 1
+                    entry["qty"] = item.get("qty", entry.get("qty", 1))
+                    entry["last_seen"] = now
+                    entry.setdefault("store", item.get("store", "amazon"))
+                    updated += 1
+                else:
+                    by_norm[key] = {
+                        "title": item["title"],
+                        "name": clean_names.get(item["title"], item["title"]),
+                        "asin": item.get("asin", ""),
+                        "store": item.get("store", "amazon"),
+                        "qty": item.get("qty", 1),
+                        "count": 1,
+                        "first_seen": now,
+                        "last_seen": now,
+                    }
+                    added += 1
+
+            # Most-seen first; cap so the prompt stays bounded
+            items = sorted(by_norm.values(), key=lambda e: -int(e.get("count", 1)))[:120]
+            self.r.set(USUAL_ORDER_KEY, json.dumps({"items": items, "updated": now}))
+
+        names = ", ".join(i["name"] for i in items[:12] if i.get("name"))
+        by_store = ", ".join(
+            f"{STORES[s]['name']}: {n}" for s, n in per_store.items()
+        )
+        report = (
+            f"Learned your usual order ({by_store}): {added} new item(s), "
+            f"{updated} seen before — {len(items)} staples on file now. "
+            f"Top items: {names}. Future weekly grocery lists will be built around these."
+        )
+        _log(f"  ✓ {report}")
+        return report
 
     # ------------------------------------------------------------------
     # Full weekly run
@@ -895,26 +1378,28 @@ class GroceryAgent(BaseAgent):
             # ── 2. Amazon order history ────────────────────────────────
             past_purchases = await _fetch_amazon_order_history(session)
 
-            # ── 3. Generate grocery list ───────────────────────────────
-            grocery_list = await _generate_smart_list(past_purchases, profile, targets)
-            _log(f"  Grocery list ({len(grocery_list)} items): {grocery_list}")
+            # ── 3. Generate grocery list (biased toward the learned usual order) ─
+            usual_order = _load_usual_order(self.r)
+            if usual_order:
+                _log(f"  Using learned usual order ({len(usual_order)} staples).")
+            meals, grocery_list = await _generate_smart_list(
+                past_purchases, profile, targets, usual_order
+            )
+            _log(f"  {len(meals)} meals planned; grocery list ({len(grocery_list)} items): {grocery_list}")
 
-            # ── 4. Price comparison ────────────────────────────────────
-            _log(f"Step 3: Price comparison for {len(grocery_list)} items × 4 stores…")
+            # ── 4. Resolve each item to a real product across all stores ─
+            _log(f"Step 3: Resolving {len(grocery_list)} items × {len(STORE_KEYS)} stores "
+                 f"(cache-first, LLM only on miss)…")
             price_map: dict[str, list[PriceResult]] = {}
             for i, item in enumerate(grocery_list, 1):
                 _log(f"  [{i}/{len(grocery_list)}] {item}")
-                price_map[item] = await _compare_prices(session, item)
-                await asyncio.sleep(0.3)
+                price_map[item] = await _resolve_item(session, item, STORE_KEYS, self.r)
 
             priced = sum(
                 1 for prices in price_map.values()
                 if any(p.price is not None for p in prices)
             )
-            _log(f"  ✓ {priced}/{len(grocery_list)} items priced.")
-
-            # Close headless scraper
-            await _bridge_post(session, "/scraper/close", {}, timeout=10)
+            _log(f"  ✓ {priced}/{len(grocery_list)} items matched to a product.")
 
             # ── 5. Select 1-2 best stores ──────────────────────────────
             _log("Step 4: Selecting stores…")
@@ -927,40 +1412,65 @@ class GroceryAgent(BaseAgent):
             for item in grocery_list:
                 assigned = item_to_store.get(item, selected_stores[0])
                 prices   = price_map[item]
-                valid    = [p for p in prices if p.price is not None]
-                best_pr  = min(valid, key=lambda p: p.price) if valid else PriceResult(assigned, STORES[assigned]["name"], item)
+                # the product resolved AT the assigned store — carries the href we add
+                assigned_pr = next(
+                    (p for p in prices if p.store == assigned and p.price is not None), None
+                )
+
+                if assigned_pr is None:
+                    order_results.append(OrderResult(
+                        item=item, assigned_store=assigned,
+                        assigned_store_name=STORES[assigned]["name"],
+                        best_price=None, status="not_found",
+                        note="No matching product at the selected store.", all_prices=prices,
+                    ))
+                    continue
 
                 if total_spend >= budget:
                     order_results.append(OrderResult(
                         item=item, assigned_store=assigned,
                         assigned_store_name=STORES[assigned]["name"],
-                        best_price=best_pr.price, status="budget_exceeded",
+                        best_price=assigned_pr.price, status="budget_exceeded",
                         note=f"Budget ${budget:.0f} reached.", all_prices=prices,
+                        title=assigned_pr.title, href=assigned_pr.href,
                     ))
                     continue
 
-                status, note = await _add_to_store_cart(session, item, assigned)
-                if best_pr.price and status == "added":
-                    total_spend += best_pr.price
+                status, note = await _add_product_to_cart(session, assigned_pr)
+                if status == "added":
+                    total_spend += assigned_pr.price
 
                 order_results.append(OrderResult(
                     item=item, assigned_store=assigned,
                     assigned_store_name=STORES[assigned]["name"],
-                    best_price=best_pr.price, status=status,
+                    best_price=assigned_pr.price, status=status,
                     note=note, all_prices=prices,
+                    title=assigned_pr.title, href=assigned_pr.href,
                 ))
                 await asyncio.sleep(1)
 
-            # ── 7. Save browser session state ──────────────────────────
-            _log("Step 6: Saving browser session state…")
+            # ── 7. Verify carts (cart-truth) ───────────────────────────
+            _log("Step 6: Verifying carts…")
+            cart_truth: dict[str, dict] = {}
+            for s in selected_stores:
+                v = await _verify_cart(session, s)
+                cart_truth[s] = v
+                if v:
+                    _log(f"  ✓ {STORES[s]['name']} cart: {v.get('count','?')} items, "
+                         f"subtotal ${v.get('subtotal','?')}")
+                else:
+                    _log(f"  ⚠ {STORES[s]['name']} cart: could not read a subtotal")
+
+            # ── 8. Save browser session state ──────────────────────────
+            _log("Step 7: Saving browser session state…")
             save_res = await _bridge_post(session, "/browser/save-state", {}, timeout=15)
             if save_res.get("error"):
                 _log(f"  ⚠ Save state failed: {save_res['error']}")
             else:
                 _log(f"  ✓ Session saved.")
 
-            # ── 8. Build report ────────────────────────────────────────
-            _log("Step 7: Building report…")
+            # ── 9. Build report ────────────────────────────────────────
+            _log("Step 8: Building report…")
             added = [r for r in order_results if r.status == "added"]
 
             total_savings = 0.0
@@ -972,7 +1482,15 @@ class GroceryAgent(BaseAgent):
             report = _build_report(
                 profile, targets, selected_stores,
                 order_results, total_spend, total_savings,
+                cart_truth, meals,
             )
+
+            # Persist the week's meal plan so Jarvis can answer "what can I make?"
+            self.r.set("grocery:meal_plan", json.dumps({
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "meals": meals,
+                "groceries": [r.title or r.item for r in order_results if r.status == "added"],
+            }), ex=1209600)  # keep two weeks
 
             # ── 9. Store pending order in Redis ────────────────────────
             pending = {
@@ -981,12 +1499,18 @@ class GroceryAgent(BaseAgent):
                 "stores":     selected_names,
                 "store_keys": selected_stores,
                 "cart_links": {s: STORES[s]["cart_url"] for s in selected_stores},
+                "cart_truth": cart_truth,
+                "meals":      meals,
                 "items":      [
                     {
-                        "item":   r.item,
-                        "store":  r.assigned_store_name,
-                        "price":  r.best_price,
-                        "status": r.status,
+                        "item":      r.item,
+                        "product":   r.title,        # the actual product matched/added
+                        "store":     r.assigned_store_name,
+                        "store_key": r.assigned_store,   # for pin_favorite_product
+                        "price":     r.best_price,
+                        "status":    r.status,
+                        "url":     (STORES[r.assigned_store]["product_base"] + r.href)
+                                   if r.href and not r.href.startswith("http") else r.href,
                     }
                     for r in order_results
                 ],

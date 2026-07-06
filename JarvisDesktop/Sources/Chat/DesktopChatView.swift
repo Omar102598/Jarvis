@@ -9,16 +9,25 @@ final class DesktopChatViewModel: ObservableObject {
     @Published var isProcessing = false
     @Published var errorMessage: String?
 
-    private var wsTask: URLSessionWebSocketTask?
+    private let socket = JarvisSocket()
 
     func connectWebSocket() {
-        wsTask = JarvisClient.shared.connectWebSocket { [weak self] payload in
+        socket.start { [weak self] payload in
             Task { @MainActor [weak self] in
                 // Desktop shows incoming push payloads as chat messages
                 guard let self, payload.type != .audioOnly else { return }
                 let text = payload.body.isEmpty ? payload.title : "\(payload.title)\n\(payload.body)"
                 self.messages.append(ChatMessage(role: .jarvis, text: text))
             }
+        }
+    }
+
+    /// Restore the shared conversation history on launch (backend keeps 40 turns).
+    func loadHistory() async {
+        guard messages.isEmpty else { return }
+        guard let history = try? await JarvisClient.shared.fetchHistory() else { return }
+        messages = history.map {
+            ChatMessage(role: $0.role == "user" ? .user : .jarvis, text: $0.text)
         }
     }
 
@@ -95,7 +104,10 @@ struct DesktopChatView: View {
             .padding(.vertical, 8)
         }
         .navigationTitle("Jarvis")
-        .task { viewModel.connectWebSocket() }
+        .task {
+            viewModel.connectWebSocket()
+            await viewModel.loadHistory()
+        }
     }
 
     private func send() {

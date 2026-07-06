@@ -116,6 +116,8 @@ struct ChatMessage: Identifiable, Equatable {
     let role: Role
     var text: String
     var isLoading: Bool = false
+    /// Snapshot or HLS stream attached to the message (Ring alerts, live view)
+    var mediaURL: String? = nil
 }
 
 // MARK: - Tool event model

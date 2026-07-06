@@ -248,14 +248,17 @@ async def _chrome_osa(script: str) -> str:
 
 @tool
 async def mac_chrome_navigate(url: str) -> str:
-    """Open a URL in the user's existing Chrome browser (keeps your login session).
+    """Open a URL in the user's real Chrome app — for READING/RESEARCH of public pages.
 
-    Use this instead of mac_browser_navigate when you need to interact with a
-    site the user is already signed into (Amazon Fresh, Instacart, banking, etc.).
-    After navigating, use mac_chrome_js or mac_chrome_read to interact.
+    IMPORTANT: this is the user's live Chrome and is NOT necessarily signed into
+    shopping/banking sites, so it will FAIL for cart/checkout/logged-in tasks. For
+    ANY shopping, cart, ordering, or logged-in action, use mac_browser_navigate
+    (the automation browser with the persisted login session) instead. Use this tool
+    only for quickly reading public web pages, research, or when explicitly asked to
+    use the user's own Chrome.
 
     Args:
-        url: Full URL, e.g. 'https://www.amazon.com/alm/storefront'
+        url: Full URL, e.g. 'https://en.wikipedia.org/wiki/...'
     """
     try:
         script = f"""
@@ -332,12 +335,15 @@ end tell
 
 @tool
 async def mac_browser_navigate(url: str) -> str:
-    """Navigate to a website for web automation — ordering, forms, searching.
+    """PREFERRED browser for shopping, carts, checkout, and any logged-in site.
 
-    Use this (NOT mac_open) whenever the goal involves interacting with a website:
-    grocery ordering, web search, filling forms, reading content. Opens a visible
-    Chromium window the user can watch; follow up with mac_browser_read,
-    mac_browser_click, mac_browser_fill to interact with the page.
+    This drives the Jarvis automation browser, which carries the user's PERSISTED
+    LOGIN SESSION (Amazon, Amazon Fresh, Whole Foods, Target, HEB, ClassPass — saved
+    by the grocery/classpass agents). ALWAYS use this FIRST for anything requiring a
+    sign-in: adding items to a cart, ordering, checkout, account pages, booking.
+    Only fall back to mac_chrome_* if this browser (mac_bridge) is unavailable.
+
+    Follow up with mac_browser_read / mac_browser_click / mac_browser_fill.
 
     Args:
         url: Full URL, e.g. 'https://www.amazon.com/alm/storefront' for Amazon Fresh
@@ -428,3 +434,200 @@ async def mac_browser_screenshot(question: str = "Describe what's on the page.")
         ]),
     ])
     return response.content
+
+
+@tool
+async def mac_fresh_add(item: str) -> str:
+    """Reliably add ONE grocery item to the user's Amazon FRESH cart.
+
+    USE THIS for any "add X to my Amazon Fresh cart" / grocery request instead of
+    mac_browser_click on a search page (search pages have many hidden/wrong add
+    buttons and adds silently go to the RETAIL cart). This searches Amazon Fresh,
+    opens the top matching product in Fresh delivery context, and clicks the Fresh
+    add-to-cart button so it lands in the Fresh cart.
+
+    Args:
+        item: Grocery item to add, e.g. 'gold potatoes', 'chicken tenderloins'
+    """
+    brand = "QW1hem9uIEZyZXNo"  # base64 "Amazon Fresh"
+    try:
+        # 1. Search Amazon Fresh
+        search_url = f"https://www.amazon.com/s?k={item.replace(' ', '+')}&i=amazonfresh"
+        await _post("/browser/navigate", url=search_url)
+        await asyncio.sleep(3)
+
+        # 2. Find the first real (non-sponsored) product link
+        find_js = (
+            "(function(){var a=Array.from(document.querySelectorAll('a[href*=\"/dp/\"]'))"
+            ".filter(function(x){var c=x.closest('div');return (x.innerText||'').trim().length>8 "
+            "&& !/sponsored/i.test((c&&c.innerText)||'');});"
+            "return a.length?{href:a[0].getAttribute('href').split('?')[0],"
+            "title:(a[0].innerText||'').trim().slice(0,60)}:null;})();"
+        )
+        res = await _post("/browser/js", script=find_js)
+        found = res.get("result")
+        if not found or not found.get("href"):
+            return f"Couldn't find a product for '{item}' on Amazon Fresh."
+
+        # 3. Open the product page in FRESH context (so the add lands in the Fresh cart)
+        url = f"https://www.amazon.com{found['href']}?almBrandId={brand}&fpw=alm"
+        await _post("/browser/navigate", url=url)
+        await asyncio.sleep(3)
+
+        # 4. Click the Fresh add-to-cart control
+        add_js = (
+            "(function(){var s=['#freshAddToCartButton','#addtodeliverystore','#add-to-cart-button'];"
+            "for(var i=0;i<s.length;i++){var b=document.querySelector(s[i]);if(b){b.click();return 'clicked:'+s[i];}}"
+            "return 'no_button';})();"
+        )
+        r2 = await _post("/browser/js", script=add_js)
+        val = str(r2.get("result", ""))
+        if "clicked" in val:
+            return f"Added “{found.get('title') or item}” to your Amazon Fresh cart."
+        return f"Opened the product for '{item}' but couldn't find its add button ({val})."
+    except Exception as e:
+        return _bridge_unavailable(e)
+
+
+@tool
+async def read_imessages(contact: str = "", limit: int = 15) -> str:
+    """Read the user's recent iMessages from the Mac.
+
+    Use when the user asks "any new texts?", "what did Sarah say?", or
+    "read my messages". Requires Full Disk Access granted to the mac_bridge
+    process (System Settings → Privacy & Security → Full Disk Access).
+
+    Args:
+        contact: Optional phone number or email to filter by (partial match).
+        limit: How many recent messages to return (max 100).
+    """
+    try:
+        data = await _get("/imessage/recent", contact=contact, limit=limit)
+        messages = data.get("messages", [])
+        if not messages:
+            return "No recent messages found" + (f" for '{contact}'." if contact else ".")
+        lines = []
+        for m in messages:
+            who = "You" if m["from"] == "me" else m["from"]
+            lines.append(f"[{m['time']}] {who}: {m['text']}")
+        return "\n".join(lines)
+    except aiohttp.ClientResponseError as e:
+        if e.status == 403:
+            return (
+                "I can't read messages yet — the mac_bridge process needs Full Disk "
+                "Access (System Settings → Privacy & Security → Full Disk Access), "
+                "then restart mac_bridge."
+            )
+        return f"Could not read messages: {e}"
+    except Exception as e:
+        return _bridge_unavailable(e)
+
+
+@tool
+async def mac_list_shortcuts() -> str:
+    """List the macOS Shortcuts available on the user's Mac.
+
+    Shortcuts are the gateway to Siri's ecosystem — HomeKit scenes, Reminders,
+    Focus modes, personal automations. Use this to discover what exists before
+    running one with mac_run_shortcut.
+    """
+    try:
+        data = await _get("/shortcut/list")
+        names = data.get("shortcuts", [])
+        if not names:
+            return "No Shortcuts found on the Mac."
+        return f"{len(names)} Shortcuts available:\n" + "\n".join(f"  • {n}" for n in names)
+    except Exception as e:
+        return _bridge_unavailable(e)
+
+
+@tool
+async def mac_run_shortcut(name: str, input_text: str = "") -> str:
+    """Run a macOS Shortcut by name — Jarvis's bridge into Siri's ecosystem.
+
+    Shortcuts can do things Jarvis's own tools can't: HomeKit scenes, Apple
+    Reminders/Notes, Focus modes, AirPlay, and any automation the user built.
+    Use mac_list_shortcuts first if unsure of the exact name.
+
+    Args:
+        name: Exact Shortcut name, e.g. 'Good Night' or 'Log Water'.
+        input_text: Optional text passed to the Shortcut as input.
+    """
+    try:
+        data = await _post("/shortcut/run", name=name, input=input_text)
+        output = (data.get("output") or "").strip()
+        return f"Shortcut '{name}' ran successfully." + (f" Output: {output}" if output else "")
+    except aiohttp.ClientResponseError as e:
+        return f"Shortcut '{name}' failed ({e.status}). Check the name with mac_list_shortcuts."
+    except Exception as e:
+        return _bridge_unavailable(e)
+
+
+@tool
+async def apple_reminder_add(text: str, list_name: str = "Reminders", due_in_hours: float = 0) -> str:
+    """Add a reminder to Apple Reminders (syncs to the user's iPhone and Watch).
+
+    Use for "remind me to...", "add X to my reminders/to-do list", or when the
+    user wants something to follow them across devices. For grocery items
+    prefer the grocery tools; for calendar events use set_reminder.
+
+    Args:
+        text: The reminder text, e.g. 'Take out the trash'.
+        list_name: Reminders list to add to (default 'Reminders').
+        due_in_hours: Optional — hours from now for the alert (0 = no alert),
+            e.g. 2 for "in 2 hours", 24 for tomorrow.
+    """
+    esc = text.replace('"', '\\"')
+    lst = list_name.replace('"', '\\"')
+    due = (
+        f"set remind me date of newReminder to ((current date) + {due_in_hours} * hours)"
+        if due_in_hours and due_in_hours > 0 else ""
+    )
+    script = f'''
+    tell application "Reminders"
+        set targetList to first list whose name is "{lst}"
+        set newReminder to make new reminder at end of targetList with properties {{name:"{esc}"}}
+        {due}
+        return "ok"
+    end tell
+    '''
+    try:
+        data = await _post("/applescript", script=script, timeout=20)
+        if data.get("error"):
+            return f"Reminders error: {data['error']}"
+        when = f" (alert in {due_in_hours:g}h)" if due_in_hours else ""
+        return f"Added to {list_name}: “{text}”{when}. It'll sync to your iPhone, sir."
+    except Exception as e:
+        return _bridge_unavailable(e)
+
+
+@tool
+async def apple_reminders_list(list_name: str = "Reminders", include_completed: bool = False) -> str:
+    """Read the user's Apple Reminders.
+
+    Use for "what's on my to-do list?", "what reminders do I have?",
+    or before adding potentially duplicate reminders.
+
+    Args:
+        list_name: Which list to read (default 'Reminders').
+        include_completed: Also show completed items (default false).
+    """
+    lst = list_name.replace('"', '\\"')
+    flt = "" if include_completed else " whose completed is false"
+    script = f'''
+    tell application "Reminders"
+        set out to ""
+        repeat with r in (reminders of (first list whose name is "{lst}"){flt})
+            set out to out & "• " & (name of r) & linefeed
+        end repeat
+        return out
+    end tell
+    '''
+    try:
+        data = await _post("/applescript", script=script, timeout=25)
+        if data.get("error"):
+            return f"Reminders error: {data['error']}"
+        items = (data.get("result") or "").strip()
+        return f"{list_name}:\n{items}" if items else f"The {list_name} list is empty, sir."
+    except Exception as e:
+        return _bridge_unavailable(e)

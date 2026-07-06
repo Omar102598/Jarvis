@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jarvis — Service Logs</title>
+<style>
+  :root {
+    --bg: #0a0e14; --panel: #111823; --border: #1e2a3a;
+    --text: #c9d7e8; --dim: #5d7290; --accent: #38bdf8; --ok: #34d399;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, "SF Pro", Segoe UI, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+  header a { color: var(--dim); text-decoration: none; font-size: 13px; }
+  header a:hover { color: var(--text); }
+  .pills { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pill { padding: 4px 12px; border: 1px solid var(--border); border-radius: 99px; background: transparent; color: var(--dim); font-size: 12px; cursor: pointer; font-family: inherit; }
+  .pill.native { border-style: dashed; }
+  .pill.active { border-color: var(--accent); color: var(--accent); background: rgba(56,189,248,0.08); }
+  .controls { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--dim); }
+  select, .controls label { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 12px; }
+  #status { font-size: 11px; }
+  #status.ok { color: var(--ok); }
+  #status.err { color: #f87171; }
+  main { flex: 1; overflow: hidden; padding: 12px 16px 16px; }
+  pre { height: 100%; overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; font: 11.5px/1.55 "SF Mono", ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Service Logs</h1>
+    <a href="/">← Dashboard</a>
+    <div class="pills" id="pills"></div>
+    <div class="controls">
+      <select id="lines">
+        <option value="100">100 lines</option>
+        <option value="200" selected>200 lines</option>
+        <option value="500">500 lines</option>
+        <option value="1000">1000 lines</option>
+      </select>
+      <label><input type="checkbox" id="follow" checked> follow</label>
+      <span id="status"></span>
+    </div>
+  </header>
+  <main><pre id="log">Select a service…</pre></main>
+
+<script>
+let current = null, timer = null;
+
+async function loadServices() {
+  const res = await fetch('/api/logs/services');
+  const data = await res.json();
+  const pills = document.getElementById('pills');
+  const mk = (name, native) => {
+    const b = document.createElement('button');
+    b.className = 'pill' + (native ? ' native' : '');
+    b.textContent = name;
+    b.title = native ? 'native process' : 'docker container';
+    b.onclick = () => select(name, b);
+    pills.appendChild(b);
+    return b;
+  };
+  (data.docker || []).forEach(n => mk(n, false));
+  (data.native || []).forEach(n => mk(n, true));
+  // Auto-select llm_agent (the brain) by default
+  const first = [...pills.children].find(p => p.textContent === 'llm_agent') || pills.children[0];
+  if (first) first.click();
+}
+
+function select(name, btn) {
+  current = name;
+  document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  refresh(true);
+}
+
+async function refresh(jump) {
+  if (!current) return;
+  const lines = document.getElementById('lines').value;
+  const status = document.getElementById('status');
+  try {
+    const res = await fetch(`/api/logs/tail?service=${encodeURIComponent(current)}&lines=${lines}`);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const pre = document.getElementById('log');
+    const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 60;
+    pre.textContent = data.text || '(empty)';
+    if (jump || atBottom) pre.scrollTop = pre.scrollHeight;
+    status.textContent = 'updated ' + new Date().toLocaleTimeString();
+    status.className = 'ok';
+  } catch (e) {
+    status.textContent = 'error: ' + String(e).slice(0, 80);
+    status.className = 'err';
+  }
+}
+
+function schedule() {
+  clearInterval(timer);
+  timer = setInterval(() => {
+    if (document.getElementById('follow').checked) refresh(false);
+  }, 3000);
+}
+
+document.getElementById('lines').onchange = () => refresh(true);
+loadServices();
+schedule();
+</script>
+</body>
+</html>

@@ -478,20 +478,110 @@ struct MessageBubble: View {
                         .background(Color.jBlue)
                         .cornerRadius(12)
                 } else {
-                    Text(message.text)
-                        .font(.system(size: 14))
-                        .foregroundColor(.jText)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Color.jCard)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(Color.jBlue.opacity(0.35), lineWidth: 1)
-                        )
-                        .cornerRadius(12)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(message.text)
+                            .font(.system(size: 14))
+                            .foregroundColor(.jText)
+                        if let media = message.mediaURL, let url = URL(string: media) {
+                            MediaCard(url: url, isVideo: media.contains(".m3u8"))
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.jCard)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.jBlue.opacity(0.35), lineWidth: 1)
+                    )
+                    .cornerRadius(12)
                 }
             }
             if message.role == .jarvis { Spacer(minLength: 60) }
+        }
+    }
+}
+
+// MARK: - Tap-to-view media card (Ring snapshots / live HLS streams)
+
+import AVKit
+
+struct MediaCard: View {
+    let url: URL
+    let isVideo: Bool
+    @State private var showViewer = false
+
+    var body: some View {
+        Group {
+            if isVideo {
+                HStack(spacing: 8) {
+                    Image(systemName: "play.circle.fill").font(.system(size: 28))
+                    Text("LIVE VIEW — tap to play")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                }
+                .foregroundColor(.jBlue)
+                .frame(maxWidth: .infinity, minHeight: 64)
+                .background(Color.jBlue.opacity(0.08))
+                .cornerRadius(10)
+            } else {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFill()
+                    case .failure:
+                        Label("snapshot unavailable", systemImage: "video.slash")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.jBlueDim)
+                    default:
+                        ProgressView().tint(.jBlue)
+                    }
+                }
+                .frame(maxWidth: 260, maxHeight: 160)
+                .clipped()
+                .cornerRadius(10)
+            }
+        }
+        .onTapGesture { showViewer = true }
+        .fullScreenCover(isPresented: $showViewer) {
+            MediaViewer(url: url, isVideo: isVideo)
+        }
+    }
+}
+
+struct MediaViewer: View {
+    let url: URL
+    let isVideo: Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var player: AVPlayer? = nil
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            if isVideo {
+                VideoPlayer(player: player)
+                    .ignoresSafeArea()
+                    .onAppear {
+                        let p = AVPlayer(url: url)
+                        player = p
+                        p.play()
+                    }
+                    .onDisappear { player?.pause() }
+            } else {
+                AsyncImage(url: url) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().scaledToFit()
+                    } else {
+                        ProgressView().tint(.white)
+                    }
+                }
+            }
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 32))
+                    .foregroundColor(.white.opacity(0.85))
+                    .padding()
+            }
         }
     }
 }

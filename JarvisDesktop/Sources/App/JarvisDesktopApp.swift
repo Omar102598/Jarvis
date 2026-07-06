@@ -14,7 +14,7 @@ struct JarvisDesktopApp: App {
                 .environmentObject(chatViewModel)
         } label: {
             // Label is always visible — use .task here to auto-start at launch
-            Image(systemName: "brain.head.profile")
+            MenuBarLabel()
                 .task {
                     await serviceManager.startAll()
                     notificationRouter.start()
@@ -41,5 +41,22 @@ struct JarvisDesktopApp: App {
                 .environmentObject(serviceManager)
                 .frame(width: 480)
         }
+    }
+}
+
+/// Menu-bar icon that also owns the global ⌥Space hotkey — the label view is
+/// the only always-alive view with @Environment(\.openWindow) access.
+private struct MenuBarLabel: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Image(systemName: "brain.head.profile")
+            .onAppear {
+                HotkeyManager.shared.onHotkey = {
+                    openWindow(id: "chat")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                HotkeyManager.shared.register()
+            }
     }
 }

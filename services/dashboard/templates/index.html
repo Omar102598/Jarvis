@@ -544,6 +544,12 @@
     .agent-card.running { border-color: rgba(240,160,32,0.4); box-shadow: 0 0 10px rgba(240,160,32,0.1); }
     .agent-card.err     { border-color: var(--j-red); }
     .agent-name  { color: var(--j-blue); font-weight: 600; font-size: 0.83rem; letter-spacing: 1px; }
+    .persona-name { color: #c792ea; font-style: italic; font-size: 0.78rem; font-weight: 600; }
+    .persona-name::before { content: "“"; opacity: 0.6; }
+    .persona-name::after  { content: "”"; opacity: 0.6; }
+    .kind-badge { font-size: 0.6rem; letter-spacing: 0.5px; padding: 1px 6px; border-radius: 8px; text-transform: uppercase; }
+    .kind-reasoning { background: rgba(199,146,234,0.14); color: #c792ea; border: 1px solid rgba(199,146,234,0.3); }
+    .kind-mechanical{ background: rgba(120,144,160,0.10); color: #6a8296; border: 1px solid rgba(120,144,160,0.25); }
     .agent-desc  { font-size: 0.76rem; color: #4a6077; margin-top: 2px; }
     .agent-sched { font-size: 0.68rem; color: #2d4055; font-family: monospace; margin-top: 4px; }
     .last-run    { font-size: 0.66rem; color: #2d4055; margin-top: 4px; }
@@ -681,6 +687,7 @@
   <span class="brand-name">J.A.R.V.I.S</span>
   <span class="brand-sub ms-3">CONTROL INTERFACE</span>
   <div class="ms-auto d-flex align-items-center gap-3">
+    <a href="/logs" class="brand-sub" style="text-decoration:none;">LOGS</a>
     <span class="nav-clock" id="live-clock"></span>
     <span class="brand-sub" id="refresh-ts"></span>
   </div>
@@ -865,10 +872,14 @@
          id="agent-card-{{ agent.name }}">
       <div class="d-flex align-items-start justify-content-between">
         <div>
-          <div class="d-flex align-items-center gap-2 mb-1">
+          <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
             <span class="agent-name">{{ agent.display_name }}</span>
+            {% if agent.persona_name %}<span class="persona-name">{{ agent.persona_name }}</span>{% endif %}
             <span class="sbadge {% if agent.enabled %}s-on{% else %}s-off{% endif %}">
               {{ "ON" if agent.enabled else "OFF" }}
+            </span>
+            <span class="kind-badge kind-{{ agent.kind }}">
+              {{ "🧠 reasoning" if agent.kind == "reasoning" else "⚙ mechanical" }}
             </span>
           </div>
           <div class="agent-desc">{{ agent.description }}</div>
@@ -1328,6 +1339,17 @@ async function triggerAgent(name) {
   }
 }
 
+// Inline <script> tags set via innerHTML do NOT execute — re-create them so a
+// widget's own JS (e.g. the finance donut) actually runs after injection.
+function runWidgetScripts(container) {
+  container.querySelectorAll('script').forEach(function(old) {
+    const s = document.createElement('script');
+    for (const a of old.attributes) s.setAttribute(a.name, a.value);
+    s.textContent = old.textContent;
+    old.parentNode.replaceChild(s, old);
+  });
+}
+
 async function loadWidgets() {
   try {
     const resp = await fetch('/api/widgets');
@@ -1348,11 +1370,12 @@ async function loadWidgets() {
       card.style.cssText = 'padding:14px';
       card.innerHTML = `<div style="color:var(--j-blue);font-size:0.7rem;letter-spacing:2px;margin-bottom:8px">${esc(w.title||w.name).toUpperCase()}</div>${html}`;
       grid.appendChild(card);
+      runWidgetScripts(card);
       if (w.refresh_secs && w.refresh_secs > 0) {
         setInterval(async () => {
           try {
             const r2 = await fetch(`/widgets/${w.name}/html`);
-            if (r2.ok) { const el = card.querySelector(':scope > div:last-child'); if(el) el.innerHTML = await r2.text(); }
+            if (r2.ok) { const el = card.querySelector(':scope > div:last-child'); if(el){ el.innerHTML = await r2.text(); runWidgetScripts(el); } }
           } catch(e) {}
         }, w.refresh_secs * 1000);
       }

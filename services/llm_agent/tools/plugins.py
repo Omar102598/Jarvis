@@ -197,7 +197,10 @@ def jarvis_restart_safe(service: str = "llm_agent") -> str:
         resp.raise_for_status()
         return f"Restart queued for '{service}'. I'll be back in a moment, sir."
     except Exception as e:
-        return f"Could not queue restart: {e}. Use jarvis_rebuild('{service}') instead."
+        return (
+            f"Could not queue restart: {e}. Dispatch Forge to rebuild it: "
+            f"spawn_task(\"rebuild the {service} service\", agent=\"developer\")."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -236,16 +239,20 @@ def install_mcp_server(
     transport: str = "stdio",
     description: str = "",
     extra_args: str = "",
+    persistent: bool = False,
+    env_keys: str = "",
 ) -> str:
     """Add an MCP server to Jarvis and activate its tools without a rebuild.
 
-    Writes the server config to config/mcp_servers.yml via the mac_bridge,
-    then queues a graph rebuild so the new tools are live within ~5 seconds.
+    APPENDS the server to config/mcp_servers.yml via the mac_bridge (preserving
+    the file's comments), then queues a graph rebuild so the new tools are live
+    within ~10 seconds. This is how any user extends Jarvis by asking.
 
     Provide EITHER npm_package (for stdio/npx servers) OR url (for HTTP servers).
 
     Examples:
-      install_mcp_server("slack", npm_package="@modelcontextprotocol/server-slack")
+      install_mcp_server("slack", npm_package="@modelcontextprotocol/server-slack",
+                         env_keys="SLACK_BOT_TOKEN,SLACK_TEAM_ID")
       install_mcp_server("myapi", url="http://localhost:9000/mcp", transport="streamable_http")
 
     Args:
@@ -256,44 +263,73 @@ def install_mcp_server(
         transport:   "stdio", "streamable_http", or "sse". Auto-detected if omitted.
         description: Human-readable description for the config file.
         extra_args:  Space-separated extra CLI args for stdio servers.
+        persistent:  True for STATEFUL servers that must keep one session open
+                     across tool calls (e.g. browser automation). Default False.
+        env_keys:    Comma-separated env var names the server needs (e.g.
+                     "SLACK_BOT_TOKEN"). Written as ${VAR} references — the
+                     user must add the actual values to .env themselves.
     """
+    import re as _re
     if not npm_package and not url:
         return "Provide either npm_package or url."
+    if not _re.fullmatch(r"[a-z0-9_]+", name):
+        return "Name must be a lowercase slug (a-z, 0-9, underscores)."
 
-    # Auto-detect transport
     if not transport:
         transport = "stdio" if npm_package else "streamable_http"
 
-    # Build config entry
-    entry: dict = {"enabled": True, "transport": transport}
-    if description:
-        entry["description"] = description or f"MCP server: {name}"
-
-    if npm_package:
-        args = ["-y", npm_package]
-        if extra_args:
-            args += extra_args.split()
-        entry["command"] = "npx"
-        entry["args"] = args
-    else:
-        entry["url"] = url
-
-    # Read existing config via mac_bridge
+    # Read existing config via mac_bridge (to check for duplicates only —
+    # we APPEND text rather than re-dumping YAML, which would strip every
+    # comment in the registry).
     try:
         resp = httpx.get(f"{_BASE}/jarvis/read", params={"path": "config/mcp_servers.yml"}, timeout=10)
-        if resp.status_code == 200:
-            config = yaml.safe_load(resp.json().get("content", "")) or {}
-        else:
-            config = {}
+        existing = resp.json().get("content", "") if resp.status_code == 200 else ""
+    except Exception as e:
+        return f"Could not read mcp_servers.yml: {e}"
+    try:
+        servers = (yaml.safe_load(existing) or {}).get("servers", {}) or {}
     except Exception:
-        config = {}
+        return "mcp_servers.yml is not valid YAML — fix it before installing servers."
+    if name in servers:
+        return (f"A server named '{name}' already exists "
+                f"(enabled={servers[name].get('enabled')}). Pick another name or edit it.")
 
-    servers = config.get("servers", {})
-    servers[name] = entry
-    config["servers"] = servers
+    # Build the YAML block as text (2-space indent under `servers:`)
+    lines = [
+        "",
+        "  # ---------------------------------------------------------------------------",
+        f"  # {name} — added by Jarvis (install_mcp_server)",
+        f"  # {description or 'MCP server: ' + name}",
+        "  # ---------------------------------------------------------------------------",
+        f"  {name}:",
+        "    enabled: true",
+    ]
+    if persistent:
+        lines.append("    persistent: true   # stateful — one session held open across calls")
+    lines.append(f"    transport: {transport}")
+    if npm_package:
+        lines += ["    command: npx", "    args:", '      - "-y"', f'      - "{npm_package}"']
+        for a in (extra_args.split() if extra_args else []):
+            lines.append(f'      - "{a}"')
+    else:
+        lines.append(f'    url: "{url}"')
+    keys = [k.strip() for k in env_keys.split(",") if k.strip()]
+    if keys:
+        lines.append("    env:")
+        for k in keys:
+            lines.append(f'      {k}: "${{{k}}}"')
+    if description:
+        lines.append(f'    description: "{description}"')
 
-    # Write back via mac_bridge
-    new_content = yaml.dump(config, default_flow_style=False, allow_unicode=True)
+    new_content = existing.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
+
+    # Validate the assembled file parses before writing
+    try:
+        parsed = yaml.safe_load(new_content)
+        assert name in (parsed.get("servers") or {})
+    except Exception as e:
+        return f"Refusing to write — generated YAML failed validation: {e}"
+
     try:
         resp = httpx.post(
             f"{_BASE}/jarvis/write",
@@ -304,7 +340,7 @@ def install_mcp_server(
     except Exception as e:
         return f"Failed to write mcp_servers.yml: {e}"
 
-    # Queue plugin/graph reload
+    # Queue graph reload
     try:
         import redis as _redis
         r = _redis.Redis(host=os.environ.get("REDIS_HOST", "redis"), decode_responses=True)
@@ -313,10 +349,36 @@ def install_mcp_server(
         return f"Config written but reload failed: {e}. Rebuild llm_agent to activate."
 
     transport_note = f"npx {npm_package}" if npm_package else url
+    key_note = (f" NOTE: add {', '.join(keys)} to .env or its tools will fail."
+                if keys else "")
     return (
-        f"MCP server '{name}' added ({transport_note}).\n"
-        f"Graph rebuild queued — new tools will be active within ~10 seconds."
+        f"MCP server '{name}' added ({transport_note}). "
+        f"Graph rebuild queued — new tools live in ~10 seconds.{key_note}"
     )
+
+
+@tool
+def list_mcp_servers() -> str:
+    """List every MCP server in Jarvis's registry with its status.
+
+    Use when the user asks "what MCP servers do I have?", "what integrations
+    are installed?", or before installing one that may already exist.
+    """
+    try:
+        resp = httpx.get(f"{_BASE}/jarvis/read", params={"path": "config/mcp_servers.yml"}, timeout=10)
+        servers = (yaml.safe_load(resp.json().get("content", "")) or {}).get("servers", {}) or {}
+    except Exception as e:
+        return f"Could not read the MCP registry: {e}"
+    if not servers:
+        return "No MCP servers in the registry."
+    lines = [f"{len(servers)} MCP server(s) in the registry:"]
+    for sname, cfg in servers.items():
+        state = "ENABLED" if cfg.get("enabled") else "disabled"
+        mode = " (persistent)" if cfg.get("persistent") else ""
+        what = cfg.get("url") or " ".join(cfg.get("args", [])[-1:]) or cfg.get("command", "")
+        lines.append(f"  • {sname}: {state}{mode} — {what}"
+                     + (f" — {cfg['description']}" if cfg.get("description") else ""))
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

@@ -56,30 +56,55 @@ from tools.dispatch import ACTIVE_ROOM, ask_subagent, spawn_task
 from tools.code_exec import run_python
 from tools.spotify import spotify_control
 from tools.spotify_desktop import spotify_desktop
+# Read-only code inspection. Writes/builds/rebuilds are NOT core tools —
+# all code modification is dispatched to the developer agent (Forge) via
+# spawn_task(task, agent="developer").
 from tools.self_modify import (
     jarvis_find_file, jarvis_grep_code,
-    jarvis_list_files, jarvis_read_code, jarvis_rebuild, jarvis_write_code,
+    jarvis_list_files, jarvis_read_code,
 )
-from tools.developer import dev_list_dir, dev_read_file, dev_search_code, dev_shell, dev_write_file
+from tools.developer import dev_list_dir, dev_read_file, dev_search_code
 from tools.github_tool import github_tool
 from tools.notes import manage_notes
+# mac_browser_* wrappers are no longer bound — fresh-session browsing now goes
+# through the Playwright MCP server (config/mcp_servers.yml). mac_chrome_* and
+# mac_fresh_add stay: they drive the user's signed-in browser via mac_bridge.
 from tools.mac import (
-    mac_applescript, mac_browser_click, mac_browser_fill,
-    mac_browser_navigate, mac_browser_read, mac_browser_screenshot,
+    mac_applescript,
+    mac_fresh_add,
     mac_chrome_navigate, mac_chrome_read, mac_chrome_js,
     mac_clipboard, mac_notify, mac_open,
     mac_shell, mac_screenshot, mac_spotlight, mac_system_info, mac_type,
+    mac_list_shortcuts, mac_run_shortcut, read_imessages,
+    apple_reminder_add, apple_reminders_list,
 )
 from tools.plugins import (
     install_plugin, install_mcp_server, create_dashboard_widget,
-    jarvis_restart_safe, list_plugins, test_tool,
+    jarvis_restart_safe, list_mcp_servers, list_plugins, test_tool,
+)
+from tools.setup import get_setup_status, personalize_jarvis
+from tools.ring import (
+    check_ring_camera, list_ring_cameras, ring_live_view, ring_privacy,
+    who_came_by,
+)
+# PetKit pet feeders + water fountains (via the PetKit HACS integration in
+# Home Assistant — uses the existing HA_URL / HA_TOKEN, no extra creds in Jarvis).
+from tools.petkit import (
+    feed_pet, get_feeder_status, get_feeding_schedule, get_fountain_status,
+    list_petkit_devices, toggle_feeding_plan,
 )
 from tools.profile import get_user_profile, update_user_profile
-from tools.grocery import approve_grocery_order, get_grocery_status, trigger_grocery_run
+from tools.workout import get_todays_workout, get_workout_plan, plan_workout_week
+from tools.grocery import (
+    approve_grocery_order, get_grocery_status, get_usual_order,
+    learn_fresh_cart, pin_favorite_product, suggest_meals, trigger_grocery_run,
+)
 from tools.classpass import (
     book_class,
     get_class_suggestions,
+    join_classpass_waitlist,
     manage_classpass_favorites,
+    search_classpass,
     trigger_classpass_scan,
 )
 from mcp_loader import load_mcp_tools
@@ -123,6 +148,7 @@ _HAIKU_TRIGGERS = frozenset([
     "lights", "thermostat", "lock", "unlock",
     "volume up", "volume down", "mute",
     "open ", "close ",
+    "feed the", "feed my",
 ])
 
 
@@ -177,8 +203,14 @@ def _start_thinking_rotation(stop_event: threading.Event) -> None:
 _core_tools = [
     # Smart home
     control_device, get_device_states, set_scene, get_presence,
+    # PetKit pet feeders + water fountains (via Home Assistant)
+    feed_pet, get_feeder_status, get_feeding_schedule, toggle_feeding_plan,
+    get_fountain_status, list_petkit_devices,
     # Information
     web_search, fetch_url, get_camera_snapshot, get_weather, get_calendar_events,
+    # Ring cameras (via ring-mqtt bridge)
+    check_ring_camera, list_ring_cameras, ring_privacy,
+    ring_live_view, who_came_by,
     # Memory
     remember, recall, forget,
     # Files & system
@@ -192,23 +224,26 @@ _core_tools = [
     # macOS laptop control
     mac_screenshot, mac_clipboard, mac_system_info, mac_shell, mac_applescript,
     mac_open, mac_spotlight, mac_type, mac_notify,
-    # Chrome control (user's signed-in browser)
-    mac_chrome_navigate, mac_chrome_read, mac_chrome_js,
-    # Browser automation (Playwright via mac_bridge)
-    mac_browser_navigate, mac_browser_read, mac_browser_click,
-    mac_browser_fill, mac_browser_screenshot,
-    # Self-modification (Jarvis repo only)
-    jarvis_find_file, jarvis_grep_code, jarvis_list_files,
-    jarvis_read_code, jarvis_write_code, jarvis_rebuild,
-    # Developer agent (any project on the Mac)
-    dev_list_dir, dev_read_file, dev_write_file, dev_shell, dev_search_code,
+    # Chrome control (user's signed-in browser) + Amazon Fresh add
+    mac_chrome_navigate, mac_chrome_read, mac_chrome_js, mac_fresh_add,
+    # Siri ecosystem (macOS Shortcuts) + iMessage reading + Apple Reminders
+    mac_list_shortcuts, mac_run_shortcut, read_imessages,
+    apple_reminder_add, apple_reminders_list,
+    # Code inspection, read-only (writes go through Forge via spawn_task)
+    jarvis_find_file, jarvis_grep_code, jarvis_list_files, jarvis_read_code,
+    dev_list_dir, dev_read_file, dev_search_code,
     # Plugin management & personalization
     install_plugin, install_mcp_server, create_dashboard_widget,
-    jarvis_restart_safe, list_plugins, test_tool,
+    jarvis_restart_safe, list_mcp_servers, list_plugins, test_tool,
     get_user_profile, update_user_profile,
+    get_setup_status, personalize_jarvis,
     # Grocery agent control
-    get_grocery_status, approve_grocery_order, trigger_grocery_run,
+    get_grocery_status, approve_grocery_order, trigger_grocery_run, suggest_meals,
+    learn_fresh_cart, get_usual_order, pin_favorite_product,
+    # Workout coach (Apollo)
+    get_todays_workout, get_workout_plan, plan_workout_week,
     trigger_classpass_scan, get_class_suggestions, book_class, manage_classpass_favorites,
+    search_classpass, join_classpass_waitlist,
 ]
 
 # ---------------------------------------------------------------------------
@@ -330,6 +365,9 @@ threading.Thread(target=_plugin_reload_watcher, daemon=True).start()
 
 _SENT_END = re.compile(r'(?<=[.!?…])\s+')
 
+# Camera/video-frame markers embedded by the mobile_gateway (/ask/image, /ask/video)
+_IMG_MARKER = re.compile(r"\[GLASSES_CAMERA_IMAGE:\s*(data:image/[^\]]+)\]")
+
 
 def _split_sentences(buf: str) -> tuple[list[str], str]:
     parts = _SENT_END.split(buf)
@@ -357,6 +395,7 @@ def _build_system_prompt(room: str) -> list[dict]:
     prefs          = profile.get("preferences", {})
     active_plugins = ", ".join(profile.get("enabled_plugins", [])) or "none"
     verbosity      = prefs.get("response_verbosity", "balanced")
+    personas       = r.get("agents:personas") or ""
 
     is_voice = not room.startswith(("mobile-", "glasses-"))
     voice_note = (
@@ -365,11 +404,18 @@ def _build_system_prompt(room: str) -> list[dict]:
         if is_voice else ""
     )
 
+    persona_note = (
+        f"\nYour reasoning-agent team (refer to them by name when handing off a task, "
+        f"e.g. 'I'll pass that to Brad'): {personas}"
+        if personas else ""
+    )
+
     dynamic = (
         f"Current time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
         f"User location: {room}\n"
         f"Active plugins: {active_plugins}\n"
         f"Response style: {verbosity}"
+        f"{persona_note}"
         f"{voice_note}"
     )
 
@@ -423,7 +469,20 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
         elif msg["role"] == "assistant":
             history.append(AIMessage(content=content))
 
-    messages = [system] + history + [HumanMessage(content=text)]
+    # Convert camera-image markers into REAL multimodal content blocks. The
+    # gateway embeds photos/video-frames as [GLASSES_CAMERA_IMAGE: data:...]
+    # text markers; without this conversion Claude receives megabytes of
+    # base64 AS TEXT and cannot see the image at all.
+    _img_uris = _IMG_MARKER.findall(text)
+    if _img_uris:
+        _cleaned = _IMG_MARKER.sub("", text).strip() or "What am I looking at?"
+        user_content: list | str = (
+            [{"type": "text", "text": _cleaned}]
+            + [{"type": "image_url", "image_url": {"url": u}} for u in _img_uris[:8]]
+        )
+    else:
+        user_content = text
+    messages = [system] + history + [HumanMessage(content=user_content)]
 
     full_response = ""
     sentence_buf  = ""
@@ -461,23 +520,25 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
             # content can be a plain str (streaming text delta) or a list of
             # Anthropic content blocks ({"type":"text","text":"..."}) which is
             # what the API returns after a tool-use turn completes.
+            # NOTE: must not reuse the `text` parameter here — it's the user's
+            # message and is stored to conversation history after the loop.
             raw_content = chunk.content
             if isinstance(raw_content, str):
-                text = raw_content
+                chunk_text = raw_content
             elif isinstance(raw_content, list):
-                text = "".join(
+                chunk_text = "".join(
                     item.get("text", "") if isinstance(item, dict) else ""
                     for item in raw_content
                     if isinstance(item, dict) and item.get("type") == "text"
                 )
             else:
-                text = str(raw_content)
+                chunk_text = str(raw_content)
 
-            if not text:
+            if not chunk_text:
                 continue
 
-            sentence_buf  += text
-            full_response += text
+            sentence_buf  += chunk_text
+            full_response += chunk_text
 
             sentences, sentence_buf = _split_sentences(sentence_buf)
             for s in sentences:
@@ -539,7 +600,7 @@ def _fanout_to_active_surfaces(
     background agent completes, so proactive results reach the iPhone / glasses
     HUD instead of only being spoken in one room.
     """
-    source_is_mobile = source_room.startswith(("mobile-", "glasses-"))
+    source_is_mobile = source_room.startswith(("mobile-", "glasses-", "siri-"))
     try:
         active = r.smembers("jarvis:active_surfaces")
         for surface_id in active:
@@ -590,7 +651,10 @@ def _handle_request(client, data):
     except Exception as e:
         err_str = str(e)
         print(f"[LLM] Error: {err_str}")
-        if "tool_use_id" in err_str or "tool_result" in err_str or "400" in err_str:
+        # Only wipe history for genuine history-corruption errors (dangling
+        # tool_use/tool_result pairs). A bare "400" match once deleted the
+        # user's whole conversation over an unrelated temperature-param error.
+        if "tool_use_id" in err_str or "tool_result" in err_str:
             try:
                 r.delete(f"conversation:{USER_ID}")
                 print(f"[LLM] Cleared corrupted history for user {USER_ID}")
@@ -647,6 +711,9 @@ def on_tts_done(client, userdata, msg):
 _FANOUT_AGENT_BLOCKLIST = {
     "newsletter", "job_monitor", "web_monitor", "price_monitor", "grocery",
     "classpass", "ambient",
+    # finance runs every 30 min to refresh the widget — don't push each run.
+    # Its daily report is read on demand via the get_financial_report tool.
+    "finance",
 }
 
 

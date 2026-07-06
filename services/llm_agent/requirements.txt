@@ -10,7 +10,11 @@ sentence-transformers>=3.0
 redis>=5.0
 paho-mqtt>=1.6,<2.0
 # Month 1: Chroma vector memory
-chromadb>=0.6.0
+# Server runs chromadb/chroma:0.6.3 (see docker-compose.yml). The client must
+# stay in the 0.6.x line — a 0.7+/1.x client speaks a newer wire protocol and
+# raises KeyError('_type') against the 0.6.3 server, forcing memory.py into its
+# Redis-only fallback. Widen this pin only after upgrading the server image.
+chromadb>=0.6.0,<0.7
 # Month 1: MCP tool ecosystem
 langchain-mcp-adapters>=0.1.0
 pyyaml>=6.0

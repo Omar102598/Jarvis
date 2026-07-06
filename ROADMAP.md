@@ -34,7 +34,7 @@ only I/O-sensitive services (TTS, wake word, STT, bridges) native per-device.
 
 ---
 
-## Month 1 — Foundation  ✅ In Progress
+## Month 1 — Foundation  ✅ Done (completed 2026-07-04: Chroma restored, MCP live + validated)
 
 ### 1a. Chroma Vector Memory
 - `[x]` Add `chroma` service to `docker-compose.yml`
@@ -54,9 +54,30 @@ only I/O-sensitive services (TTS, wake word, STT, bridges) native per-device.
 
 **MCP servers to activate (edit `config/mcp_servers.yml`):**
 - `@modelcontextprotocol/server-filesystem` — structured file ops
-- `@modelcontextprotocol/server-fetch` — clean web fetching
-- `@modelcontextprotocol/server-github` — replace custom `github_tool.py`
+- `mcp-server-fetch` (Python, via uvx) — clean web fetching
+- GitHub hosted remote (`https://api.githubcopilot.com/mcp/`) — replace custom `github_tool.py`
 - Playwright MCP — replace `mac_browser_*` tools
+
+**Registry corrected 2026-07-02:** fetch entry now uses `uvx mcp-server-fetch`
+(the npm package never existed); github entry now points at GitHub's hosted
+remote server (npm one is archived) via new `headers:` support in
+`mcp_loader.py`; llm_agent Dockerfile installs `uv` for uvx-based servers.
+
+**MCP ACTIVATED 2026-07-03 — first servers live.** Two latent bugs had kept
+this path dead since Month 1: (1) `mcp_loader` used the pre-0.1 adapters API
+(`async with MultiServerMCPClient`) which the installed 0.3.0 removed;
+(2) `./config` was never volume-mounted into llm_agent, so the registry file
+was invisible. Loader rewritten for adapters 0.3 with a new `persistent: true`
+mode (dedicated event-loop thread holds one session open — REQUIRED for
+stateful servers like Playwright where the browser must keep page state across
+tool calls; per-call sessions would launch a fresh browser every step).
+- `[x]` **Playwright MCP live** (23 tools, persistent, headless Chromium in
+        the container via `--browser chromium`; Dockerfile installs browsers
+        with @playwright/mcp's own playwright-core so revisions match).
+        `mac_browser_*` tools unbound from core — signed-in browsing stays on
+        `mac_chrome_*`/mac_bridge; agents' direct `/browser` HTTP path untouched.
+- `[x]` **Memory MCP live** (9 knowledge-graph tools, persists to
+        `/data/mcp_memory.json`) — entity/relation memory complementing Chroma.
 
 ---
 
@@ -79,6 +100,299 @@ only I/O-sensitive services (TTS, wake word, STT, bridges) native per-device.
 - `[x]` Add `test_tool` to `services/llm_agent/tools/plugins.py`
   - Runs a plugin's tool in a sandboxed call and returns output/errors
   - Enables Jarvis to self-debug new plugins without a full rebuild
+- `[x]` **Validated live 2026-07-04**: Forge (developer agent) edited the MCP
+  registry (google_maps entry) and hot-reloaded the tool graph via the Redis
+  reload queue — no rebuild, per-server failure isolation confirmed (missing
+  API key skips that server; playwright/memory unaffected)
+
+### 2c. Dedicated Developer Agent — "Forge"  ✅ Done (2026-07-02)
+All self-modification and delegated coding projects now route through one
+dedicated agent instead of the main brain editing code inline mid-conversation.
+- `[x]` `services/agent_runner/developer_agent.py` — full Anthropic tool-use
+        loop (read/write/find/grep/shell/rebuild via mac_bridge), Opus-tier
+        (`DEV_LLM_MODEL`), on-demand only (zero idle cost), progress streamed
+        to Redis `agent:developer:progress`, write-guard mirrors self_modify
+        (no .env / compose / credential content)
+- `[x]` Registered: `AGENT_CLASSES` + `DISPATCHABLE` + `AGENT_PERSONAS`
+        ("Forge"), `config/agents.yml` entry, compose env for mac_bridge
+- `[x]` `spawn_task` accepts `agent="developer"`; system prompt routes ALL
+        code changes to Forge
+- `[x]` Main agent demoted to read-only code tools (`jarvis_read/find/grep/
+        list`, `dev_read/list/search`) — `jarvis_write_code`, `jarvis_rebuild`,
+        `dev_write_file`, `dev_shell` unbound from core (functions kept for
+        Forge-era rollback)
+- `[x]` Agent completion announcements use persona names ("Sir, Forge has
+        finished…")
+- `[x]` First real task verified 2026-07-03: Forge pinned the chromadb client
+        (`>=0.6.0,<0.7`) to match the 0.6.3 server, restoring Chroma semantic
+        memory (was silently in Redis-only fallback since the 1.x client slipped in)
+
+### 2d. Grocery usual-order learning  ✅ Done (2026-07-03)
+- `[x]` `action=learn_cart`: Remy scans the user's own Amazon Fresh cart
+        (visible browser), LLM-cleans titles, merges into Redis
+        `grocery:usual_order` (frequency-counted across scans)
+- `[x]` Weekly list generation biases toward the learned staples
+        (strongest signal in the meal-planner prompt)
+- `[x]` Tools: `learn_fresh_cart` ("learn my Fresh cart"), `get_usual_order`
+- `[x]` Verified live against a real 28-item Fresh cart
+- `[x]` `pin_favorite_product` tool (2026-07-03): pins the exact resolved
+        product from the last order into `grocery:favorites` (always-wins
+        cache); pin/unpin/list via conversation
+
+## Month 2.5 — Platform Polish  ✅ Done (2026-07-03)
+
+### Apps (iOS + macOS)
+- `[x]` Auto-reconnecting push WebSocket (`JarvisSocket`, backoff 2s→60s +
+        30s ping) in both apps — pushes previously died silently until relaunch
+- `[x]` Chat history restore: new gateway `GET /history` (reads the same
+        Redis conversation the brain keeps); both apps load it on launch
+- `[x]` iOS tool-event polling gated: 2.5s while processing, 20s idle (battery)
+- `[x]` Hands-free: `AskJarvisIntent` now `authenticationPolicy = .alwaysAllowed`
+        (works from AirPods with phone locked) + new gateway
+        `POST /ask/query/siri` fast path that skips server-side WAV synthesis
+        (Siri speaks the dialog itself) — cuts seconds off, prevents timeouts.
+        Old "Get contents of URL" voice-recording shortcut is obsolete — use
+        "Hey Siri, Ask Jarvis" (App Intent).
+- `[x]` Desktop global hotkey ⌥Space (Carbon RegisterEventHotKey, no
+        Accessibility permission needed) summons the chat window
+- Both apps verified: `xcodebuild` BUILD SUCCEEDED (2026-07-03)
+
+### Siri ecosystem bridge (macOS)
+- `[x]` `mac_run_shortcut` / `mac_list_shortcuts` tools + mac_bridge
+        `/shortcut/run|list` — Jarvis runs any macOS Shortcut (HomeKit scenes,
+        Reminders, Focus modes). This is the sanctioned way for Jarvis to
+        leverage Siri's toolset; iOS offers no API to invoke Siri directly.
+- `[x]` `read_imessages` tool + mac_bridge `/imessage/recent` (chat.db,
+        read-only; best-effort attributedBody decode). ⚠ Requires Full Disk
+        Access for `.venv-mac-bridge/bin/python3`, then restart mac_bridge.
+
+### Dev observability
+- `[x]` Dashboard **Logs page** (`/logs`, linked from header): live tail of
+        every docker + native service, proxied via mac_bridge `/logs/tail`
+        (docker logs / native log files), service pills, follow mode
+
+### Workout Coach — "Apollo"  ✅ Done (2026-07-03)
+- `[x]` `services/agent_runner/workout_agent.py`: programs the week around
+        (1) the user's lift split (profile `workout_split`; default back/bi →
+        chest/tri → legs/shoulders ×2 + weekend class), (2) Kai's ClassPass
+        data (`classpass:booked` shapes the weekend; suggestions recommended
+        when nothing booked), (3) HealthKit recovery (volume cuts on poor
+        sleep / elevated RHR). Plan → Redis `workout:plan`.
+- `[x]` Scheduled Sunday 6 PM CDT (plan ready for Monday) + on-demand
+- `[x]` Tools: `get_todays_workout`, `get_workout_plan`, `plan_workout_week`
+
+### Grocery: multi-store cart learning + kitchen-grounded meals (2026-07-03)
+- `[x]` `learn_cart` expanded beyond Amazon Fresh: `stores=amazon|whole_foods|
+        target|heb|all`. Amazon/WF use the precise DOM scanner; Target/HEB use
+        page-text + LLM extraction (their cart DOMs churn; text is resilient).
+        Items carry a `store` tag in `grocery:usual_order`.
+- `[x]` `suggest_meals` now grounds dinner ideas in BOTH this week's order and
+        the learned usual staples ("what can I make for dinner?" works even
+        before the first weekly run)
+
+### Everyday-AGI tools (2026-07-03, round 2)
+- `[x]` `apple_reminder_add` / `apple_reminders_list` — Apple Reminders via
+        AppleScript (syncs to iPhone/Watch); verified against the real list
+- `[x]` Brad: `detect_subscriptions` — recurring-charge finder over BankSync
+        transactions (cadence + price-increase detection, annualized totals);
+        verified live (found 4 real subs, ≈$2.3k/yr)
+- `[x]` `AskJarvisIntent` returns its answer as a value (`ReturnsValue<String>`)
+        so Shortcuts can chain it — enables the "Hey Jarvis" Vocal Shortcut
+        recipe: Dictate Text → Ask Jarvis → Speak Text
+### Email Triage — "Hermes"  ✅ Built by Forge (2026-07-04) — awaiting creds
+- `[x]` `services/agent_runner/email_agent.py` (stdlib imaplib/email — no new
+        deps): triages last 24h into important/action-needed, package &
+        tracking updates, newsletters/promos, everything-else count.
+        7:30 AM CDT daily + on-demand. Built end-to-end by Forge.
+- `[ ]` **Activate: add `IMAP_USER` + `IMAP_PASSWORD` (Gmail app password) to
+        `.env`** (`IMAP_HOST` optional; compose passthrough already wired)
+
+### Google Maps MCP  ✅ Registered by Forge (2026-07-04) — awaiting key
+- `[x]` `google_maps` entry in `config/mcp_servers.yml` (directions, distance
+        matrix, geocoding, places) — added + hot-reloaded live by Forge
+- `[ ]` **Activate: add `GOOGLE_MAPS_API_KEY` to `.env`**, then restart
+        llm_agent (compose passthrough already wired)
+
+### ClassPass day-navigation fix (2026-07-04)
+- `[x]` Studio-page searches for a non-today day ("Barry's on Sunday") landed
+        on the wrong day: blind Next-day arrow clicks got swallowed mid-render
+        (2nd click never took; Sunday → Saturday). Now `_advance_studio_day`
+        tries the date tab first, then arrow-clicks ONE day at a time,
+        confirming the selected date after every click before scraping.
+
+Remaining candidates (not built): WhatsApp MCP, Google Calendar MCP,
+package-tracking (rides on Hermes once email creds land)
+
+### Self-service customization — Jarvis for ANY user  ✅ Done (2026-07-04)
+- `[x]` `install_mcp_server` rewritten: APPENDS to the registry (old version
+        yaml.dump'd the whole file, destroying every comment), validates before
+        writing, supports `persistent`/`env_keys`; + new `list_mcp_servers`
+- `[x]` **Conversational install VERIFIED end-to-end**: "install the sequential
+        thinking MCP server" → registry appended (comments intact) → hot
+        reload → tool live in seconds, no rebuild (121 tools)
+- `[x]` `get_setup_status`: audits integrations (env presence only), profile
+        completeness, and data feeds, with get-credentials hints — verified live
+- `[x]` `personalize_jarvis`: conversational onboarding interview (one question
+        at a time → update_user_profile)
+- `[x]` fetch MCP enabled (uvx, no creds); `sequential_thinking` MCP installed
+        (structured reasoning for complex planning)
+- `[x]` System prompt: personalization section — Jarvis proactively offers
+        setup to new users and knows its own extension paths
+        (MCP install < hot-reload plugin < Forge)
+
+### Surface & liveness fixes (2026-07-04)
+- `[x]` Mac no longer speaks iPhone/Siri responses aloud — tts_mac subscribed
+        `jarvis/tts/+/speak` (every room incl. `mobile-*`/`glasses-*`); now
+        serves physical rooms only
+- `[x]` Dashboard live updates fixed — SSE change detection compared list
+        LENGTHS of windowed reads, which stop changing once the window fills
+        (30 msgs / 20 tool events): the stream froze exactly when the dashboard
+        got busy. Now content-signature based.
+- `[x]` iPhone app: history re-syncs on every foregrounding (other surfaces'
+        turns appear); local notifications for pushes arriving while
+        backgrounded (permission requested at launch)
+- `[ ]` **Real push notifications (APNs)** — local notifs only cover the brief
+        window before iOS suspends the socket. Needs an APNs auth key (.p8)
+        from the developer account; mobile_gateway gains an HTTP/2 sender.
+        Good Forge project once the .p8 exists.
+- `[x]` **Remote access via Tailscale** — Mac joined the tailnet 2026-07-04
+        (`omars-macbook-pro.tail7e74a7.ts.net` / 100.110.206.125); gateway
+        (8080) + dashboard (8888) verified reachable over it. iPhone: install
+        Tailscale, sign in with the same account, set the Jarvis app Server URL
+        to `http://omars-macbook-pro.tail7e74a7.ts.net:8080`.
+        Month 3's VPS is the eventual replacement.
+
+### Multi-surface behavior policy  ✅ Agreed (2026-07-04)
+1. **Replies answer ONLY on the surface that asked** (phone → phone; room
+   wake-word → that room's speaker). Enforced by the tts_mac room filter.
+2. **Proactive alerts route by presence**: home → speak in the last-active
+   room + silent phone notification; away → phone notification only.
+3. **Room speakers (when purchased)**: announcements go to the nearest-active
+   room (last wake-word/motion), never broadcast unless explicitly asked to
+   announce house-wide.
+- `[ ]` Presence-aware announcement routing in ambient/fanout — build when
+   speakers arrive (signals already exist: jarvis:active_surfaces, heartbeats,
+   per-room voice state). Queued as a Forge project after APNs.
+
+### Vision overhaul — Claude everywhere + video  ✅ Done (2026-07-05)
+- `[x]` **Fixed: glasses/app photos were invisible to the model** — the
+        `[GLASSES_CAMERA_IMAGE: data:...]` marker was never converted to an
+        image block on the live turn, so Claude received base64 AS TEXT. The
+        brain now converts markers (up to 8) into real multimodal content.
+- `[x]` `get_camera_snapshot` (HA cameras) switched from hardcoded OpenAI
+        gpt-4o to Claude via llm_factory (OPENAI_API_KEY no longer needed)
+- `[x]` **NEW `/ask/video`**: short clip → ffmpeg samples 6 evenly spaced
+        downscaled frames → one multimodal message ("frames in order from an
+        N-second video"). VERIFIED live: Claude correctly described a test
+        video. This is the backend for fridge/pantry scans on the glasses and
+        an app record button (app-side capture UI = future Forge project).
+- `[x]` **Video-native tier (2026-07-05)**: `/ask/video` prefers Gemini when
+        `GOOGLE_API_KEY` (AI Studio — free tier) is set — true video
+        understanding (motion, temporal order, audio track), description then
+        routed through the normal Jarvis pipeline; frame-sampling+Claude
+        remains the always-works fallback (re-verified). NOTE: this is a
+        DIFFERENT key from GOOGLE_MAPS_API_KEY (AI Studio vs Maps Platform).
+- `[x]` **Google Maps MCP ACTIVATED 2026-07-05** — key added, 7 real tools
+        loaded, verified live through the brain (real driving directions,
+        Domain → downtown Austin: 12.3mi/19min via MoPac)
+- `[ ]` Gemini key: `API_KEY_SERVICE_BLOCKED` (403) fixed by adding the API to
+        the key's restriction allowlist — but that project has Gemini API
+        billing enabled and is on the "prepay" model with a $0 balance, so
+        calls now fail 429 "prepayment credits depleted". OPEN — pick one:
+        (a) create a fresh key via AI Studio "new project" (free tier, no
+        prepay needed — recommended), or (b) add prepay credit at
+        ai.studio/projects for this project. Reminder set (Apple Reminders).
+        Not urgent — frame-sampling+Claude fallback fully verified working.
+- Fixes that fell out of the same investigation (2026-07-05): TAVILY_API_KEY
+  had a typo in .env (`ttvly-`→`tvly-`) — Ada/web_search were dead; fixed +
+  Ada verified live. CODE_EXEC_ENABLED=true needed a container RECREATE (env
+  changes don't apply on restart); run_python verified live.
+
+### Ring cameras + Sentry  ✅ Built (2026-07-05) — awaiting one-time Ring login
+- `[x]` `ring_mqtt` bridge service in docker-compose (community tsightler/
+        ring-mqtt — the de-facto standard; no official Ring API exists),
+        publishing to Jarvis's existing mosquitto
+- `[x]` agent_runner subscribes ring/# — device registry, camera names (from
+        HA discovery configs), snapshot caching, motion/ding → Sentry dispatch
+        with per-camera cooldown (SENTRY_COOLDOWN_S, default 10 min)
+- `[x]` **Sentry agent**: Claude vision (haiku) assesses each event snapshot;
+        alerts ONLY when notable (person/package/vehicle/doorbell/Finley up to
+        something) via iOS push + iMessage (iMessage retires once APNs lands)
+- `[x]` Tools: `check_ring_camera` ("check on Finley"), `list_ring_cameras`
+- `[x]` **Ring login done via web UI (:55123) 2026-07-05** — 2 cameras
+        discovered with correct names (Front Door, Living Room); topic wiring
+        verified against live traffic; snapshots caching.
+        **E2E verified: "check the living room camera" → "Finley is chilling
+        on the couch" — real camera, real dog, Claude vision.**
+- `[x]` **Arrival greetings**: person arriving/doorbell → Sentry's vision
+        verdict includes a spoken JARVIS-style announce line → played indoors
+        (profile `sentry_greetings`, default on; room via
+        `sentry_greeting_room`)
+- `[x]` **Snapshot pushes**: Sentry alerts attach the camera frame via new
+        gateway `GET /ring/snapshot/{device}.jpg` + `media_url` passthrough in
+        surface pushes → renders as an image card in the app (and on the
+        glasses HUD when they arrive)
+- `[x]` **Privacy mode**: "give me some privacy" → `ring_privacy` tool →
+        `sentry:privacy` TTL key; event handler drops ALL Ring data (no
+        snapshots, no logging, no Sentry) until expiry; auto-resumes.
+        Live-verified full on/status/off cycle.
+- Watch item: a community **Ring MCP server** exists (lobehub.com/mcp/
+  jpcors-ring-mcp, ~May 2026) — thin vs ring-mqtt today; revisit if it matures.
+- `[x]` **Live view (2026-07-05)**: gateway relays ring-mqtt's RTSP to HLS via
+        ffmpeg on demand (`POST /ring/live/{device}/start`, 5-min auto-stop);
+        `ring_live_view` tool starts it + pushes a video card (m3u8 media_url
+        → type "video" → app/glasses HUD play natively via AVPlayer).
+        **VERIFIED: real HLS segments streaming from the Living Room camera.**
+        Livestream creds set in bridge config; data/ring-mqtt/ gitignored
+        (ring-state.json holds the refresh token — never commit).
+- `[x]` **Package watch (2026-07-05)**: Sentry verdict includes
+        package_visible → stateful per-camera tracking (ring:package:{device},
+        24h TTL): arrival alert (📦, with delivery-email cross-ref from
+        Hermes's latest triage once IMAP creds land) and package-GONE alert
+        if a later frame shows it missing (porch-pirate alarm).
+- `[x]` **Arrival scenes (2026-07-05)**: evening person-arrival (profile
+        `arrival_scene_shortcut`, window `arrival_scene_hours` default 18-07)
+        → runs the named HomeKit Shortcut via mac_bridge.
+- `[x]` `who_came_by` tool — digest of Sentry-assessed events over N hours.
+- `[x]` **Fresh snapshots + send-to-app (2026-07-05)**: `check_ring_camera`
+        auto-grabs a live RTSP frame when the cache is >2 min old and pushes
+        the picture to the app/glasses as an image card by default.
+        VERIFIED: Living Room fresh frame in ~4s. KNOWN LIMIT: the battery
+        doorbell refuses to livestream (Ring-side: "stream unexpectedly
+        inactive" — check battery level / Live View toggle in the Ring app);
+        it still snapshots on motion/ding, which is when the front door
+        matters.
+- Awaiting real-world events to observe: greeting/package/scene paths fire on
+  the next genuine person/package event (all code-deployed; vision verdict
+  drives them).
+
+### PetKit + Home Assistant  🔜 Next up (decided 2026-07-05)
+- `[x]` `tools/petkit.py` built (Forge): feed_pet, feeder/fountain status,
+        schedules — drives HA entities via HA_URL/HA_TOKEN
+- `[ ]` Add `homeassistant` service to docker-compose (./data/homeassistant)
+- `[ ]` User: HA onboarding + long-lived token → .env; install HACS + PetKit
+        integration (PetKit account creds live in HA, not Jarvis)
+- `[ ]` **BUY: PetKit cat feeder, PetKit dog feeder, PetKit water fountain**
+        (chosen over Petlibro's fragile reverse-engineered API — Ada's
+        briefing in agent:research:reports)
+- Bonus: HA also activates the dormant smart_home tools + camera snapshot tool
+
+### Models & cost (2026-07-05)
+- `[x]` Sonnet tier → **claude-sonnet-5** (verified live)
+- `[x]` Credit-exhaustion alert: any agent failure mentioning credits/billing
+        → iMessage warning (deduped 1h)
+- `[ ]` Proactive balance monitor (warn BEFORE failure) — needs Anthropic
+        Admin API usage/cost endpoints (separate admin key from console)
+
+### Glasses vision → kitchen inventory  🔒 Planned (needs Meta glasses purchase)
+- `[ ]` "Look at my fridge/pantry" — glasses photo(s) → existing `/ask/image`
+        path → vision model extracts inventory → merge into a
+        `grocery:kitchen_inventory` Redis key
+- `[ ]` `suggest_meals` grounds on actual fridge contents; missing ingredients
+        for a chosen meal get added to the cart via the existing
+        `mac_fresh_add` / resolver path
+- Groundwork already in place: image pipeline (`/ask/image`), usual-order
+  store, resolver + cart-add machinery. Build when the glasses arrive.
 
 ---
 
@@ -233,6 +547,7 @@ Siri/Meta AI/Google will always have deeper OS access. Strategy: **delegation, n
 | MCP server registry | `config/mcp_servers.yml` |
 | MCP loader | `services/llm_agent/mcp_loader.py` |
 | Background agents | `services/agent_runner/` |
+| Developer agent (Forge) | `services/agent_runner/developer_agent.py` |
 | Agent schedule | `config/agents.yml` |
 | Mac bridge (host API) | `services/mac_bridge/main.py` |
 | iOS app | `JarvisApp/Sources/` |

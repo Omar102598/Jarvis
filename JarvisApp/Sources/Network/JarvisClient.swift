@@ -4,8 +4,23 @@ import Foundation
 
 struct JarvisConfig {
     static var serverURL: String {
-        get { UserDefaults.group.string(forKey: "serverURL") ?? "http://192.168.1.100:8080" }
+        get {
+            let raw = UserDefaults.group.string(forKey: "serverURL") ?? "http://192.168.1.100:8080"
+            return Self.normalized(raw)
+        }
         set { UserDefaults.group.set(newValue, forKey: "serverURL") }
+    }
+
+    /// A bare hostname pasted into Settings ("host.ts.net:8080") produces
+    /// NSURLError -1002 "unsupported URL" on every request — including the
+    /// Siri intent, which then dismisses silently. Always ensure a scheme.
+    static func normalized(_ raw: String) -> String {
+        var url = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while url.hasSuffix("/") { url.removeLast() }
+        if !url.lowercased().hasPrefix("http://") && !url.lowercased().hasPrefix("https://") {
+            url = "http://" + url
+        }
+        return url
     }
     static var apiKey: String {
         get { UserDefaults.group.string(forKey: "apiKey") ?? "" }
@@ -59,10 +74,29 @@ final class JarvisClient {
 
     // MARK: Siri intent — plain text response only (no audio synthesis)
 
+    private struct SiriResponse: Codable { let text: String }
+
     func askTextForSiri(_ text: String) async throws -> String {
         let body = TextQueryRequest(text: text)
-        let response: QueryResponse = try await post(path: "/ask/query", body: body)
+        // /ask/query/siri skips server-side WAV synthesis — Siri speaks the
+        // dialog itself, and the saved seconds prevent Siri timeouts.
+        let response: SiriResponse = try await post(path: "/ask/query/siri", body: body)
         return response.text
+    }
+
+    // MARK: Conversation history — restore chat across app launches
+
+    struct HistoryMessage: Codable {
+        let role: String
+        let text: String
+    }
+
+    private struct HistoryResponse: Codable { let messages: [HistoryMessage] }
+
+    func fetchHistory(limit: Int = 40) async throws -> [HistoryMessage] {
+        let request = baseRequest(path: "/history?limit=\(limit)")
+        let response: HistoryResponse = try await execute(request)
+        return response.messages
     }
 
     // MARK: HealthKit snapshot — push fitness metrics to the backend
@@ -162,6 +196,91 @@ final class JarvisClient {
             throw JarvisError.httpError(http.statusCode, detail)
         }
         return try JSONDecoder().decode(Response.self, from: data)
+    }
+}
+
+// MARK: - Reconnecting WebSocket
+
+/// Owns the push WebSocket and reconnects with exponential backoff (2s → 60s).
+/// The raw task dies silently on any error — proactive pushes then stop until
+/// app relaunch. A 30s ping detects dead connections (e.g. after backgrounding).
+final class JarvisSocket {
+    private var task: URLSessionWebSocketTask?
+    private var onMessage: ((DisplayPayload) -> Void)?
+    private var backoff: TimeInterval = 2
+    private var stopped = false
+    private var pingTimer: Timer?
+
+    func start(onMessage: @escaping (DisplayPayload) -> Void) {
+        self.onMessage = onMessage
+        stopped = false
+        connect()
+    }
+
+    func stop() {
+        stopped = true
+        pingTimer?.invalidate()
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+    }
+
+    private func connect() {
+        guard !stopped else { return }
+        let wsURL = JarvisConfig.serverURL
+            .replacingOccurrences(of: "http://", with: "ws://")
+            .replacingOccurrences(of: "https://", with: "wss://")
+        guard let url = URL(string: "\(wsURL)/ws/glasses") else { return }
+        var request = URLRequest(url: url)
+        if !JarvisConfig.apiKey.isEmpty {
+            request.setValue(JarvisConfig.apiKey, forHTTPHeaderField: "X-API-Key")
+        }
+        let t = URLSession.shared.webSocketTask(with: request)
+        task = t
+        t.resume()
+        receive(on: t)
+        schedulePing()
+    }
+
+    private func receive(on t: URLSessionWebSocketTask) {
+        t.receive { [weak self] result in
+            guard let self, !self.stopped, self.task === t else { return }
+            switch result {
+            case .success(let message):
+                self.backoff = 2
+                var data: Data?
+                if case .string(let text) = message { data = text.data(using: .utf8) }
+                if case .data(let d) = message { data = d }
+                if let data, let payload = try? JSONDecoder().decode(DisplayPayload.self, from: data) {
+                    self.onMessage?(payload)
+                }
+                self.receive(on: t)
+            case .failure(let error):
+                print("[JarvisSocket] error: \(error) — reconnecting in \(self.backoff)s")
+                self.scheduleReconnect()
+            }
+        }
+    }
+
+    private func scheduleReconnect() {
+        guard !stopped else { return }
+        pingTimer?.invalidate()
+        task?.cancel()
+        task = nil
+        let delay = backoff
+        backoff = min(backoff * 2, 60)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.connect()
+        }
+    }
+
+    private func schedulePing() {
+        pingTimer?.invalidate()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            guard let self, let t = self.task, !self.stopped else { return }
+            t.sendPing { [weak self] error in
+                if error != nil { self?.scheduleReconnect() }
+            }
+        }
     }
 }
 

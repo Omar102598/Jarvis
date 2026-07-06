@@ -1,26 +1,122 @@
-<div id="finance-widget" style="font-family:system-ui;padding:8px">
-  <div id="finance-balance" style="font-size:1.4em;font-weight:600">—</div>
-  <div id="finance-status" style="color:#888;font-size:0.8em;margin:4px 0">Awaiting API connection…</div>
-  <ul id="finance-spending" style="list-style:none;padding:0;margin:8px 0;font-size:0.9em"></ul>
+<style>
+  .fin-wrap { display:flex; flex-direction:column; align-items:center; padding:4px 0; }
+  .fin-donut-wrap { position:relative; width:160px; height:160px; }
+  .fin-donut-wrap svg { transform:rotate(-90deg); }
+  .fin-center { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; pointer-events:none; }
+  .fin-avail-label { font-size:0.62em; letter-spacing:0.08em; text-transform:uppercase; opacity:0.5; margin-bottom:2px; }
+  .fin-avail-amt { font-size:1.25em; font-weight:700; color:#35d07f; line-height:1; }
+  .fin-avail-sub { font-size:0.6em; opacity:0.45; margin-top:2px; }
+  .fin-legend { display:flex; flex-wrap:wrap; justify-content:center; gap:6px 14px; margin-top:12px; width:100%; }
+  .fin-leg-item { display:flex; align-items:center; gap:5px; font-size:0.72em; opacity:0.85; }
+  .fin-leg-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .fin-updated { opacity:.35; font-size:.65em; margin-top:10px; }
+</style>
+<div class="fin-wrap" id="fin-content">
+  <div style="opacity:.5;font-size:.85em">Loading…</div>
 </div>
 <script>
-async function refreshFinance(){
-  try{
-    const r = await fetch('/api/widgets/finance/data');
-    const d = await r.json();
-    document.getElementById('finance-balance').textContent = d.balance || '—';
-    document.getElementById('finance-status').textContent = d.status || '';
-    const ul = document.getElementById('finance-spending');
-    ul.innerHTML = '';
-    (d.spending||[]).forEach(s=>{
-      const li=document.createElement('li');
-      li.textContent = s.category + ': $' + s.amount;
-      ul.appendChild(li);
-    });
-  }catch(e){
-    document.getElementById('finance-status').textContent = 'Not connected yet.';
+(function(){
+  var COLORS = ['#35d07f','#4fc3f7','#ffb020','#ff7043','#ab47bc','#26c6da','#ff5c5c'];
+
+  function money(n,short){
+    if(short && Math.abs(n)>=1000) return '$'+(n/1000).toFixed(1)+'k';
+    return '$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   }
-}
-refreshFinance();
-setInterval(refreshFinance, 30000);
+
+  function buildDonut(segments, total, cx, cy, r, stroke){
+    /* segments: [{value, color, label}] */
+    var svgParts = '';
+    var circ = 2 * Math.PI * r;
+    var offset = 0;
+    segments.forEach(function(seg){
+      var pct = total > 0 ? seg.value / total : 0;
+      var dash = pct * circ;
+      var gap  = circ - dash;
+      svgParts += '<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'"'
+        +' fill="none"'
+        +' stroke="'+seg.color+'"'
+        +' stroke-width="'+stroke+'"'
+        +' stroke-dasharray="'+dash+' '+gap+'"'
+        +' stroke-dashoffset="'+(- offset * circ / total)+'"'
+        +' stroke-linecap="butt"/>';
+      offset += seg.value;
+    });
+    return svgParts;
+  }
+
+  function load(){
+    fetch('/api/widgets/finance/data').then(function(r){ return r.json(); }).then(function(resp){
+      var el = document.getElementById('fin-content');
+      /* The dashboard wraps widget data as {widget, data, timestamp} — unwrap it. */
+      var d = (resp && resp.data) ? resp.data : (resp || {});
+      if(d.error){ el.innerHTML='<div style="opacity:.6;font-size:.85em">'+d.error+'</div>'; return; }
+      if(d.total_cash == null && d.available_balance == null){
+        el.innerHTML='<div style="opacity:.5;font-size:.85em">No finance data yet — syncing…</div>'; return;
+      }
+
+      /* --- derive available balance --- */
+      var available = d.available_balance != null ? d.available_balance : d.total_cash;
+      var totalCash  = d.total_cash || 0;
+      var spent      = d.total_spent_30d || 0;
+
+      /* Build spending segments from budgets if present */
+      var segments = [];
+      var legendItems = [];
+      if(d.budgets && d.budgets.length){
+        var colorIdx = 0;
+        d.budgets.forEach(function(b){
+          if(b.spent > 0){
+            var col = COLORS[colorIdx % COLORS.length];
+            segments.push({value: b.spent, color: col});
+            legendItems.push({label: b.category, value: b.spent, color: col});
+            colorIdx++;
+          }
+        });
+      } else {
+        /* fallback: available vs spent */
+        segments = [
+          {value: available, color:'#35d07f'},
+          {value: Math.max(0, totalCash - available), color:'#ff5c5c'}
+        ];
+        legendItems = [
+          {label:'Available', value: available, color:'#35d07f'},
+          {label:'Pending',   value: Math.max(0, totalCash - available), color:'#ff5c5c'}
+        ];
+      }
+
+      var total = segments.reduce(function(s,x){ return s+x.value; }, 0);
+
+      /* SVG donut */
+      var size=160, cx=80, cy=80, r=62, stroke=18;
+      var arcs = buildDonut(segments, total, cx, cy, r, stroke);
+      /* background ring */
+      var bgRing = '<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="'+stroke+'"/>';
+
+      var legendHtml = '';
+      legendItems.slice(0,6).forEach(function(li){
+        legendHtml += '<div class="fin-leg-item"><div class="fin-leg-dot" style="background:'+li.color+'"></div>'
+          +'<span>'+li.label+' <b>'+money(li.value,true)+'</b></span></div>';
+      });
+
+      var updatedHtml = d.updated ? '<div class="fin-updated">Updated '+d.updated+'</div>' : '';
+
+      el.innerHTML =
+        '<div class="fin-donut-wrap">'
+          +'<svg width="'+size+'" height="'+size+'" viewBox="0 0 '+size+' '+size+'">'
+            +bgRing+arcs
+          +'</svg>'
+          +'<div class="fin-center">'
+            +'<div class="fin-avail-label">Available</div>'
+            +'<div class="fin-avail-amt">'+money(available,true)+'</div>'
+            +'<div class="fin-avail-sub">of '+money(totalCash,true)+' cash</div>'
+          +'</div>'
+        +'</div>'
+        +'<div class="fin-legend">'+legendHtml+'</div>'
+        +updatedHtml;
+
+    }).catch(function(){ document.getElementById('fin-content').innerHTML='<div style="opacity:.5">Unavailable</div>'; });
+  }
+
+  load(); setInterval(load, 300000);
+})();
 </script>

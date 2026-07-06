@@ -213,3 +213,95 @@ def manage_classpass_favorites(action: str, studio: str = "", class_type: str = 
     if len(favorites) < before:
         return f"Removed that favorite, sir. {len(favorites)} remaining."
     return "I couldn't find a matching favorite to remove, sir. Try 'list favorites'."
+
+
+SEARCH_KEY   = "classpass:search_result"
+WAITLIST_KEY = "classpass:waitlist"
+
+
+def _find_class_by_hint(hint: str):
+    """Find a class dict matching a hint from the latest search results, then suggestions."""
+    hint = (hint or "").strip().lower()
+    for key in (SEARCH_KEY, SUGGESTIONS_KEY):
+        raw = _r.get(key)
+        if not raw:
+            continue
+        try:
+            classes = json.loads(raw).get("classes", [])
+        except Exception:
+            continue
+        if not hint and classes:
+            return classes[0]
+        for c in classes:
+            hay = " ".join(str(c.get(k, "")) for k in
+                           ("start_human", "studio", "instructor", "name")).lower()
+            if hint and hint in hay:
+                return c
+    return None
+
+
+@tool
+def search_classpass(studio: str = "", day: str = "") -> str:
+    """Search ClassPass for classes at a SPECIFIC studio and/or on a SPECIFIC day.
+
+    Use THIS (not trigger_classpass_scan) whenever the user asks about a particular
+    studio or day — e.g. "what times does CorePower have Friday?" or "check SoulCycle
+    tomorrow". Returns the actual class times so you can answer directly.
+
+    Args:
+        studio: Studio name to filter to, e.g. 'CorePower Yoga'. Optional.
+        day: Day to check, e.g. 'Friday', 'tomorrow', 'Jul 5'. Optional (defaults to today).
+    """
+    import time
+    _r.delete(SEARCH_KEY)  # so we only return a FRESH result
+    _trigger({"action": "search", "studio": studio, "day": day})
+    for _ in range(45):  # agent scrapes (+day nav) + LLM-parses, ~20-35s cold
+        raw = _r.get(SEARCH_KEY)
+        if raw:
+            try:
+                classes = json.loads(raw).get("classes", [])
+            except Exception:
+                break
+            where = f" at {studio}" if studio else ""
+            if not classes:
+                when = f" for {day}" if day else ""
+                return (f"No classes found{where}{when} on ClassPass, sir — the studio may not "
+                        f"be on ClassPass in your area, or has nothing scheduled that day.")
+            # Each class line shows its real date (start_human), so the day is self-evident.
+            lines = [f"Classes{where}, sir:"]
+            for c in classes[:12]:
+                flag = "" if c.get("booking_open", True) else "  (full — waitlist available)"
+                instr = f" · {c['instructor']}" if c.get("instructor") else ""
+                lines.append(f"  {c.get('start_human','?')} — {c.get('name','?')}{instr}{flag}")
+            lines.append("Say 'book the <time>' or 'join the waitlist for the <time>'.")
+            return "\n".join(lines)
+        time.sleep(1)
+    return "The ClassPass search is still running, sir — ask me for the results in a few seconds."
+
+
+@tool
+def join_classpass_waitlist(when_or_studio: str = "", auto_book: bool = False) -> str:
+    """Join the ClassPass waitlist for a FULL class, optionally auto-booking when a spot opens.
+
+    Waitlists for popular classes are competitive — spots open and vanish fast. Kai can
+    watch the waitlisted class and grab the spot the instant it frees up.
+
+    IMPORTANT: waitlists are competitive, so BEFORE setting auto_book=True, ASK the user
+    whether they want Kai to AUTOMATICALLY book it the moment a spot opens (vs. just being
+    alerted). Pass their answer as auto_book.
+
+    Args:
+        when_or_studio: Which class — a time / studio / instructor hint, e.g. '6pm' or 'SoulCycle'.
+        auto_book: True = Kai auto-books the instant a spot opens; False = Kai just alerts you.
+            Ask the user which they want before choosing True.
+    """
+    chosen = _find_class_by_hint(when_or_studio)
+    if not chosen:
+        return ("I couldn't find that class to waitlist, sir. Search or scan ClassPass first, "
+                "then tell me which class.")
+    _trigger({"action": "waitlist_join", "class_id": chosen.get("id", ""), "auto_book": bool(auto_book)})
+    instr = f" with {chosen['instructor']}" if chosen.get("instructor") else ""
+    mode = ("and auto-book it the instant a spot opens"
+            if auto_book else "and alert you the instant a spot opens")
+    return (f"Joining the waitlist for {chosen.get('name','the class')} at {chosen.get('studio','')}"
+            f"{instr} ({chosen.get('start_human','')}) {mode}, sir. I'll confirm once you're on it.")

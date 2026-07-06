@@ -133,6 +133,8 @@ def _get_all_agents() -> list[dict]:
             {
                 "name": name,
                 "display_name": meta.get("display_name", name),
+                "persona_name": meta.get("persona_name", ""),
+                "kind": meta.get("kind", "mechanical"),
                 "description": meta.get("description", ""),
                 "schedule": meta.get("schedule", ""),
                 "enabled": meta.get("enabled", False),
@@ -197,6 +199,9 @@ async def dashboard(request: Request):
             "recent_reports": recent_reports,
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         },
+        # Always serve a fresh dashboard shell so template/JS changes take effect
+        # without a manual hard-refresh (was serving stale index.html from cache).
+        headers={"Cache-Control": "no-cache, must-revalidate"},
     )
 
 
@@ -386,7 +391,11 @@ async def widget_html(name: str):
     html_path = _WIDGETS_DIR / safe_name / "widget.html"
     if not html_path.exists():
         raise HTTPException(404, f"Widget '{safe_name}' not found")
-    return FileResponse(str(html_path), media_type="text/html")
+    # no-cache so edited widgets always re-fetch (browsers were serving stale HTML)
+    return FileResponse(
+        str(html_path), media_type="text/html",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 @app.get("/api/widgets/{name}/data")
@@ -423,9 +432,7 @@ async def get_tool_events(limit: int = 30):
 async def event_stream():
     """Server-Sent Events stream pushing conversation + tool events + voice state in real-time."""
     async def generate():
-        last_conv_count = -1
-        last_tool_count = -1
-        last_voice_state = ""
+        last_sig = None
         while True:
             try:
                 conv_raw = _redis.lrange(f"conversation:{USER_ID}", -30, -1)
@@ -433,14 +440,20 @@ async def event_stream():
                 voice_state = _redis.get(f"jarvis:voice:state:office") or "ready"
                 thinking_word = _redis.get("jarvis:thinking:word") or ""
 
-                conv_changed = len(conv_raw) != last_conv_count
-                tool_changed = len(tool_raw) != last_tool_count
-                state_changed = voice_state != last_voice_state
+                # Signature must be CONTENT-based: both lists are windowed reads
+                # of capped Redis lists, so their LENGTHS stop changing once the
+                # window fills (30 msgs / 20 events) — comparing lengths froze
+                # the stream exactly when the dashboard got busy.
+                sig = (
+                    conv_raw[-1][:200] if conv_raw else "",
+                    len(conv_raw),
+                    tool_raw[0][:200] if tool_raw else "",
+                    voice_state,
+                    thinking_word,
+                )
 
-                if conv_changed or tool_changed or state_changed:
-                    last_conv_count = len(conv_raw)
-                    last_tool_count = len(tool_raw)
-                    last_voice_state = voice_state
+                if sig != last_sig:
+                    last_sig = sig
 
                     messages = []
                     for item in conv_raw:
@@ -474,6 +487,45 @@ async def event_stream():
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Service logs — proxied from mac_bridge on the host (which can reach both
+# docker logs and the native services' log files)
+# ---------------------------------------------------------------------------
+
+MAC_BRIDGE_URL = os.environ.get("MAC_BRIDGE_URL", "http://host.docker.internal:7777")
+
+
+def _bridge_get(path: str) -> dict:
+    req = urllib.request.Request(f"{MAC_BRIDGE_URL}{path}")
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        return json.loads(resp.read())
+
+
+@app.get("/logs", response_class=HTMLResponse)
+async def logs_page(request: Request):
+    """Service logs viewer — separate page, linked from the dashboard header."""
+    return templates.TemplateResponse(request=request, name="logs.html")
+
+
+@app.get("/api/logs/services")
+async def api_logs_services():
+    try:
+        return _bridge_get("/logs/services")
+    except Exception as e:
+        raise HTTPException(502, f"mac_bridge unreachable: {e}")
+
+
+@app.get("/api/logs/tail")
+async def api_logs_tail(service: str, lines: int = 200):
+    try:
+        q = urllib.parse.urlencode({"service": service, "lines": min(lines, 1000)})
+        return _bridge_get(f"/logs/tail?{q}")
+    except urllib.error.HTTPError as e:
+        raise HTTPException(e.code, e.read().decode()[:200])
+    except Exception as e:
+        raise HTTPException(502, f"mac_bridge unreachable: {e}")
 
 
 @app.get("/health")

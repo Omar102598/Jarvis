@@ -14,9 +14,12 @@ targets:
   JarvisApp:
     type: application
     platform: iOS
+    # NOTE: xcodegen has no `resources:` target key — it's silently IGNORED.
+    # Resource files belong under `sources:`; xcodegen assigns .xcassets to the
+    # resources build phase automatically. A stray `resources:` key here once
+    # shipped a build with no app icon / no Assets.car.
     sources:
       - path: Sources
-    resources:
       - path: Resources/Assets.xcassets
     entitlements:
       path: JarvisApp.entitlements

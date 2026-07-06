@@ -37,11 +37,18 @@ def spawn_task(task: str, agent: str = "task") -> str:
     research, multi-step gathering, "go find out and let me know". The task
     runs in the background; its result is saved and announced when ready.
 
+    ALL coding work goes to 'developer' (Forge): modifying Jarvis's own code,
+    adding tools/features, fixing bugs, and any software project the user
+    starts. Forge reads code, writes files, runs builds/tests, and rebuilds
+    services itself — give it a complete task description, including the
+    project directory for non-Jarvis projects.
+
     Args:
         task: A clear, self-contained description of what to accomplish.
-        agent: Which specialist to use — 'task' (general) or 'research'.
+        agent: 'task' (general), 'research' (deep web research), or
+            'developer' (Forge — all code changes and dev projects).
     """
-    agent = agent if agent in ("task", "research") else "task"
+    agent = agent if agent in ("task", "research", "developer") else "task"
     payload = {
         "source": "llm",
         "params": {"task": task, "notify_room": ACTIVE_ROOM.get("room", "")},

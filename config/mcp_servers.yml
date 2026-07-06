@@ -6,11 +6,18 @@
 #
 # Transport types:
 #   stdio          — spawns a local process (requires command + args)
-#   streamable_http — connects to a running HTTP server (requires url)
+#   streamable_http — connects to a running HTTP server (requires url;
+#                     optional headers: map for auth, ${VAR} expanded from env)
 #   sse            — Server-Sent Events transport (requires url)
 #
-# stdio servers require Node.js in the llm_agent container.
-# The Dockerfile installs Node.js, so npx-based servers work out of the box.
+# stdio servers require Node.js (npx …) or uv (uvx …) in the llm_agent
+# container. The Dockerfile installs both, so npx- and uvx-based servers work
+# out of the box.
+#
+# persistent: true — hold ONE session open for the life of the process instead
+# of a fresh connection per tool call. REQUIRED for stateful servers (playwright:
+# the browser must keep page state between navigate and the next step; memory:
+# avoids a subprocess spawn per call).
 #
 # To activate a server: set enabled: true and rebuild llm_agent.
 # To add a server at runtime: tell Jarvis "install MCP server <package>".
@@ -35,44 +42,91 @@ servers:
   # ---------------------------------------------------------------------------
   # Fetch — clean web page fetching with Markdown conversion.
   # Better than the raw fetch_url tool for reading articles/docs.
+  # NOTE: the official fetch server is a Python package (there is no
+  # @modelcontextprotocol/server-fetch on npm) — it runs via uvx, which the
+  # llm_agent Dockerfile installs alongside Node.
   # ---------------------------------------------------------------------------
   fetch:
-    enabled: false
+    enabled: true
     transport: stdio
-    command: npx
+    command: uvx
     args:
-      - "-y"
-      - "@modelcontextprotocol/server-fetch"
+      - "mcp-server-fetch"
     description: "MCP web fetching with Markdown conversion"
 
   # ---------------------------------------------------------------------------
   # GitHub — issues, PRs, repos, code search.
   # Set GITHUB_TOKEN in .env. Replaces custom github_tool.py once stable.
+  # The npm server (@modelcontextprotocol/server-github) is archived upstream;
+  # GitHub's maintained server is the hosted remote below (PAT via headers).
   # ---------------------------------------------------------------------------
   github:
     enabled: false
-    transport: stdio
-    command: npx
-    args:
-      - "-y"
-      - "@modelcontextprotocol/server-github"
-    env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
-    description: "MCP GitHub — issues, PRs, code search"
+    transport: streamable_http
+    url: "https://api.githubcopilot.com/mcp/"
+    headers:
+      Authorization: "Bearer ${GITHUB_TOKEN}"
+    description: "MCP GitHub (hosted remote) — issues, PRs, code search"
 
   # ---------------------------------------------------------------------------
-  # Playwright — browser automation via MCP.
-  # Replaces mac_browser_* tools with a maintained upstream implementation.
-  # Requires: npm install -g @playwright/mcp
+  # Playwright — browser automation via MCP (replaces the mac_browser_* tools).
+  # Runs headless Chromium INSIDE the llm_agent container (fresh sessions, no
+  # logins) — for signed-in sites keep using mac_chrome_* via mac_bridge.
+  # The Dockerfile pre-installs @playwright/mcp + Chromium.
+  # persistent: one live browser keeps page state across tool calls.
   # ---------------------------------------------------------------------------
   playwright:
-    enabled: false
+    enabled: true
+    persistent: true
     transport: stdio
     command: npx
     args:
       - "-y"
       - "@playwright/mcp"
-    description: "MCP Playwright browser automation"
+      - "--browser"
+      - "chromium"     # default is Google Chrome, which isn't in the container
+      - "--headless"
+      - "--no-sandbox"
+      - "--isolated"
+    description: "MCP Playwright browser automation (headless, fresh sessions)"
+
+  # ---------------------------------------------------------------------------
+  # Memory — knowledge-graph memory (entities + relations), complements Chroma
+  # semantic memory. Graph persists to /data/mcp_memory.json (./data volume).
+  # ---------------------------------------------------------------------------
+  memory:
+    enabled: true
+    persistent: true
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-memory"
+    env:
+      MEMORY_FILE_PATH: "/data/mcp_memory.json"
+    description: "MCP knowledge-graph memory (entities/relations)"
+
+  # ---------------------------------------------------------------------------
+  # Google Maps — directions, distance matrix, geocoding, place search.
+  # Gives Jarvis real-world travel awareness: "when should I leave for my 2pm?"
+  # (distance matrix + directions with live-ish travel times), address ⇄ lat/lng
+  # geocoding, and nearby place lookup.
+  # Stateless — each call is independent, so NO persistent flag (no session to
+  # hold open; a fresh connection per call is correct here).
+  # Requires GOOGLE_MAPS_API_KEY in .env. Until that key is set the server will
+  # fail to start — but mcp_loader catches per-server failures and SKIPS it
+  # GRACEFULLY (playwright/memory still load), so enabling it now is harmless.
+  # ---------------------------------------------------------------------------
+  google_maps:
+    enabled: true
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-google-maps"
+    env:
+      GOOGLE_MAPS_API_KEY: "${GOOGLE_MAPS_API_KEY}"
+    description: "MCP Google Maps — directions, distance matrix, geocoding, place search"
 
   # ---------------------------------------------------------------------------
   # Slack — read channels, post messages, search.
@@ -99,3 +153,16 @@ servers:
   #   transport: streamable_http
   #   url: "http://localhost:9000/mcp"
   #   description: "Custom Jarvis MCP server"
+
+  # ---------------------------------------------------------------------------
+  # sequential_thinking — added by Jarvis (install_mcp_server)
+  # Structured step-by-step reasoning tool for complex problem solving
+  # ---------------------------------------------------------------------------
+  sequential_thinking:
+    enabled: true
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-sequential-thinking"
+    description: "Structured step-by-step reasoning tool for complex problem solving"

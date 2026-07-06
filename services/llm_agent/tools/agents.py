@@ -18,10 +18,12 @@ def get_agent_report(agent_name: str, limit: int = 1) -> str:
     """Retrieve the most recent report(s) from a background agent.
 
     Use this when the user asks what an agent found, e.g. "What did the
-    newsletter agent find today?" or "Any new jobs from the job monitor?"
+    newsletter agent find today?", "Any new jobs?", "Is Forge done yet?"
 
     Args:
-        agent_name: One of 'newsletter', 'job_monitor', 'web_monitor'
+        agent_name: One of 'newsletter', 'job_monitor', 'web_monitor',
+            'price_monitor', 'grocery', 'classpass', 'finance', 'ambient',
+            'research', 'task', 'developer' (Forge).
         limit: How many of the most recent reports to return (1–5, default 1)
     """
     limit = max(1, min(limit, 5))
@@ -34,7 +36,9 @@ def get_agent_report(agent_name: str, limit: int = 1) -> str:
         return (
             f"No reports found for '{agent_name}'. "
             "The agent may not have run yet or the name may be incorrect. "
-            "Available agents: newsletter, job_monitor, web_monitor."
+            "Available agents: newsletter, job_monitor, web_monitor, "
+            "price_monitor, grocery, classpass, finance, ambient, research, "
+            "task, developer."
         )
 
     reports = []
@@ -57,10 +61,13 @@ def trigger_agent(agent_name: str) -> str:
     Use when the user wants fresh results immediately, e.g. "run the job
     monitor now" or "refresh the newsletter". The agent runs in the
     background; check its results shortly after with get_agent_report.
+    (For 'task', 'research', or 'developer' work, prefer spawn_task — it
+    carries the task description and announces the result.)
 
     Args:
         agent_name: Which agent to run, e.g. 'newsletter', 'job_monitor',
-            'web_monitor'.
+            'web_monitor', 'price_monitor', 'grocery', 'classpass',
+            'finance', 'ambient'.
     """
     try:
         mqtt_publish.single(

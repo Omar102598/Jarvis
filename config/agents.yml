@@ -19,8 +19,10 @@ agents:
       Proactive monitoring agent. Announces upcoming calendar events, weather
       changes, daily morning briefing, and user-defined triggers without being
       asked. Runs every 5 minutes with per-trigger cooldowns to avoid spam.
-    enabled: true
-    schedule: "*/5 * * * *"   # Every 5 minutes
+    # Disabled 2026-07-01 to avoid idle API-token spend — still runs on manual
+    # MQTT trigger (jarvis/agents/ambient/trigger). Restore "true" to re-enable cron.
+    enabled: false
+    schedule: "*/5 * * * *"   # Every 5 minutes (inactive while disabled)
     params:
       room: "office"                # Room to announce to (ACTIVE_ROOM when idle)
       calendar_lookahead_min: 30    # Warn this many minutes before an event
@@ -46,6 +48,33 @@ agents:
         - "software engineering"
         - "open source projects"
       max_articles: 12
+
+  # ---------------------------------------------------------------------------
+  # Email Triage — "Hermes"
+  #
+  # Connects to your IMAP inbox (Gmail by default) and produces a concise
+  # morning-brief triage: important / action-needed mail, package & delivery
+  # updates (with tracking numbers), newsletters & promos, and a count of
+  # everything else. Uses only the Python stdlib — no extra pip deps.
+  #
+  # One-time setup — add these to .env (compose passthrough handled separately):
+  #   IMAP_USER      your email address (e.g. you@gmail.com)
+  #   IMAP_PASSWORD  a Gmail App Password (NOT your normal login password)
+  #   IMAP_HOST      optional; defaults to imap.gmail.com
+  #
+  # Runs every morning at 7:30 AM CDT (12:30 UTC).
+  # ---------------------------------------------------------------------------
+  - name: email
+    display_name: "Email Triage"
+    description: >
+      Hermes — triages your inbox each morning into important / action-needed
+      mail, package & delivery updates (with tracking numbers), newsletters &
+      promos, and a count of everything else. Reads IMAP (Gmail by default);
+      requires IMAP_USER and IMAP_PASSWORD (Gmail app password) in .env.
+    enabled: true
+    schedule: "30 12 * * *"   # 7:30 AM CDT (12:30 UTC) daily
+    params:
+      lookback_hours: 24
 
   # ---------------------------------------------------------------------------
   # Job Monitor
@@ -108,6 +137,11 @@ agents:
   #   • Cart links included in report.
   #   • Report delivered via iMessage + Jarvis iOS app.
   #   • Approval flow: say "approve grocery order" to place orders.
+  #   • Usual-order learning: build a cart at any store, say "learn my Fresh
+  #     cart" / "scan my Target cart" (action=learn_cart, stores=amazon|
+  #     whole_foods|target|heb|all) — Remy scans it (Amazon: precise DOM;
+  #     Target/HEB: page text + LLM extraction), saves staples to Redis
+  #     grocery:usual_order, and builds future lists around them.
   #
   # Configure your profile via Jarvis:
   #   "Set my weight to 195 lbs"
@@ -173,10 +207,15 @@ agents:
       studios/instructors. Auto-books favorites the moment their window opens;
       suggests the rest for you to confirm. Proactively alerts via the ambient
       loop when a favorite becomes available.
+    # The SCHEDULED run only does a cheap, mechanical WAITLIST CHECK (no LLM) — it
+    # polls classes you're waitlisted on and auto-books/alerts when a spot opens.
+    # It's a near-instant no-op when you have no active waitlists, so idle token/
+    # cost is ~zero. Full LLM scans + targeted searches are on-demand only
+    # (trigger_classpass_scan / search_classpass).
     enabled: true
-    schedule: "*/30 6-22 * * *"   # Every 30 min, 6 AM – 10 PM
+    schedule: "*/15 6-22 * * *"   # Every 15 min, 6 AM – 10 PM (waitlist polling)
     params:
-      action: "scan"
+      action: "waitlist_check"
       # Profile-driven config (set via Jarvis, stored in Redis user:profile):
       #   classpass_home_location    e.g. "Austin, TX"
       #   classpass_schedule_url     override the ClassPass entry URL (optional)
@@ -184,6 +223,108 @@ agents:
       #   classpass_lookahead_days   how many days ahead to scan (default 2)
       #   imessage_to                phone number for booking confirmations
       # Favorites allowlist lives in Redis classpass:favorites (managed via tool).
+
+  # ---------------------------------------------------------------------------
+  # Finance Widget Producer
+  # Pulls balances + 30-day spending from BankSync and writes widget:finance:data
+  # for the dashboard finance widget. Requires BANKSYNC_API_KEY in .env.
+  # ---------------------------------------------------------------------------
+  - name: finance
+    display_name: "Finance Widget"
+    description: >
+      Refreshes the dashboard finance widget from BankSync (SoFi etc.): total cash,
+      available balance, and 30-day spending by category. Runs every 30 minutes.
+    enabled: true
+    schedule: "*/30 * * * *"   # Every 30 minutes
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Workout Agent — "Apollo", the personal trainer
+  #
+  # Programs the training week around three signals:
+  #   • Split preference (user:profile workout_split; default back/biceps →
+  #     chest/triceps → legs/shoulders ×2 across weekdays)
+  #   • Kai's ClassPass data (booked weekend classes shape the plan)
+  #   • HealthKit recovery (poor sleep / elevated RHR → volume cut)
+  #
+  # Say: "Apollo, plan my week" / "what's today's workout?"
+  # Runs automatically Sunday evening so the week's plan is ready Monday.
+  # ---------------------------------------------------------------------------
+  - name: workout
+    display_name: "Workout Coach"
+    description: >
+      Apollo — personal trainer. Builds a weekly lifting plan around your
+      split, your booked ClassPass classes (via Kai), and HealthKit recovery.
+      On-demand: "plan my workout week", "what's today's workout".
+    enabled: true
+    schedule: "0 23 * * 0"   # Sunday 6:00 PM CDT (23:00 UTC) — plan the week ahead
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Morning Briefing — wake-up greeting composed by the BRAIN with live tools
+  # (weather, maps commute, Apollo's workout, overnight camera events, news).
+  #
+  # PRIMARY trigger: Ring wake-detection — the first Living Room motion in the
+  # WAKE_WINDOW (env, default 5-10 AM local) fires it the moment you're up.
+  # This cron is only the FALLBACK for no-motion mornings; the agent dedupes
+  # to once per local day whichever fires first. (UTC! 14:30 = 9:30 AM CDT.)
+  # ---------------------------------------------------------------------------
+  - name: morning_brief
+    display_name: "Morning Briefing"
+    description: >
+      Wake-up greeting: weather, calendar, commute to the office, today's
+      workout, overnight camera activity, one headline. Fires on your first
+      morning motion (Ring); this schedule is only the fallback.
+    enabled: true
+    schedule: "30 14 * * *"   # 9:30 AM CDT fallback
+    params:
+      action: "morning_brief"
+      room: "office"
+
+  # ---------------------------------------------------------------------------
+  # Sentry — Ring camera watch (EVENT-driven, not scheduled)
+  #
+  # Dispatched automatically by the runner's ring/# MQTT handler whenever a
+  # Ring motion/ding event fires (per-camera cooldown: SENTRY_COOLDOWN_S env,
+  # default 10 min). Assesses the snapshot with Claude vision (haiku) and
+  # notifies (iOS push + iMessage) ONLY when something is genuinely notable —
+  # person, package, vehicle, doorbell, Finley being suspicious.
+  # Requires the ring_mqtt bridge service to be logged in (see docker-compose).
+  # ---------------------------------------------------------------------------
+  - name: sentry
+    display_name: "Camera Sentry"
+    description: >
+      Sentry — watches Ring camera motion/doorbell events, assesses each
+      snapshot with vision AI, and alerts only when something matters
+      (person, package, vehicle, the dog up to something). Event-driven
+      with a per-camera cooldown; no schedule.
+    enabled: false
+    schedule: ""
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Developer Agent — "Forge" (dispatch target — no schedule, on-demand only)
+  #
+  # Jarvis's dedicated software engineer. ALL self-modification of the Jarvis
+  # codebase and any coding project you start goes through Forge:
+  #   "Forge, add a tool that ..."  /  "start a new project that ..."
+  # Jarvis dispatches it via spawn_task(task, agent="developer").
+  #
+  # Runs a full tool-use loop (read/write/shell/rebuild via mac_bridge) on the
+  # powerful model tier (DEV_LLM_MODEL, default claude-opus-4-8). On-demand
+  # only — zero idle token cost. Watch progress: Redis agent:developer:progress.
+  # ---------------------------------------------------------------------------
+  - name: developer
+    display_name: "Developer Agent"
+    description: >
+      Forge — dedicated developer agent. Handles Jarvis self-modification
+      (new tools, bug fixes, service changes + rebuilds) and any delegated
+      coding project on the Mac. Reads before writing, verifies with
+      builds/tests, and reports what changed. Dispatched on demand by JARVIS
+      (spawn_task agent="developer").
+    enabled: false
+    schedule: ""
+    params: {}
 
   # ---------------------------------------------------------------------------
   # Research & Task agents (dispatch targets — no schedule, on-demand only)

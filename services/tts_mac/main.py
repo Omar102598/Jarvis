@@ -43,8 +43,30 @@ _MD_PATTERN = re.compile(
 )
 
 
+# Emoji / pictographs / dingbats / symbols that TTS would otherwise read aloud by
+# name ("money bag", "check mark") — stripped for SPEECH only (display keeps them).
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"   # emoji, symbols & pictographs, supplemental
+    "\U00002600-\U000027BF"   # miscellaneous symbols + dingbats
+    "\U0001F1E6-\U0001F1FF"   # regional indicators
+    "\U00002190-\U000021FF"   # arrows
+    "\U00002B00-\U00002BFF"   # misc symbols and arrows
+    "\U0000FE00-\U0000FE0F"   # variation selectors
+    "]+",
+    flags=re.UNICODE,
+)
+# Box-drawing / block / bullet characters used in agent reports (─ ═ • ✓ ✦ etc.)
+_DECOR_PATTERN = re.compile(r"[─-╿▀-▟■-◿•‣⁃∙·✓✗✔✘✦✧▶►]")
+
+
 def _strip_markdown(text: str) -> str:
+    """Clean text for SPEECH: strip markdown, emoji, and report decoration so the
+    voice never reads 'asterisk' or emoji names aloud. Display paths are untouched."""
     text = _MD_PATTERN.sub(lambda m: m.group(1) or m.group(2) or "", text)
+    text = _EMOJI_PATTERN.sub("", text)
+    text = _DECOR_PATTERN.sub(" ", text)
+    text = re.sub(r"[*_`~#>|]", "", text)     # residual / unpaired markdown symbols
     text = re.sub(r"\n{2,}", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -119,6 +141,12 @@ def on_message(client, userdata, msg):
         raw      = payload.get("text", "").strip()
         room     = payload.get("room", "office")
         is_final = payload.get("is_final", True)
+        # This speaker serves PHYSICAL rooms only. mobile-*/glasses-*/siri-*
+        # rooms are phone/HUD/Siri surfaces — the mobile_gateway (or Siri
+        # itself) handles their audio; the Mac echoing them aloud was a
+        # wildcard-subscription leak.
+        if room.startswith(("mobile-", "glasses-", "siri-")):
+            return
         if raw:
             clean = _strip_markdown(raw)
             _tts_queue.put((client, room, clean, is_final))

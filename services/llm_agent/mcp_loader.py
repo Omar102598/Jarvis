@@ -3,27 +3,35 @@
 Reads config/mcp_servers.yml, connects to each enabled server, and returns
 LangChain-compatible tools that Jarvis's core agent can call like any other tool.
 
-Design: per-call connections
-    Each tool invocation opens a fresh connection to its MCP server, calls the
-    tool, and closes the connection. This is slightly slower than a persistent
-    connection but works cleanly with Jarvis's per-request asyncio.run() pattern
-    and requires no background thread or event-loop bridging.
+Written against langchain-mcp-adapters >= 0.3 (MultiServerMCPClient is no
+longer an async context manager — tools come from ``await client.get_tools()``
+or from an explicit ``client.session(name)``).
 
-    For stdio servers (npx-based), this means one subprocess spawn per call.
-    For HTTP servers (streamable_http / sse), this means one HTTP request per call.
-    Both are acceptable for Jarvis's typical usage pattern (a few tool calls per
-    conversation turn).
+Two session models, chosen per server in mcp_servers.yml:
+
+  stateless (default)
+      Tools from ``client.get_tools()`` — every invocation opens a fresh
+      connection/subprocess, calls the tool, and disconnects. Right for
+      servers where calls are independent (fetch, filesystem, github).
+
+  persistent (``persistent: true``)
+      One dedicated daemon thread + event loop per server holds a single MCP
+      session open for the life of the process. Tool calls hop onto that loop.
+      REQUIRED for stateful servers: Playwright's browser must keep page state
+      between browser_navigate and the next call — a per-call session would
+      launch a brand-new browser for every step. Also right for the knowledge-
+      graph memory server (avoids a subprocess spawn per call).
 
 Reloading:
-    Call load_mcp_tools() again (e.g., after editing mcp_servers.yml) to get a
-    fresh list. main.py passes this to _rebuild_graph() which recompiles the agent.
-    The install_mcp_server tool writes to mcp_servers.yml and queues a graph
-    rebuild via the Redis plugin reload queue.
+    load_mcp_tools() closes any existing persistent sessions and rebuilds from
+    the current YAML. The install_mcp_server tool writes to mcp_servers.yml
+    and queues a graph rebuild via the Redis plugin reload queue.
 """
 
 import asyncio
 import concurrent.futures
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -33,9 +41,13 @@ from langchain_core.tools import BaseTool, StructuredTool
 # Path to config — resolved relative to the repo root (via volume mount in Docker)
 _CONFIG_PATH = Path(os.environ.get("MCP_SERVERS_CONFIG", "/config/mcp_servers.yml"))
 
+# Per-call timeout for tool invocations (browser steps can be slow)
+_TOOL_TIMEOUT_S = 120
+
 
 def _read_config() -> dict:
     if not _CONFIG_PATH.exists():
+        print(f"[MCP] Config not found at {_CONFIG_PATH} — no MCP servers loaded.")
         return {}
     with _CONFIG_PATH.open() as f:
         return yaml.safe_load(f) or {}
@@ -60,118 +72,166 @@ def _build_client_config(name: str, cfg: dict) -> dict:
         entry["command"] = cfg["command"]
         entry["args"] = cfg.get("args", [])
         raw_env = cfg.get("env", {})
-        entry["env"] = {k: _expand_env(str(v)) for k, v in raw_env.items()}
+        if raw_env:
+            entry["env"] = {k: _expand_env(str(v)) for k, v in raw_env.items()}
     elif transport in ("streamable_http", "sse"):
         entry["url"] = cfg["url"]
+        raw_headers = cfg.get("headers", {})
+        if raw_headers:
+            entry["headers"] = {k: _expand_env(str(v)) for k, v in raw_headers.items()}
     else:
         raise ValueError(f"Unknown MCP transport '{transport}' for server '{name}'")
 
     return entry
 
 
-async def _discover_server_tools(name: str, client_config: dict) -> list[dict]:
-    """Connect to one MCP server and return its tool schemas (name, description, schema)."""
-    try:
+# ---------------------------------------------------------------------------
+# Persistent sessions — one thread + event loop + open MCP session per server
+# ---------------------------------------------------------------------------
+
+class _PersistentSession:
+    """Holds one MCP session open on a dedicated event-loop thread.
+
+    The session (and any process behind it, e.g. a Playwright browser) lives
+    until close(). Tools are re-wrapped so calls from ANY loop/thread are
+    marshalled onto this session's loop.
+    """
+
+    def __init__(self, name: str, client_cfg: dict):
+        self.name = name
+        self.loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self.loop.run_forever, daemon=True, name=f"mcp-{name}"
+        )
+        self._thread.start()
+        self._session_cm = None
+        fut = asyncio.run_coroutine_threadsafe(self._open(client_cfg), self.loop)
+        self.raw_tools = fut.result(timeout=90)
+
+    async def _open(self, client_cfg: dict):
         from langchain_mcp_adapters.client import MultiServerMCPClient
-    except ImportError:
-        print("[MCP] langchain-mcp-adapters not installed — skipping MCP.")
-        return []
+        from langchain_mcp_adapters.tools import load_mcp_tools as _adapter_load
 
-    try:
-        async with MultiServerMCPClient({name: client_config}) as client:
-            tools = client.get_tools()
-            return [
-                {
-                    "server": name,
-                    "name": t.name,
-                    "description": t.description,
-                    "args_schema": t.args_schema,
-                    "client_config": client_config,
-                }
-                for t in tools
-            ]
-    except Exception as e:
-        print(f"[MCP] Could not connect to server '{name}': {e}")
-        return []
+        client = MultiServerMCPClient({self.name: client_cfg})
+        self._session_cm = client.session(self.name)
+        session = await self._session_cm.__aenter__()
+        return await _adapter_load(session)
 
+    def wrapped_tools(self) -> list[BaseTool]:
+        return [self._wrap(t) for t in self.raw_tools]
 
-def _make_proxy_tool(schema: dict) -> BaseTool:
-    """Create a LangChain tool that opens a fresh MCP connection per call."""
-    server_name = schema["server"]
-    tool_name = schema["name"]
-    tool_desc = schema["description"]
-    args_schema = schema["args_schema"]
-    client_config = schema["client_config"]
+    def _wrap(self, tool: BaseTool) -> BaseTool:
+        loop = self.loop
+        server = self.name
 
-    async def _arun(**kwargs: Any) -> str:
+        async def _arun(**kwargs: Any) -> str:
+            fut = asyncio.run_coroutine_threadsafe(tool.ainvoke(kwargs), loop)
+            try:
+                return await asyncio.wait_for(asyncio.wrap_future(fut), _TOOL_TIMEOUT_S)
+            except Exception as e:
+                return f"[MCP:{server}] Error calling '{tool.name}': {e}"
+
+        def _run(**kwargs: Any) -> str:
+            fut = asyncio.run_coroutine_threadsafe(tool.ainvoke(kwargs), loop)
+            try:
+                return fut.result(timeout=_TOOL_TIMEOUT_S)
+            except Exception as e:
+                return f"[MCP:{server}] Error calling '{tool.name}': {e}"
+
+        return StructuredTool(
+            name=tool.name,
+            description=f"[MCP:{server}] {tool.description}",
+            args_schema=tool.args_schema,
+            func=_run,
+            coroutine=_arun,
+        )
+
+    def close(self) -> None:
+        async def _close():
+            if self._session_cm is not None:
+                try:
+                    await self._session_cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
         try:
-            from langchain_mcp_adapters.client import MultiServerMCPClient
-        except ImportError:
-            return "MCP not available (langchain-mcp-adapters not installed)."
+            asyncio.run_coroutine_threadsafe(_close(), self.loop).result(timeout=15)
+        except Exception:
+            pass
+        self.loop.call_soon_threadsafe(self.loop.stop)
 
-        try:
-            async with MultiServerMCPClient({server_name: client_config}) as client:
-                for t in client.get_tools():
-                    if t.name == tool_name:
-                        return await t.ainvoke(kwargs)
-            return f"[MCP] Tool '{tool_name}' not found in server '{server_name}'."
-        except Exception as e:
-            return f"[MCP] Error calling '{tool_name}' on '{server_name}': {e}"
 
-    def _run(**kwargs: Any) -> str:
-        # Synchronous path: run the coroutine in a fresh thread with its own loop
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            import asyncio
-            future = pool.submit(asyncio.run, _arun(**kwargs))
-            return future.result(timeout=60)
+_persistent_sessions: dict[str, _PersistentSession] = {}
+_sessions_lock = threading.Lock()
 
-    return StructuredTool(
-        name=tool_name,
-        description=f"[MCP:{server_name}] {tool_desc}",
-        args_schema=args_schema,
-        func=_run,
-        coroutine=_arun,
-    )
+
+def _close_persistent_sessions() -> None:
+    with _sessions_lock:
+        for name, sess in list(_persistent_sessions.items()):
+            print(f"[MCP] Closing persistent session '{name}'")
+            sess.close()
+            _persistent_sessions.pop(name, None)
+
+
+# ---------------------------------------------------------------------------
+# Stateless discovery (per-call sessions handled by the adapter itself)
+# ---------------------------------------------------------------------------
+
+async def _discover_stateless(name: str, client_cfg: dict) -> list[BaseTool]:
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    client = MultiServerMCPClient({name: client_cfg})
+    tools = await client.get_tools()
+    # Prefix descriptions so the agent knows the tool's origin
+    for t in tools:
+        t.description = f"[MCP:{name}] {t.description}"
+    return tools
 
 
 def load_tools_for_server(name: str, cfg: dict) -> list[BaseTool]:
-    """Discover one MCP server's tools and return per-call proxy tools.
+    """Turn one MCP server config into usable LangChain tools.
 
-    This is the single, correct way to turn an MCP server config into usable
-    LangChain tools. The returned tools open a *fresh* connection on every
-    invocation (see ``_make_proxy_tool``), so they stay valid indefinitely —
-    unlike a tool captured from inside a closed ``MultiServerMCPClient`` context.
+    ``cfg`` may be our YAML shape or an already-built client entry (plugins).
+    Stateless servers get the adapter's own per-call tools; servers marked
+    ``persistent: true`` get a held-open session on a dedicated thread.
 
-    ``cfg`` may be either our YAML shape (``transport``/``command``/``args``/
-    ``env`` or ``url``) or an already-built MultiServerMCPClient entry. Discovery
-    runs in a dedicated event loop in a worker thread, so this is safe to call at
-    startup or from within another running loop.
-
-    Reused by both ``load_mcp_tools`` (mcp_servers.yml) and the plugin registry
-    (plugin-declared MCP servers) so there is exactly one MCP tool-loading path.
+    Reused by both ``load_mcp_tools`` (mcp_servers.yml) and the plugin
+    registry (plugin-declared MCP servers) — one MCP tool-loading path.
     """
     try:
         client_cfg = _build_client_config(name, cfg)
     except Exception:
-        client_cfg = cfg  # assume the plugin already supplied a client entry
+        client_cfg = dict(cfg)  # assume the plugin already supplied a client entry
+        client_cfg.pop("persistent", None)
+
+    persistent = bool(cfg.get("persistent", False))
 
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _discover_server_tools(name, client_cfg))
-            schemas = future.result(timeout=30)
-    except Exception as e:
-        print(f"[MCP] Discovery timeout/error for '{name}': {e}")
-        return []
+        if persistent:
+            with _sessions_lock:
+                old = _persistent_sessions.pop(name, None)
+            if old:
+                old.close()
+            sess = _PersistentSession(name, client_cfg)
+            with _sessions_lock:
+                _persistent_sessions[name] = sess
+            return sess.wrapped_tools()
 
-    return [_make_proxy_tool(s) for s in schemas]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, _discover_stateless(name, client_cfg))
+            return future.result(timeout=60)
+    except Exception as e:
+        print(f"[MCP] Could not load server '{name}': {e}")
+        return []
 
 
 def load_mcp_tools() -> list[BaseTool]:
-    """Read mcp_servers.yml, discover tools from enabled servers, return proxy tools.
+    """Read mcp_servers.yml, discover tools from enabled servers, return tools.
 
-    Called at startup and on reload. Runs synchronously; MCP discovery happens
-    in a thread to avoid blocking the main event loop at import time.
+    Called at startup and on reload. Closes stale persistent sessions first so
+    a reload never leaks browsers/subprocesses.
     """
+    _close_persistent_sessions()
+
     config = _read_config()
     servers = config.get("servers", {})
     enabled = {k: v for k, v in servers.items() if v.get("enabled", False)}
@@ -183,7 +243,8 @@ def load_mcp_tools() -> list[BaseTool]:
     tools: list[BaseTool] = []
     for name, cfg in enabled.items():
         server_tools = load_tools_for_server(name, cfg)
-        print(f"[MCP] '{name}': {len(server_tools)} tool(s) discovered")
+        mode = "persistent" if cfg.get("persistent") else "stateless"
+        print(f"[MCP] '{name}' ({mode}): {len(server_tools)} tool(s)")
         tools.extend(server_tools)
 
     print(f"[MCP] Total: {len(tools)} tool(s) from {len(enabled)} server(s)")

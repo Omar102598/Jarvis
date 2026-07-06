@@ -254,7 +254,12 @@ def _on_mqtt_connect(client, userdata, flags, rc):
 
 
 def _on_surface_push(client, userdata, msg):
-    """Relay llm_agent surface fanout to all connected WebSocket clients."""
+    """Relay llm_agent surface fanout to all connected WebSocket clients.
+
+    Optional ``media_url`` in the payload turns the push into an image card —
+    used by Sentry to attach the camera snapshot to its alerts (renders on the
+    app HUD view and, later, the glasses display).
+    """
     global _event_loop
     try:
         data = json.loads(msg.payload.decode())
@@ -262,7 +267,11 @@ def _on_surface_push(client, userdata, msg):
         if not text:
             return
         title = data.get("title", "Jarvis")
-        payload = DisplayPayload("text", title, text[:200], None, text)
+        media_url = data.get("media_url") or None
+        ptype = "text"
+        if media_url:
+            ptype = "video" if ".m3u8" in media_url else "image"
+        payload = DisplayPayload(ptype, title, text[:200], media_url, text)
         if _event_loop is not None:
             asyncio.run_coroutine_threadsafe(_push_display_payload(payload), _event_loop)
     except Exception as exc:
@@ -351,8 +360,8 @@ def _check_api_key(x_api_key: str) -> None:
 # Core pipelines
 # ---------------------------------------------------------------------------
 
-async def _run_pipeline_audio(text: str, source: str = "mobile") -> tuple[str, bytes]:
-    """Send text through MQTT agent; return (response_text, wav_bytes)."""
+async def _run_pipeline_text(text: str, source: str = "mobile") -> str:
+    """Send text through the MQTT agent; return the raw response text."""
     request_id = uuid.uuid4().hex[:12]
     room = f"{source}-{request_id}"
 
@@ -371,7 +380,7 @@ async def _run_pipeline_audio(text: str, source: str = "mobile") -> tuple[str, b
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }),
         )
-        response_text = await asyncio.wait_for(asyncio.shield(future), timeout=LLM_TIMEOUT)
+        return await asyncio.wait_for(asyncio.shield(future), timeout=LLM_TIMEOUT)
     except asyncio.TimeoutError:
         future.cancel()
         raise HTTPException(status_code=504, detail="JARVIS did not respond in time.")
@@ -379,7 +388,31 @@ async def _run_pipeline_audio(text: str, source: str = "mobile") -> tuple[str, b
         with _pending_lock:
             pending_requests.pop(room, None)
 
-    wav_bytes = synthesize_speech(response_text)
+
+# Speech cleanup (mirrors tts_mac): strip markdown/emoji/decoration so the
+# app's synthesized voice never says "asterisk asterisk" — DISPLAY text is
+# untouched; this applies only to what gets synthesized.
+_MD_SPEECH = re.compile(
+    r"\*{1,3}(.+?)\*{1,3}|`{1,3}[^`]*`{1,3}|#{1,6}\s*"
+    r"|\[([^\]]*)\]\([^)]*\)|>\s*|-{3,}|_{3,}|\*{3,}", re.DOTALL)
+_EMOJI_SPEECH = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF"
+    "\U00002190-\U000021FF\U00002B00-\U00002BFF\U0000FE00-\U0000FE0F]+")
+_DECOR_SPEECH = re.compile(r"[─-╿▀-▟■-◿•‣⁃∙·✓✗✔✘✦✧▶►]")
+
+
+def _strip_for_speech(text: str) -> str:
+    text = _MD_SPEECH.sub(lambda m: m.group(1) or m.group(2) or "", text)
+    text = _EMOJI_SPEECH.sub("", text)
+    text = _DECOR_SPEECH.sub(" ", text)
+    text = re.sub(r"[*_`~#>|]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+async def _run_pipeline_audio(text: str, source: str = "mobile") -> tuple[str, bytes]:
+    """Send text through MQTT agent; return (response_text, wav_bytes)."""
+    response_text = await _run_pipeline_text(text, source)
+    wav_bytes = synthesize_speech(_strip_for_speech(response_text))
     return response_text, wav_bytes
 
 
@@ -506,6 +539,36 @@ async def ask_query(request: QueryRequest, x_api_key: str = Header(default="")):
     return await _run_pipeline_json(request.text)
 
 
+@app.post("/ask/query/siri", summary="[Siri App Intent] Text query → plain text, no audio synthesis")
+async def ask_query_siri(request: QueryRequest, x_api_key: str = Header(default="")):
+    """Fast path for the AskJarvisIntent: Siri speaks the dialog itself, so
+    skipping server-side WAV synthesis cuts seconds off the round-trip.
+
+    source="siri" → room "siri-…" so the brain treats this as a VOICE surface
+    (2-3 spoken sentences, no markdown/lists). Long dialogs are the reason
+    Siri silently SHOWS answers instead of speaking them.
+    """
+    _check_api_key(x_api_key)
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="text must not be empty")
+    print(f"[Gateway] /ask/query/siri: '{request.text}'")
+    response_text = await _run_pipeline_text(request.text, source="siri")
+    payload = parse_display_response(response_text)
+    text = payload.tts_text.strip()
+
+    # Belt-and-braces: if the model still rambles, trim at a sentence boundary —
+    # past ~600 chars Siri reliably stops speaking and just displays the text.
+    if len(text) > 600:
+        cut = text[:600]
+        for stop in (". ", "! ", "? "):
+            idx = cut.rfind(stop)
+            if idx > 200:
+                cut = cut[: idx + 1]
+                break
+        text = cut + " Full details are in the Jarvis app, sir."
+    return {"text": text}
+
+
 @app.post("/ask/query/audio", summary="[iOS app] Audio bytes → JSON with display payload")
 async def ask_query_audio(request: Request, x_api_key: str = Header(default="")):
     """
@@ -548,6 +611,134 @@ async def ask_image(request: ImageQueryRequest, x_api_key: str = Header(default=
 
     print(f"[Gateway] /ask/image: prompt='{request.text}', image_len={len(request.image_b64)}")
     return await _run_pipeline_json(composite_text)
+
+
+class VideoQueryRequest(BaseModel):
+    video_b64: str
+    text: str = "What is happening in this video?"
+    source: str = "glasses"
+
+
+async def _analyze_video_gemini(video_b64: str, question: str) -> Optional[str]:
+    """True video-native analysis via Gemini (motion, temporal order, audio).
+
+    Claude only sees sampled frames; Gemini ingests the actual clip. Used when
+    GOOGLE_API_KEY is set and the clip is small enough for inline upload
+    (~<14MB base64); returns None on any failure so the caller falls back to
+    the frame-sampling path. Model override: GEMINI_VIDEO_MODEL.
+    """
+    api_key = os.environ.get("GOOGLE_API_KEY", "").strip()
+    if not api_key or len(video_b64) > 14_000_000:
+        return None
+    model = os.environ.get("GEMINI_VIDEO_MODEL", "gemini-2.5-flash")
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:generateContent?key={api_key}")
+    body = {
+        "contents": [{
+            "parts": [
+                {"inline_data": {"mime_type": "video/mp4", "data": video_b64}},
+                {"text": question},
+            ]
+        }]
+    }
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=body,
+                                    timeout=aiohttp.ClientTimeout(total=90)) as resp:
+                if resp.status != 200:
+                    print(f"[Gateway] Gemini video failed ({resp.status}) — "
+                          "falling back to frame sampling")
+                    return None
+                data = await resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        print(f"[Gateway] Gemini video error ({e}) — falling back to frame sampling")
+        return None
+
+
+@app.post("/ask/video", summary="[iOS app/glasses] Short video clip + text → JSON with display payload")
+async def ask_video(request: VideoQueryRequest, x_api_key: str = Header(default="")):
+    """Analyze a short video clip (fridge scan, pantry pan, 'what's going on here').
+
+    Claude doesn't ingest video directly, so we sample up to 6 evenly spaced
+    frames with ffmpeg (already in this image for audio work), downscale them,
+    and send them as multiple image blocks — the llm_agent converts the
+    markers into a single multimodal message so the model sees the sequence.
+    Keep clips short (~5-20s); frames are sampled across the full duration.
+    """
+    import subprocess
+    import tempfile
+    import glob as _glob
+    import shutil
+
+    _check_api_key(x_api_key)
+    if not request.video_b64:
+        raise HTTPException(status_code=400, detail="video_b64 must not be empty")
+
+    # Preferred path: video-native Gemini (sees motion/order/audio, not just
+    # frames). The description is then routed through the normal pipeline so
+    # Jarvis answers in-character with full context/memory.
+    gemini_desc = await _analyze_video_gemini(request.video_b64, request.text)
+    if gemini_desc:
+        print(f"[Gateway] /ask/video: Gemini analyzed the clip natively")
+        composite = (
+            f"(A video the user just recorded was analyzed; here is what it shows: "
+            f"{gemini_desc})\n\nThe user asked: {request.text}"
+        )
+        return await _run_pipeline_json(composite)
+
+    tmpdir = tempfile.mkdtemp(prefix="jarvis_vid_")
+    try:
+        video_path = os.path.join(tmpdir, "clip.mp4")
+        with open(video_path, "wb") as f:
+            f.write(base64.b64decode(request.video_b64))
+
+        # Duration → sample 6 frames evenly across the clip
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", video_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        try:
+            duration = max(float(probe.stdout.strip()), 0.5)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Could not read the video (bad encoding?)")
+
+        n_frames = 6
+        fps = n_frames / duration
+        subprocess.run(
+            ["ffmpeg", "-v", "quiet", "-i", video_path,
+             "-vf", f"fps={fps:.4f},scale='min(896,iw)':-2",
+             "-frames:v", str(n_frames), "-q:v", "6",
+             os.path.join(tmpdir, "frame_%02d.jpg")],
+            timeout=120, check=True,
+        )
+
+        frames = sorted(_glob.glob(os.path.join(tmpdir, "frame_*.jpg")))
+        if not frames:
+            raise HTTPException(status_code=422, detail="No frames could be extracted")
+
+        markers = []
+        for fp in frames:
+            with open(fp, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            markers.append(f"[GLASSES_CAMERA_IMAGE: data:image/jpeg;base64,{b64}]")
+
+        composite_text = (
+            "\n".join(markers)
+            + f"\nThese are {len(frames)} frames sampled in order from a "
+              f"{duration:.0f}-second video. {request.text}"
+        )
+        print(f"[Gateway] /ask/video: prompt='{request.text}', "
+              f"{duration:.1f}s clip → {len(frames)} frames")
+        return await _run_pipeline_json(composite_text)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="Video processing timed out")
+    except subprocess.CalledProcessError:
+        raise HTTPException(status_code=422, detail="ffmpeg could not decode the video")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -689,19 +880,42 @@ class HealthSnapshotRequest(BaseModel):
 async def health_snapshot(req: HealthSnapshotRequest, x_api_key: str = Header(default="")):
     """Store the latest HealthKit snapshot in Redis.
 
-    - ``user:health:latest`` — most recent snapshot (consumed by grocery + ambient agents)
-    - ``user:health:history`` — rolling list of the last 60 snapshots
+    - ``user:health:latest`` — most recent snapshot (always fresh; consumed by
+      grocery + ambient agents)
+    - ``user:health:history`` — ONE snapshot per calendar day (~30 days). The
+      iOS app pushes on launch + every foreground, so a naive append floods the
+      list with same-day snapshots and collapses the recovery baseline that Kai
+      (ClassPass) and Apollo (workout) compute from it. We de-dup by day: the
+      newest same-day entry is replaced, distinct days are prepended.
     - If body mass is present, ``user:profile.weight_lbs`` is updated so the
       grocery agent's TDEE calculation always uses the user's current weight.
     """
     _check_api_key(x_api_key)
     snapshot = {k: v for k, v in req.model_dump().items() if v is not None}
-    snapshot["ts"] = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(timezone.utc)
+    snapshot["ts"] = now.timestamp()
+    today = now.strftime("%Y-%m-%d")
 
     try:
         _redis.set("user:health:latest", json.dumps(snapshot))
-        _redis.lpush("user:health:history", json.dumps(snapshot))
-        _redis.ltrim("user:health:history", 0, 59)
+
+        # De-dup history by day: replace the head if it's from today, else prepend.
+        head = _redis.lindex("user:health:history", 0)
+        head_day = ""
+        if head:
+            try:
+                head_ts = json.loads(head).get("ts")
+                if head_ts:
+                    head_day = datetime.fromtimestamp(
+                        head_ts, timezone.utc
+                    ).strftime("%Y-%m-%d")
+            except Exception:
+                pass
+        if head_day == today:
+            _redis.lset("user:health:history", 0, json.dumps(snapshot))
+        else:
+            _redis.lpush("user:health:history", json.dumps(snapshot))
+        _redis.ltrim("user:health:history", 0, 29)   # ~30 distinct days
 
         # Keep the user profile's weight in sync with HealthKit body mass
         if req.body_mass_lbs:
@@ -760,6 +974,173 @@ async def get_tool_events(x_api_key: str = Header(default=""), limit: int = 30):
         return {"events": events}
     except Exception as exc:
         raise HTTPException(503, f"Redis unavailable: {exc}")
+
+
+@app.get("/ring/snapshot/{device}.jpg", summary="Latest cached Ring snapshot as a JPEG")
+async def ring_snapshot(device: str, k: str = ""):
+    """Serve a Ring camera's most recent snapshot (cached in Redis by the
+    agent_runner). Auth via ?k=<MOBILE_API_KEY> query param because this URL
+    is fetched directly by image views (no header support)."""
+    expected = os.environ.get("MOBILE_API_KEY", "")
+    if expected and k != expected:
+        raise HTTPException(status_code=401, detail="bad key")
+    snap = _redis.get(f"ring:camera:{device}:snapshot")
+    if not snap:
+        raise HTTPException(status_code=404, detail="no snapshot cached for this camera")
+    return Response(content=base64.b64decode(snap), media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
+# ---------------------------------------------------------------------------
+# Ring live view — on-demand RTSP → HLS relay
+#
+# ring-mqtt runs an RTSP server (rtsp://jarvis-ring-mqtt:8554/<device>_live,
+# stream starts when a client connects). iOS AVPlayer can't play RTSP, so we
+# relay to HLS with ffmpeg (already in this image): the app / glasses HUD play
+# the .m3u8 natively via the same media_url path as snapshots.
+# ---------------------------------------------------------------------------
+
+RING_RTSP_BASE = os.environ.get("RING_RTSP_BASE", "rtsp://jarvis-ring-mqtt:8554")
+RING_LIVE_USER = os.environ.get("RING_LIVE_USER", "jarvis")
+RING_LIVE_PASS = os.environ.get("RING_LIVE_PASS", "jarvis-live-7e74a7")
+RING_LIVE_DURATION_S = int(os.environ.get("RING_LIVE_DURATION_S", "300"))
+_HLS_ROOT = "/tmp/ring_hls"
+_live_procs: dict = {}
+
+
+@app.post("/ring/live/{device}/start", summary="Start a live HLS relay for a Ring camera")
+async def ring_live_start(device: str, k: str = ""):
+    import subprocess, shutil, threading, re as _re
+
+    expected = os.environ.get("MOBILE_API_KEY", "")
+    if expected and k != expected:
+        raise HTTPException(status_code=401, detail="bad key")
+    if not _re.fullmatch(r"[a-f0-9]+", device):
+        raise HTTPException(status_code=400, detail="bad device id")
+
+    outdir = os.path.join(_HLS_ROOT, device)
+    playlist = os.path.join(outdir, "index.m3u8")
+
+    proc = _live_procs.get(device)
+    if proc is None or proc.poll() is not None:
+        shutil.rmtree(outdir, ignore_errors=True)
+        os.makedirs(outdir, exist_ok=True)
+        src = f"rtsp://{RING_LIVE_USER}:{RING_LIVE_PASS}@{RING_RTSP_BASE.split('://')[1]}/{device}_live"
+        proc = subprocess.Popen(
+            ["ffmpeg", "-v", "quiet", "-rtsp_transport", "tcp", "-i", src,
+             "-c", "copy", "-f", "hls", "-hls_time", "2", "-hls_list_size", "6",
+             "-hls_flags", "delete_segments", playlist],
+        )
+        _live_procs[device] = proc
+
+        def _reaper(p=proc, d=device):
+            try:
+                p.wait(timeout=RING_LIVE_DURATION_S)
+            except Exception:
+                p.terminate()
+            _live_procs.pop(d, None)
+        threading.Thread(target=_reaper, daemon=True).start()
+
+    # Wait for the playlist to materialize (stream spin-up takes a few seconds)
+    for _ in range(30):
+        if os.path.exists(playlist) and os.path.getsize(playlist) > 0:
+            return {"ok": True, "playlist": f"/ring/live/{device}/index.m3u8",
+                    "expires_in_s": RING_LIVE_DURATION_S}
+        await asyncio.sleep(1)
+    raise HTTPException(status_code=504,
+                        detail="Stream didn't start — camera offline or RTSP auth wrong")
+
+
+@app.post("/ring/snapshot/{device}/refresh", summary="Grab a FRESH frame from the camera via RTSP")
+async def ring_snapshot_refresh(device: str, k: str = ""):
+    """Force a fresh snapshot by pulling one frame from the camera's live RTSP
+    stream (10-20s: Ring wakes the camera on connect). Updates the Redis cache
+    the tools/Sentry read, so everything downstream sees the new frame.
+    Battery cameras (e.g. doorbells) don't do interval snapshots — this is the
+    only way to get a current frame from them without a motion event.
+    """
+    import subprocess, tempfile, re as _re
+
+    expected = os.environ.get("MOBILE_API_KEY", "")
+    if expected and k != expected:
+        raise HTTPException(status_code=401, detail="bad key")
+    if not _re.fullmatch(r"[a-f0-9]+", device):
+        raise HTTPException(status_code=400, detail="bad device id")
+
+    src = f"rtsp://{RING_LIVE_USER}:{RING_LIVE_PASS}@{RING_RTSP_BASE.split('://')[1]}/{device}_live"
+    out = tempfile.mktemp(suffix=".jpg")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-v", "quiet", "-rtsp_transport", "tcp", "-i", src,
+            "-frames:v", "1", "-q:v", "4", out,
+        )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=40)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise HTTPException(status_code=504, detail="Camera didn't produce a frame in time")
+        if not os.path.exists(out) or os.path.getsize(out) == 0:
+            raise HTTPException(status_code=502, detail="No frame captured (camera offline?)")
+        with open(out, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        _redis.set(f"ring:camera:{device}:snapshot", b64)
+        _redis.set(f"ring:camera:{device}:snapshot_ts",
+                   datetime.now(timezone.utc).isoformat())
+        return {"ok": True, "bytes": len(b64) * 3 // 4}
+    finally:
+        if os.path.exists(out):
+            os.unlink(out)
+
+
+@app.get("/ring/live/{device}/{fname}", summary="Serve HLS playlist/segments for a live view")
+async def ring_live_files(device: str, fname: str):
+    import re as _re
+    # Segment names are ffmpeg-generated; playlist URL carries no query params
+    # once handed to a video player, so this endpoint is intentionally keyless —
+    # device ids are unguessable and streams live ≤5 min.
+    if not _re.fullmatch(r"[a-f0-9]+", device) or not _re.fullmatch(r"[\w.-]+", fname):
+        raise HTTPException(status_code=400, detail="bad path")
+    path = os.path.join(_HLS_ROOT, device, fname)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="not found (stream ended?)")
+    media = "application/vnd.apple.mpegurl" if fname.endswith(".m3u8") else "video/mp2t"
+    with open(path, "rb") as f:
+        return Response(content=f.read(), media_type=media,
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/history", summary="[iOS/Mac app] Recent conversation history for chat restore")
+async def get_history(x_api_key: str = Header(default=""), limit: int = 40):
+    """Return the last N conversation turns so app chats survive relaunch.
+
+    Reads the same Redis list the llm_agent maintains (conversation:{user}).
+    Content blocks (tool_use/images) are flattened to plain text.
+    """
+    _check_api_key(x_api_key)
+    user_id = os.environ.get("JARVIS_USER_ID", "default")
+    try:
+        raw = _redis.lrange(f"conversation:{user_id}", -min(limit, 80), -1)
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+
+    messages = []
+    for item in raw:
+        try:
+            msg = json.loads(item)
+        except Exception:
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            ).strip()
+        if not isinstance(content, str) or not content.strip():
+            continue
+        role = msg.get("role", "")
+        if role in ("user", "assistant"):
+            messages.append({"role": role, "text": content.strip()})
+    return {"messages": messages}
 
 
 # ---------------------------------------------------------------------------

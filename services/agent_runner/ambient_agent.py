@@ -30,7 +30,6 @@ import paho.mqtt.client as mqtt
 import redis
 
 from base_agent import BaseAgent
-from llm_helper import run_llm
 
 MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
@@ -46,6 +45,37 @@ class AmbientAgent(BaseAgent):
     async def run(self) -> str:
         params = self.params or {}
         room = params.get("room", _DEFAULT_ROOM)
+
+        # Dedicated morning-briefing mode (scheduled as its own agents.yml
+        # entry "morning_brief") — composes a rich brief via the BRAIN so it
+        # can use live tools (weather, maps commute, workout plan, cameras).
+        if params.get("action") == "morning_brief":
+            # Once per local day — the FIRST trigger wins, whether that's the
+            # Ring wake-detection (first morning motion) or the cron fallback.
+            try:
+                from zoneinfo import ZoneInfo
+                import os as _os
+                today = datetime.now(ZoneInfo(
+                    _os.environ.get("USER_TZ", "America/Chicago"))).strftime("%Y-%m-%d")
+            except Exception:
+                today = datetime.now().strftime("%Y-%m-%d")
+            if not self.r.set(f"jarvis:briefed:{today}", "1", nx=True, ex=86400):
+                return "Morning briefing already delivered today — skipping."
+            prompt = (
+                "Good morning briefing, please. Compose it from live data: "
+                "1) today's weather (get_weather); 2) my calendar today; "
+                "3) commute — driving time from my home address (get it from my "
+                "profile field home_address; skip this section gracefully if "
+                "unset) to Charles Schwab at The Domain, Austin via your maps "
+                "tools, and when I should leave; "
+                "4) today's workout from Apollo's plan (get_todays_workout); "
+                "5) anything notable the cameras caught overnight (who_came_by, "
+                "last 10 hours) and one headline from Walter's newsletter if "
+                "available. Speak it warmly in 5-6 sentences — this is my "
+                "wake-up greeting."
+            )
+            self._publish(prompt, room, is_llm_request=True)
+            return "Morning briefing dispatched to the brain."
         calendar_lookahead_min = int(params.get("calendar_lookahead_min", 30))
         morning_hour = int(params.get("morning_hour", 8))
         weather_enabled = params.get("weather_enabled", True)

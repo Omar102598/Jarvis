@@ -15,6 +15,7 @@
 		86C8BE8FAA0AC45429F92594 /* DesktopChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7959EAA0B343A440054AFD4 /* DesktopChatView.swift */; };
 		A89D7F8F20AC7D2E5AF33C5E /* DesktopSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82628989DF21DC207A752047 /* DesktopSettingsView.swift */; };
 		E91790E1EDC0BFCC7D7C134D /* JarvisShared in Frameworks */ = {isa = PBXBuildFile; productRef = E3A7C83892CCC58B31E3BF8A /* JarvisShared */; };
+		F49A722F1AB5406F47A6017C /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0F680C4574D1C8CE89671C /* HotkeyManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +28,7 @@
 		B22B760668E6B6979E5863DE /* JarvisDesktopApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisDesktopApp.swift; sourceTree = "<group>"; };
 		D148979F0C50655DC6536ECD /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		E7959EAA0B343A440054AFD4 /* DesktopChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopChatView.swift; sourceTree = "<group>"; };
+		EC0F680C4574D1C8CE89671C /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -76,6 +78,7 @@
 		9EE5B1142CBA729CAF6DBFEC /* StatusBar */ = {
 			isa = PBXGroup;
 			children = (
+				EC0F680C4574D1C8CE89671C /* HotkeyManager.swift */,
 				9B0C4B3C499C1AF0635FA957 /* ServiceManager.swift */,
 				5BCC306F43B1FF1F29B4B514 /* StatusBarMenuView.swift */,
 			);
@@ -195,6 +198,7 @@
 				733445799E708DA15D8093E2 /* DashboardView.swift in Sources */,
 				86C8BE8FAA0AC45429F92594 /* DesktopChatView.swift in Sources */,
 				A89D7F8F20AC7D2E5AF33C5E /* DesktopSettingsView.swift in Sources */,
+				F49A722F1AB5406F47A6017C /* HotkeyManager.swift in Sources */,
 				5133587B6F604297B8412AF2 /* JarvisDesktopApp.swift in Sources */,
 				5D03E149160F08E7E21C7267 /* NotificationRouter.swift in Sources */,
 				26EFD9E211C83F6C934C58DF /* ServiceManager.swift in Sources */,

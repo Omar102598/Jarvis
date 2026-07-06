@@ -49,10 +49,19 @@ config/redis/data/
 dump.rdb
 
 # Native service runtime files
-.audio_pids
+.audio_pids*
 .mac_bridge.pid
 .venv-audio/
 .venv-mac-bridge/
 
 # Claude Code project memory
 .claude/
+
+# Auto-backups from mac_bridge dev_write/jarvis_write
+*.bak
+
+# Ring bridge state (contains the Ring refresh token — never commit)
+data/ring-mqtt/
+
+# Home Assistant config (secrets, db, tokens)
+data/homeassistant/

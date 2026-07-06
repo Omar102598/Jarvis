@@ -26,6 +26,14 @@ from .mac import (
 from .memory import forget, recall, remember
 from .notes import manage_notes
 from .notifications import send_notification
+from .petkit import (
+    feed_pet,
+    get_feeder_status,
+    get_feeding_schedule,
+    get_fountain_status,
+    list_petkit_devices,
+    toggle_feeding_plan,
+)
 from .shell import run_shell
 from .smart_home import control_device, get_device_states, get_presence, set_scene
 from .spotify import spotify_control
@@ -43,16 +51,21 @@ from .web_search import web_search
 __all__ = [
     "ask_subagent",
     "control_device",
+    "feed_pet",
     "fetch_url",
     "forget",
     "get_agent_report",
     "get_calendar_events",
     "get_camera_snapshot",
     "get_device_states",
+    "get_feeder_status",
+    "get_feeding_schedule",
+    "get_fountain_status",
     "get_presence",
     "get_weather",
     "github_tool",
     "list_files",
+    "list_petkit_devices",
     "dev_list_dir",
     "dev_read_file",
     "dev_search_code",
@@ -95,6 +108,7 @@ __all__ = [
     "spawn_task",
     "spotify_control",
     "spotify_desktop",
+    "toggle_feeding_plan",
     "trigger_agent",
     "web_search",
     "write_file",

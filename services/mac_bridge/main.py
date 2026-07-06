@@ -96,7 +96,13 @@ async def _get_page():
     if _pw is None:
         from playwright.async_api import async_playwright
         _pw = await async_playwright().start()
-        _browser = await _pw.chromium.launch(headless=False, args=["--start-maximized"])
+        _browser = await _pw.chromium.launch(
+            headless=False,
+            args=[
+                "--start-maximized",
+                "--disable-blink-features=AutomationControlled",
+            ],
+        )
     if _browser_context is None:
         state_file = _BROWSER_STATE_PATH if os.path.exists(_BROWSER_STATE_PATH) else None
         _browser_context = await _browser.new_context(
@@ -107,7 +113,17 @@ async def _get_page():
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
+            locale="en-US",
+            timezone_id="America/Chicago",
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+            },
         )
+        # Stealth: hide webdriver flag (matches the headless scraper context)
+        await _browser_context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+        """)
         if state_file:
             print(f"[MacBridge] Browser session loaded from {state_file}")
     if _page is None or _page.is_closed():
@@ -406,6 +422,10 @@ class BrowserFillRequest(BaseModel):
     label: str
     value: str
 
+class BrowserPressRequest(BaseModel):
+    key: str          # e.g. 'Enter', 'ArrowDown', 'Tab'
+    label: str = ""   # optional: focus this field first (placeholder/label)
+
 
 @app.post("/browser/navigate")
 async def browser_navigate(req: BrowserNavigateRequest):
@@ -450,15 +470,56 @@ async def browser_read():
 
 @app.post("/browser/click")
 async def browser_click(req: BrowserClickRequest):
-    """Click the first element containing the given text."""
+    """Click the first VISIBLE, actionable element matching the given text.
+
+    Prefers real buttons/links matched by accessible name (role queries exclude
+    hidden elements by default), then falls back to visible text. Pages like
+    Amazon search results carry many HIDDEN 'Add' controls for unrelated items;
+    matching by role + visibility avoids clicking (or timing out on) those.
+    """
+    page = await _get_page()
+    strategies = [
+        page.get_by_role("button", name=req.text, exact=False),
+        page.get_by_role("link", name=req.text, exact=False),
+        page.get_by_text(req.text, exact=False).locator("visible=true"),
+    ]
+    last_err = None
+    for loc in strategies:
+        try:
+            el = loc.first
+            await el.scroll_into_view_if_needed(timeout=3000)
+            await el.click(timeout=6000)
+            await page.wait_for_load_state("domcontentloaded", timeout=8000)
+            return {"status": f"Clicked '{req.text}' — now at {page.url}"}
+        except Exception as e:
+            last_err = e
+            continue
+    raise HTTPException(500, f"Browser click failed for '{req.text}': {last_err}")
+
+
+@app.post("/browser/press")
+async def browser_press(req: BrowserPressRequest):
+    """Press a keyboard key in the page (optionally focusing a field first).
+
+    Needed to drive React autocompletes (e.g. ClassPass search): fill the box,
+    then ArrowDown + Enter to select the highlighted option (mouse clicks don't
+    trigger their handlers reliably).
+    """
     try:
         page = await _get_page()
-        locator = page.get_by_text(req.text, exact=False).first
-        await locator.click(timeout=10000)
-        await page.wait_for_load_state("domcontentloaded", timeout=10000)
-        return {"status": f"Clicked '{req.text}' — now at {page.url}"}
+        if req.label:
+            for loc in [page.get_by_placeholder(req.label, exact=False),
+                        page.get_by_label(req.label, exact=False)]:
+                try:
+                    await loc.first.focus(timeout=3000)
+                    break
+                except Exception:
+                    continue
+        await page.keyboard.press(req.key)
+        await page.wait_for_timeout(400)
+        return {"status": f"pressed {req.key}"}
     except Exception as e:
-        raise HTTPException(500, f"Browser click failed for '{req.text}': {e}")
+        raise HTTPException(500, f"Browser press failed for '{req.key}': {e}")
 
 
 @app.post("/browser/fill")
@@ -661,6 +722,220 @@ async def scraper_close():
         await _scraper_page.close()
         _scraper_page = None
     return {"status": "scraper page closed"}
+
+
+# ---------------------------------------------------------------------------
+# Service logs — for the dashboard's Logs page and debugging
+# ---------------------------------------------------------------------------
+
+# service name → docker container name (docker services) or log file (native)
+_LOG_CONTAINERS = {
+    "llm_agent":      "jarvis-llm",
+    "agent_runner":   "jarvis-agent-runner",
+    "dashboard":      "jarvis-dashboard",
+    "mobile_gateway": "jarvis-mobile-gateway",
+    "redis":          "jarvis-redis",
+    "mosquitto":      "jarvis-mqtt",
+    "chroma":         "jarvis-chroma",
+    "wake_word_docker": "jarvis-wake-word",
+    "stt_docker":     "jarvis-stt",
+    "vision":         "jarvis-vision",
+    "glasses_bridge": "jarvis-glasses",
+}
+_LOG_FILES = {
+    "mac_bridge":     "logs/mac_bridge.log",
+    "tts_mac":        "logs/audio/tts_mac.log",
+    "stt":            "logs/audio/stt.log",
+    "wake_word":      "logs/audio/wake_word.log",
+    "speaker_verify": "logs/audio/speaker_verify.log",
+}
+
+
+@app.get("/logs/services")
+def logs_services():
+    """List every service whose logs can be fetched via /logs/tail."""
+    return {
+        "docker": sorted(_LOG_CONTAINERS.keys()),
+        "native": sorted(_LOG_FILES.keys()),
+    }
+
+
+@app.get("/logs/tail")
+def logs_tail(service: str = Query(...), lines: int = Query(200, le=1000)):
+    """Return the last N log lines for a service (docker or native)."""
+    if service in _LOG_CONTAINERS:
+        try:
+            result = subprocess.run(
+                ["docker", "logs", "--tail", str(lines), _LOG_CONTAINERS[service]],
+                capture_output=True, text=True, timeout=20,
+            )
+            # docker logs writes app output to both streams — merge, stdout first
+            text = (result.stdout + result.stderr).strip()
+            return {"service": service, "source": "docker", "text": text[-200_000:]}
+        except Exception as e:
+            raise HTTPException(500, f"docker logs failed: {e}")
+
+    if service in _LOG_FILES:
+        path = os.path.join(_JARVIS_ROOT, _LOG_FILES[service])
+        if not os.path.exists(path):
+            return {"service": service, "source": "file", "text": "(no log file yet)"}
+        try:
+            result = subprocess.run(
+                ["tail", "-n", str(lines), path],
+                capture_output=True, text=True, timeout=10,
+            )
+            return {"service": service, "source": "file", "text": result.stdout[-200_000:]}
+        except Exception as e:
+            raise HTTPException(500, f"tail failed: {e}")
+
+    raise HTTPException(404, f"Unknown service '{service}'. See /logs/services.")
+
+
+# ---------------------------------------------------------------------------
+# iMessage reading — best-effort over ~/Library/Messages/chat.db
+# Requires Full Disk Access for the mac_bridge python process
+# (System Settings → Privacy & Security → Full Disk Access).
+# ---------------------------------------------------------------------------
+
+_CHAT_DB = os.path.expanduser("~/Library/Messages/chat.db")
+
+
+def _decode_attributed_body(blob: bytes) -> str:
+    """Best-effort text extraction from a typedstream attributedBody blob.
+
+    Newer macOS stores message text here (the `text` column is NULL). Proper
+    decoding needs a typedstream parser; the text reliably appears after the
+    NSString/NSMutableString marker, length-prefixed. This heuristic covers
+    the common case and returns '' when it can't.
+    """
+    if not blob:
+        return ""
+    try:
+        marker = b"NSString"
+        idx = blob.find(marker)
+        if idx == -1:
+            return ""
+        seg = blob[idx + len(marker):]
+        # Skip typedstream framing: +\x?? then either 1-byte length or
+        # 0x81 + 2-byte little-endian length before the UTF-8 payload.
+        plus = seg.find(b"+")
+        if plus == -1 or plus > 8:
+            return ""
+        seg = seg[plus + 1:]
+        if seg[0:1] == b"\x81":
+            length = int.from_bytes(seg[1:3], "little")
+            payload = seg[3:3 + length]
+        else:
+            length = seg[0]
+            payload = seg[1:1 + length]
+        return payload.decode("utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+
+
+@app.get("/imessage/recent")
+def imessage_recent(limit: int = Query(20, le=100), contact: str = Query("")):
+    """Read the most recent iMessages (optionally filtered by contact handle)."""
+    import sqlite3
+
+    if not os.path.exists(_CHAT_DB):
+        raise HTTPException(404, "chat.db not found — is this Mac signed into iMessage?")
+
+    query = """
+        SELECT m.ROWID, m.is_from_me, m.text, m.attributedBody,
+               datetime(m.date/1000000000 + strftime('%s','2001-01-01'),
+                        'unixepoch','localtime') AS ts,
+               COALESCE(h.id, 'me') AS handle,
+               COALESCE(c.display_name, '') AS chat_name
+        FROM message m
+        LEFT JOIN handle h ON m.handle_id = h.ROWID
+        LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+        LEFT JOIN chat c ON c.ROWID = cmj.chat_id
+        {where}
+        ORDER BY m.date DESC LIMIT ?
+    """
+    params: list = []
+    where = ""
+    if contact:
+        where = "WHERE h.id LIKE ?"
+        params.append(f"%{contact}%")
+    params.append(limit)
+
+    try:
+        # Read-only URI so we never lock Messages' live database
+        con = sqlite3.connect(f"file:{_CHAT_DB}?mode=ro", uri=True, timeout=5)
+        rows = con.execute(query.format(where=where), params).fetchall()
+        con.close()
+    except sqlite3.DatabaseError as e:
+        # macOS TCC raises "authorization denied" (DatabaseError) without FDA
+        raise HTTPException(
+            403,
+            f"Cannot read chat.db ({e}). Grant Full Disk Access to the mac_bridge "
+            "python process: System Settings → Privacy & Security → Full Disk Access "
+            "→ add /Users/omar/Documents/GitHub/Jarvis/.venv-mac-bridge/bin/python3 "
+            "(or Terminal), then restart mac_bridge.",
+        )
+
+    messages = []
+    for _rowid, is_from_me, text, blob, ts, handle, chat_name in rows:
+        body = (text or "").strip() or _decode_attributed_body(blob)
+        if not body:
+            continue
+        messages.append({
+            "from": "me" if is_from_me else handle,
+            "chat": chat_name or handle,
+            "text": body[:500],
+            "time": ts,
+        })
+    return {"messages": messages, "count": len(messages)}
+
+
+# ---------------------------------------------------------------------------
+# macOS Shortcuts — lets Jarvis leverage Siri's ecosystem (HomeKit, Reminders,
+# personal automations) by running user-defined Shortcuts.
+# ---------------------------------------------------------------------------
+
+class ShortcutRunRequest(BaseModel):
+    name: str
+    input: str = ""
+    timeout: int = 60
+
+
+@app.get("/shortcut/list")
+def shortcut_list():
+    """List all Shortcuts available on this Mac."""
+    try:
+        result = subprocess.run(
+            ["shortcuts", "list"], capture_output=True, text=True, timeout=15,
+        )
+        names = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+        return {"shortcuts": names, "count": len(names)}
+    except Exception as e:
+        raise HTTPException(500, f"shortcuts list failed: {e}")
+
+
+@app.post("/shortcut/run")
+def shortcut_run(req: ShortcutRunRequest):
+    """Run a macOS Shortcut by name, optionally passing text input."""
+    out_path = tempfile.mktemp(suffix=".txt")
+    cmd = ["shortcuts", "run", req.name, "-o", out_path]
+    try:
+        if req.input:
+            in_path = tempfile.mktemp(suffix=".txt")
+            with open(in_path, "w") as f:
+                f.write(req.input)
+            cmd += ["-i", in_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=req.timeout)
+        output = ""
+        if os.path.exists(out_path):
+            with open(out_path, errors="ignore") as f:
+                output = f.read().strip()
+            os.unlink(out_path)
+        if result.returncode != 0:
+            raise HTTPException(400, f"Shortcut failed: {result.stderr.strip()[:300]}")
+        return {"ok": True, "output": output[:5000]}
+    except subprocess.TimeoutExpired:
+        raise HTTPException(408, f"Shortcut '{req.name}' timed out after {req.timeout}s")
 
 
 # ---------------------------------------------------------------------------

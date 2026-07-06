@@ -69,5 +69,24 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<!-- ATS blocks plain HTTP to HOSTNAMES (raw IPs are exempt — that's why the
+	     old LAN-IP setup worked). Scoped exception for the tailnet's MagicDNS
+	     domain: traffic is already WireGuard-encrypted end-to-end by Tailscale,
+	     so HTTP inside the tunnel is never cleartext on the wire. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>ts.net</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
 </dict>
 </plist>
