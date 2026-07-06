@@ -42,7 +42,7 @@ class NewsletterAgent(BaseAgent):
                         json={
                             "api_key": TAVILY_API_KEY,
                             "query": topic,
-                            "search_depth": "basic",
+                            "search_depth": "advanced",
                             "max_results": per_topic,
                         },
                         timeout=aiohttp.ClientTimeout(total=20),

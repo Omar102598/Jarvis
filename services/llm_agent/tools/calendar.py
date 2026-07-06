@@ -10,6 +10,23 @@ HA_URL = os.environ.get("HA_URL", "http://homeassistant.local:8123")
 HA_TOKEN = os.environ.get("HA_TOKEN")
 
 
+def _eventkit_fallback(status: int) -> str:
+    """Next-event data pushed by the iPhone (CalendarManager) via Redis."""
+    try:
+        import os as _os, json as _json, redis as _redis
+        r = _redis.Redis(host=_os.environ.get("REDIS_HOST", "redis"), decode_responses=True)
+        raw = r.get("jarvis:calendar:next_event")
+        if raw:
+            e = _json.loads(raw)
+            return (f"(HA calendar unavailable, {status} — from the iPhone instead) "
+                    f"Next event: {e.get('title','?')} at {e.get('start','?')}"
+                    + (f", {e['location']}" if e.get("location") else ""))
+    except Exception:
+        pass
+    return (f"No calendar source available (HA returned {status}, no iPhone "
+            "calendar push cached). Open the Jarvis app once to sync.")
+
+
 @tool
 async def get_calendar_events(calendar: str = "calendar.personal", days: int = 7) -> str:
     """Retrieve upcoming calendar events.
@@ -31,7 +48,10 @@ async def get_calendar_events(calendar: str = "calendar.personal", days: int = 7
             },
         ) as resp:
             if resp.status != 200:
-                return f"Failed to fetch calendar: {resp.status}"
+                # Fresh/absent HA has no calendar entities (404). Fall back to
+                # the iPhone's EventKit push (jarvis:calendar:next_event) so
+                # calendar queries still work without HA calendars configured.
+                return _eventkit_fallback(resp.status)
             events = await resp.json()
 
     if not events:

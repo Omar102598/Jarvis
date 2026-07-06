@@ -16,6 +16,11 @@ struct ContentView: View {
                         Label("Chat", systemImage: "bubble.left.and.bubble.right")
                     }
 
+                AgentsView()
+                    .tabItem {
+                        Label("Agents", systemImage: "person.3")
+                    }
+
                 GlassesStatusView()
                     .tabItem {
                         Label("Glasses", systemImage: "eyeglasses")

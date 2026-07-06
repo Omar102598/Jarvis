@@ -1109,6 +1109,46 @@ async def ring_live_files(device: str, fname: str):
                         headers={"Cache-Control": "no-store"})
 
 
+@app.get("/agents/feed", summary="[iOS app] All agents + their latest reports (token-free reads)")
+async def agents_feed(x_api_key: str = Header(default="")):
+    """Dynamic agent feed for the app's Agents tab: whatever agents exist in
+    Redis (driven by agents.yml — works for any user's setup), each with its
+    persona, status, and most recent report. Pure Redis — zero LLM tokens.
+    Structured extras (workout plan, meal plan) ride along when present.
+    """
+    _check_api_key(x_api_key)
+    agents = []
+    try:
+        for key in _redis.keys("agent:*:meta"):
+            name = key.split(":")[1]
+            try:
+                meta = json.loads(_redis.get(key) or "{}")
+            except Exception:
+                meta = {}
+            report, ts = "", ""
+            raw = _redis.lrange(f"agent:{name}:reports", 0, 0)
+            if raw:
+                try:
+                    r0 = json.loads(raw[0])
+                    report, ts = r0.get("report", ""), r0.get("timestamp", "")
+                except Exception:
+                    pass
+            agents.append({
+                "name": name,
+                "display_name": meta.get("display_name", name),
+                "persona": meta.get("persona_name", ""),
+                "description": (meta.get("description") or "").strip(),
+                "enabled": bool(meta.get("enabled")),
+                "status": _redis.get(f"agent:{name}:status") or "idle",
+                "last_run": ts,
+                "report": report[:6000],
+            })
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+    agents.sort(key=lambda a: a["last_run"], reverse=True)
+    return {"agents": agents}
+
+
 @app.get("/history", summary="[iOS/Mac app] Recent conversation history for chat restore")
 async def get_history(x_api_key: str = Header(default=""), limit: int = 40):
     """Return the last N conversation turns so app chats survive relaunch.

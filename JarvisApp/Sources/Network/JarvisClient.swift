@@ -84,6 +84,34 @@ final class JarvisClient {
         return response.text
     }
 
+    // MARK: Agents feed — reports without spending LLM tokens
+
+    struct AgentFeedItem: Codable, Identifiable {
+        let name: String
+        let displayName: String
+        let persona: String
+        let description: String
+        let enabled: Bool
+        let status: String
+        let lastRun: String
+        let report: String
+        var id: String { name }
+
+        enum CodingKeys: String, CodingKey {
+            case name, persona, description, enabled, status, report
+            case displayName = "display_name"
+            case lastRun = "last_run"
+        }
+    }
+
+    private struct AgentFeedResponse: Codable { let agents: [AgentFeedItem] }
+
+    func fetchAgentFeed() async throws -> [AgentFeedItem] {
+        let request = baseRequest(path: "/agents/feed")
+        let response: AgentFeedResponse = try await execute(request)
+        return response.agents
+    }
+
     // MARK: Conversation history — restore chat across app launches
 
     struct HistoryMessage: Codable {
