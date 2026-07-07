@@ -71,12 +71,57 @@ def _strip_markdown(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# ---------------------------------------------------------------------------
+# ElevenLabs — premium voice tier (optional). Chain: ElevenLabs → edge-tts
+# (Ryan) → nothing. Quota/auth failures trip a 10-minute cooldown so we don't
+# hammer a drained account on every sentence.
+# ---------------------------------------------------------------------------
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "onwK4e9ZLuTAKqWW03F9")  # "Daniel" — deep British
+ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+_el_down_until = 0.0
+
+
+async def _synth_elevenlabs(text: str, out_path: str) -> bool:
+    """Write ElevenLabs mp3 to out_path. False → caller falls back to edge-tts."""
+    global _el_down_until
+    import time as _time
+    if not ELEVENLABS_API_KEY or _time.time() < _el_down_until:
+        return False
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
+                headers={"xi-api-key": ELEVENLABS_API_KEY},
+                json={"text": text, "model_id": ELEVENLABS_MODEL,
+                      "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as r:
+                if r.status in (401, 402, 429):
+                    print(f"[TTS] ElevenLabs quota/auth ({r.status}) — "
+                          "using Ryan for the next 10 minutes")
+                    _el_down_until = _time.time() + 600
+                    return False
+                if r.status != 200:
+                    print(f"[TTS] ElevenLabs error {r.status} — falling back")
+                    return False
+                data = await r.read()
+        with open(out_path, "wb") as f:
+            f.write(data)
+        return True
+    except Exception as e:
+        print(f"[TTS] ElevenLabs failed ({e}) — falling back")
+        return False
+
+
 async def _speak_async(text: str) -> None:
-    communicate = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
         tmp_path = f.name
     try:
-        await communicate.save(tmp_path)
+        if not await _synth_elevenlabs(text, tmp_path):
+            communicate = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
+            await communicate.save(tmp_path)
         subprocess.run(["afplay", tmp_path], check=False, timeout=180)
     finally:
         try:

@@ -213,6 +213,14 @@ services:
       # frame-sampling + Claude when unset). Free tier: aistudio.google.com
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GEMINI_VIDEO_MODEL=${GEMINI_VIDEO_MODEL:-gemini-2.5-flash}
+      # App voice — chain: ElevenLabs (if key set) → edge-tts → piper.
+      # Same env as tts_mac so one .env line changes Mac + app together.
+      - TTS_VOICE=${TTS_VOICE:-en-GB-RyanNeural}
+      - TTS_RATE=${TTS_RATE:--5%}
+      - TTS_PITCH=${TTS_PITCH:--5Hz}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - ELEVENLABS_VOICE_ID=${ELEVENLABS_VOICE_ID:-onwK4e9ZLuTAKqWW03F9}
+      - ELEVENLABS_MODEL=${ELEVENLABS_MODEL:-eleven_turbo_v2_5}
     volumes:
       - ./models:/models
     restart: always

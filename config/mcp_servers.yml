@@ -129,6 +129,21 @@ servers:
     description: "MCP Google Maps — directions, distance matrix, geocoding, place search"
 
   # ---------------------------------------------------------------------------
+  # Airbnb — listing search + details (community OpenBnB server; the most-used
+  # travel MCP). No API key. Powers Miles's vacation-rental research; BOOKING
+  # always happens in the user's signed-in browser, never here.
+  # ---------------------------------------------------------------------------
+  airbnb:
+    enabled: true
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@openbnb/mcp-server-airbnb"
+      - "--ignore-robots-txt"
+    description: "MCP Airbnb — listing search + details (Miles travel research)"
+
+  # ---------------------------------------------------------------------------
   # Slack — read channels, post messages, search.
   # Requires SLACK_BOT_TOKEN and SLACK_TEAM_ID in .env.
   # ---------------------------------------------------------------------------

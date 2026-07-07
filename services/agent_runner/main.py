@@ -247,32 +247,29 @@ def _on_ring_event(client, userdata, msg):
         if suffix in ("motion/state", "ding/state") and msg.payload == b"ON":
             kind = parts[4]  # motion | ding
 
-            # Wake detection: the first indoor motion in the morning window
-            # IS the "user woke up" signal — fire the briefing then, not on a
-            # fixed clock. The agent itself dedupes to once per local day
-            # (cron fallback fires later only if no motion was seen).
+            # Wake detection is PERSON-gated in Sentry's vision verdict now —
+            # raw motion here was waking the briefing for the CATS. During an
+            # unbriefed wake window we bypass the per-camera cooldown so the
+            # user's entrance can't hide behind a cat's cooldown from minutes
+            # earlier (one cheap haiku vision call per motion, mornings only).
+            wake_pending = False
             if kind == "motion":
                 try:
                     from zoneinfo import ZoneInfo
                     lt = datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago")))
                     ws, we = (int(x) for x in
                               os.environ.get("WAKE_WINDOW", "5-10").split("-"))
-                    already = _redis.get(f"jarvis:briefed:{lt.strftime('%Y-%m-%d')}")
-                    if ws <= lt.hour < we and not already and _loop:
-                        print(f"[AgentRunner] First morning motion → wake briefing")
-                        _loop.call_soon_threadsafe(
-                            _loop.create_task,
-                            run_agent("morning_brief", AmbientAgent,
-                                      {"action": "morning_brief", "room": "office"}))
-                except Exception as exc:
-                    print(f"[AgentRunner] wake-brief check failed: {exc}", file=sys.stderr)
+                    wake_pending = (ws <= lt.hour < we and not
+                                    _redis.get(f"jarvis:briefed:{lt.strftime('%Y-%m-%d')}"))
+                except Exception:
+                    pass
             _redis.lpush("ring:events", json.dumps(
                 {"device": device, "kind": kind, "ts": now}))
             _redis.ltrim("ring:events", 0, 199)
 
             # Cooldown gates the LLM assessment, not the event log above.
             cd_key = f"sentry:cooldown:{device}"
-            if _redis.set(cd_key, "1", nx=True, ex=SENTRY_COOLDOWN_S) and _loop:
+            if (_redis.set(cd_key, "1", nx=True, ex=SENTRY_COOLDOWN_S) or wake_pending) and _loop:
                 name = _redis.hget("ring:camera_names", device) or device
                 print(f"[AgentRunner] Ring {kind} on '{name}' → dispatching Sentry")
                 _loop.call_soon_threadsafe(

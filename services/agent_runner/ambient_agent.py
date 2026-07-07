@@ -62,11 +62,14 @@ class AmbientAgent(BaseAgent):
             if not self.r.set(f"jarvis:briefed:{today}", "1", nx=True, ex=86400):
                 return "Morning briefing already delivered today — skipping."
             prompt = (
-                "Good morning briefing, please. Compose it from live data: "
+                "Good morning briefing, please. FIRST: check my profile for a "
+                "'morning_scene_shortcut' field — if set, run that Mac shortcut "
+                "(mac_run_shortcut) to bring the lights up before you speak. "
+                "Then compose the briefing from live data: "
                 "1) today's weather (get_weather); 2) my calendar today; "
-                "3) commute — driving time from my home address (get it from my "
-                "profile field home_address; skip this section gracefully if "
-                "unset) to Charles Schwab at The Domain, Austin via your maps "
+                "3) commute — driving time from my profile's home_address to my "
+                "profile's work_address (read BOTH from get_user_profile; skip "
+                "this section gracefully if either is unset) via your maps "
                 "tools, and when I should leave; "
                 "4) today's workout from Apollo's plan (get_todays_workout); "
                 "5) anything notable the cameras caught overnight (who_came_by, "

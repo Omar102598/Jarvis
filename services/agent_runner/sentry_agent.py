@@ -54,8 +54,9 @@ with a neutral announce. Empty announce if no one is arriving.
 Return ONLY JSON: {{"notable": true/false, "summary": "one sentence of what
 you see", "detail": "1-2 sentences with anything useful (appearance,
 direction, what they're carrying)", "announce": "",
-"package_visible": true/false}}
-("package_visible": is a package/box/envelope sitting unattended in frame?)"""
+"package_visible": true/false, "person_visible": true/false}}
+("package_visible": is a package/box/envelope sitting unattended in frame?
+"person_visible": is a HUMAN in frame? Pets alone = false.)"""
 
 
 class SentryAgent(BaseAgent):
@@ -81,13 +82,19 @@ class SentryAgent(BaseAgent):
                 return f"Ding on {camera}; notified without snapshot."
             return f"Motion on {camera} but no snapshot cached yet — skipping."
 
+        self.log_event("thinking", f"{kind} on '{camera}' — assessing snapshot with vision")
         verdict = await self._assess(snap_b64, camera, kind)
         if verdict is None:
+            self.log_event("finding", f"{camera}: vision assessment failed")
             return f"Sentry: vision assessment failed for {camera}."
 
         summary = verdict.get("summary", "").strip()
         detail = verdict.get("detail", "").strip()
         notable = bool(verdict.get("notable")) or kind == "ding"
+        self.log_event(
+            "finding",
+            f"{camera}: {'NOTABLE' if notable else 'not notable'} — {summary}",
+        )
 
         # Keep an assessed-event log the check_ring_camera tool can surface
         self.r.lpush("ring:events:assessed", json.dumps({
@@ -97,6 +104,28 @@ class SentryAgent(BaseAgent):
             "snapshot_ts": snap_ts,
         }))
         self.r.ltrim("ring:events:assessed", 0, 99)
+
+        # ---- Wake briefing: fire on the first HUMAN of the morning ---------
+        # (raw motion was waking the briefing for the CATS; the vision verdict
+        # is the person filter). Once per local day, gated by WAKE_WINDOW.
+        if verdict.get("person_visible"):
+            try:
+                from zoneinfo import ZoneInfo
+                lt = datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago")))
+                ws, we = (int(x) for x in os.environ.get("WAKE_WINDOW", "5-10").split("-"))
+                if ws <= lt.hour < we and \
+                        not self.r.get(f"jarvis:briefed:{lt.strftime('%Y-%m-%d')}"):
+                    # The briefing agent's own SET NX is the authoritative dedupe
+                    import paho.mqtt.publish as mqtt_pub
+                    mqtt_pub.single(
+                        "jarvis/agents/morning_brief/trigger",
+                        json.dumps({"params": {"action": "morning_brief",
+                                               "room": "office"}}),
+                        hostname=MQTT_HOST, port=MQTT_PORT,
+                    )
+                    print("[Sentry] First human of the morning → wake briefing")
+            except Exception as exc:
+                print(f"[Sentry] wake-brief dispatch failed: {exc}")
 
         # ---- Package watch: stateful presence tracking per camera ----------
         pkg_key = f"ring:package:{device}"
@@ -250,6 +279,7 @@ class SentryAgent(BaseAgent):
             return None
 
     async def _notify(self, text: str, media_url: str = "") -> None:
+        self.log_event("tool", f"notify (push + iMessage): {text}")
         # iOS app push (works when the app is open; APNs later makes it always-on)
         try:
             import paho.mqtt.publish as mqtt_pub

@@ -663,6 +663,69 @@
       font-family: monospace;
       margin-top: 2px;
     }
+
+    /* ── DEV toggle + agent activity panel ── */
+    #dev-toggle {
+      background: none;
+      border: 1px solid var(--j-border);
+      border-radius: 4px;
+      color: rgba(0,212,255,0.45);
+      font-size: 0.62rem;
+      letter-spacing: 3px;
+      padding: 2px 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    #dev-toggle.on {
+      color: var(--j-gold);
+      border-color: var(--j-gold);
+      box-shadow: 0 0 8px rgba(240,160,32,0.35);
+    }
+    .act-entry {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      padding: 5px 0;
+      border-bottom: 1px solid rgba(14,32,53,0.6);
+      font-size: 0.72rem;
+    }
+    .act-ts {
+      font-family: monospace;
+      font-size: 0.6rem;
+      color: rgba(0,212,255,0.25);
+      white-space: nowrap;
+      min-width: 58px;
+    }
+    .act-agent {
+      color: var(--j-gold);
+      font-size: 0.62rem;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      white-space: nowrap;
+      min-width: 80px;
+    }
+    .act-kind {
+      font-size: 0.56rem;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      border: 1px solid;
+      border-radius: 3px;
+      padding: 0 5px;
+      white-space: nowrap;
+    }
+    .act-kind.k-tool     { color: var(--j-blue);  border-color: rgba(0,212,255,0.4); }
+    .act-kind.k-thinking { color: #8899bb;        border-color: rgba(136,153,187,0.4); }
+    .act-kind.k-finding  { color: var(--j-green); border-color: rgba(0,170,136,0.4); }
+    .act-text {
+      flex: 1;
+      color: #cdd6e8;
+      word-break: break-word;
+      line-height: 1.4;
+    }
+    #dev-activity {
+      max-height: 420px;
+      overflow-y: auto;
+    }
   </style>
 </head>
 <body>
@@ -687,6 +750,7 @@
   <span class="brand-name">J.A.R.V.I.S</span>
   <span class="brand-sub ms-3">CONTROL INTERFACE</span>
   <div class="ms-auto d-flex align-items-center gap-3">
+    <button id="dev-toggle" onclick="toggleDevMode()" title="Developer mode — show the unified agent activity stream">DEV</button>
     <a href="/logs" class="brand-sub" style="text-decoration:none;">LOGS</a>
     <span class="nav-clock" id="live-clock"></span>
     <span class="brand-sub" id="refresh-ts"></span>
@@ -858,6 +922,16 @@
   <div class="conv-section-label">Tool Events</div>
   <div id="tool-timeline">
     <div style="font-size:0.78rem;color:#2d4055">No tool events yet…</div>
+  </div>
+</div>
+
+<!-- ── Agent Activity (DEV mode) ── -->
+<div class="timeline-section" id="dev-activity-section" style="display:none">
+  <div class="conv-section-label">Agent Activity
+    <span style="color:var(--j-gold);font-size:0.56rem;letter-spacing:2px;margin-left:8px">DEV</span>
+  </div>
+  <div id="dev-activity">
+    <div style="font-size:0.78rem;color:#2d4055">No agent activity yet…</div>
   </div>
 </div>
 
@@ -1383,10 +1457,61 @@ async function loadWidgets() {
   } catch(e) { console.warn('widget load failed', e); }
 }
 
+// ══════════════════════════════════════════════════════════
+//  DEV MODE — unified agent activity stream
+// ══════════════════════════════════════════════════════════
+const DEV_KEY = 'jarvis_dev_mode';
+let devTimer = null;
+
+function applyDevMode(on) {
+  document.getElementById('dev-toggle').classList.toggle('on', on);
+  document.getElementById('dev-activity-section').style.display = on ? '' : 'none';
+  if (on) {
+    refreshDevActivity();
+    if (!devTimer) devTimer = setInterval(refreshDevActivity, 4000);
+  } else if (devTimer) {
+    clearInterval(devTimer);
+    devTimer = null;
+  }
+}
+
+function toggleDevMode() {
+  const on = localStorage.getItem(DEV_KEY) !== '1';
+  localStorage.setItem(DEV_KEY, on ? '1' : '0');
+  applyDevMode(on);
+}
+
+async function refreshDevActivity() {
+  try {
+    const resp = await fetch('/api/agents/events?limit=100');
+    const { events } = await resp.json();
+    renderDevActivity(events || []);
+  } catch(e) { console.warn('agent events refresh failed', e); }
+}
+
+function renderDevActivity(events) {
+  const el = document.getElementById('dev-activity');
+  if (!events.length) {
+    el.innerHTML = '<div style="font-size:0.78rem;color:#2d4055">No agent activity yet…</div>';
+    return;
+  }
+  el.innerHTML = events.map(e => {
+    const kind = ['tool','thinking','finding'].includes(e.kind) ? e.kind : 'thinking';
+    const ts = e.ts ? new Date(e.ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
+    return `<div class="act-entry">
+      <span class="act-ts">${ts}</span>
+      <span class="act-agent">${esc(e.agent || '?')}</span>
+      <span class="act-kind k-${kind}">${kind}</span>
+      <span class="act-text">${esc(e.text || '')}</span>
+    </div>`;
+  }).join('');
+}
+
 // ── Boot ──
 connectSSE();           // real-time conv + tools + voice state
 refreshAgents();
 loadWidgets();
+applyDevMode(localStorage.getItem(DEV_KEY) === '1');
 // Fallback polling for voice state (SSE handles it too, this is a safety net)
 setInterval(refreshVoiceState, 5000);
 setInterval(refreshAgents,    10000);

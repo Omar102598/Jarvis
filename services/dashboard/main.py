@@ -428,6 +428,49 @@ async def get_tool_events(limit: int = 30):
     return {"events": events}
 
 
+@app.get("/api/agents/events")
+async def get_agent_events(limit: int = 100):
+    """Unified agent activity stream for the DEV panel: background-agent
+    events (jarvis:agent_events, written by BaseAgent.log_event) merged with
+    the brain's tool events (jarvis:tool_events, tagged agent='jarvis'),
+    newest first.
+    """
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
+
+    events = []
+    for item in _redis.lrange("jarvis:agent_events", 0, limit - 1):
+        try:
+            e = json.loads(item)
+            if isinstance(e, dict):
+                events.append(e)
+        except json.JSONDecodeError:
+            pass
+
+    # Brain (llm_agent) tool events use a different shape — normalise them.
+    for item in _redis.lrange("jarvis:tool_events", 0, min(limit, 100) - 1):
+        try:
+            e = json.loads(item)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(e, dict):
+            continue
+        text = e.get("tool", "unknown")
+        if e.get("args_preview"):
+            text += f" {e['args_preview']}"
+        if e.get("status") == "done" and e.get("result_preview"):
+            text += f" → {e['result_preview']}"
+        events.append({
+            "agent": "jarvis",
+            "kind": "tool",
+            "text": text[:300],
+            "ts": e.get("timestamp", ""),
+        })
+
+    events.sort(key=lambda e: e.get("ts", ""), reverse=True)
+    return {"events": events[:limit]}
+
+
 @app.get("/api/stream")
 async def event_stream():
     """Server-Sent Events stream pushing conversation + tool events + voice state in real-time."""

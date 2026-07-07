@@ -23,8 +23,9 @@ def _eventkit_fallback(status: int) -> str:
                     + (f", {e['location']}" if e.get("location") else ""))
     except Exception:
         pass
-    return (f"No calendar source available (HA returned {status}, no iPhone "
-            "calendar push cached). Open the Jarvis app once to sync.")
+    return ("No calendar events available — Home Assistant has no calendars "
+            "configured and no iPhone calendar sync is cached. (Not an error; "
+            "opening the Jarvis app syncs the next event.)")
 
 
 @tool
@@ -39,6 +40,22 @@ async def get_calendar_events(calendar: str = "calendar.personal", days: int = 7
     end = now + timedelta(days=days)
 
     async with aiohttp.ClientSession() as session:
+        # Discover HA's real calendar entities rather than trusting the
+        # hardcoded default (a fresh HA has no 'calendar.personal' → 404).
+        try:
+            async with session.get(
+                f"{HA_URL}/api/calendars",
+                headers={"Authorization": f"Bearer {HA_TOKEN}"},
+            ) as lresp:
+                if lresp.status == 200:
+                    cals = [c.get("entity_id") for c in await lresp.json()]
+                    if cals and calendar not in cals:
+                        calendar = cals[0]
+                    elif not cals:
+                        return _eventkit_fallback(0)
+        except Exception:
+            pass
+
         async with session.get(
             f"{HA_URL}/api/calendars/{calendar}",
             headers={"Authorization": f"Bearer {HA_TOKEN}"},

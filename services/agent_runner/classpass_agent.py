@@ -70,8 +70,25 @@ WAITLIST_KEY    = "classpass:waitlist"         # classes the user is waitlisted 
 DEFAULT_SCHEDULE_URL = "https://classpass.com/search"
 
 
-def _log(msg: str) -> None:
+# Bound to the running agent's BaseAgent.log_event by ClasspassAgent.run(),
+# so module-level scrape/parse helpers feed the unified observability stream.
+_EMIT = None
+
+
+def _log(msg: str, kind: str = "") -> None:
     print(f"[ClassPassAgent] {msg}", flush=True)
+    if _EMIT is None:
+        return
+    stripped = msg.strip()
+    if not kind:
+        if stripped[:1] in ("✓", "✗", "⚠", "…"):
+            kind = "finding"
+        elif any(w in stripped for w in ("Navigating", "trying studio",
+                                         "day advance", "date tab", "cached")):
+            kind = "tool"
+        else:
+            kind = "thinking"
+    _EMIT(kind, stripped)
 
 
 # ---------------------------------------------------------------------------
@@ -1000,6 +1017,8 @@ def _push_to_surfaces(text: str, title: str = "ClassPass") -> None:
 # ---------------------------------------------------------------------------
 class ClasspassAgent(BaseAgent):
     async def run(self) -> str:
+        global _EMIT
+        _EMIT = self.log_event   # route _log() into the observability stream
         action = (self.params or {}).get("action", "scan")
         if action == "book":
             return await self._run_book()

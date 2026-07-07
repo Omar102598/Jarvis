@@ -97,19 +97,52 @@ agents:
       location: "remote"
 
   # ---------------------------------------------------------------------------
-  # Web Monitor
-  # Watches any search query for new content. Good for tracking product
-  # releases, competitors, research papers, news about specific companies, etc.
+  # Web Monitor — "Scout"
+  # Watches search queries for new content AND specific URLs for new available
+  # apartment units (params.watch_urls). URL watches render each page through
+  # the Mac Bridge headless scraper (Luca + apartments.com 403-block plain
+  # HTTP), hash the visible text, and only call the LLM to extract/diff units
+  # when the page actually changed — near-zero idle token cost. New units
+  # trigger an iOS push + iMessage, with priority emphasis on units matching
+  # priority_keywords (first floor → best shot at a private yard/patio).
   # ---------------------------------------------------------------------------
   - name: web_monitor
     display_name: "Web Monitor"
     description: >
-      Monitors configured search queries for newly published content.
-      Enable and add queries below to start tracking topics.
-    enabled: false
-    schedule: "0 * * * *"   # Every hour
+      Scout — monitors search queries for newly published content and watches
+      specific URLs for new available units. Currently watching the Austin
+      apartment search: Luca Apartments (A2 plan is the priority target) and
+      The Met Austin, prioritising 1st-floor / patio / yard units.
+    enabled: true
+    schedule: "0 */2 * * *"   # Every 2 hours
     params:
       queries: []
+      notify: true            # push + iMessage when a NEW unit appears
+      priority_keywords:      # flags a unit as priority (yard/patio potential)
+        - "1st floor"
+        - "first floor"
+        - "ground floor"
+        - "floor 1"
+        - "patio"
+        - "yard"
+      watch_urls:
+        # PRIORITY TARGET — A2 plan confirmed to have 1st-floor private
+        # patio/yard units. Any new availability here matters most.
+        - name: "Luca — A2 floor plan (priority)"
+          url: "https://www.livelucaapartments.com/tx/austin/floorplans/a2"
+        - name: "Luca — all floor plans"
+          url: "https://www.livelucaapartments.com/tx/austin/floorplans/"
+        # The Met's floorplans page renders units inside a SightMap (Engrain)
+        # iframe, so we watch the embed's public JSON API directly — exact
+        # unit numbers, floors, prices, availability dates; no LLM needed.
+        # (Embed on https://themetatx.com/floorplans/ → sightmap 8epmgdz4p6d.)
+        - name: "The Met Austin — availability (SightMap)"
+          type: sightmap
+          url: "https://sightmap.com/app/api/v1/dqw9kgm0po9/sightmaps/63195"
+        # apartments.com is Akamai-protected and may 403 even the stealth
+        # scraper — kept as a best-effort cross-check; failures just log.
+        - name: "The Met Austin — apartments.com"
+          url: "https://www.apartments.com/the-met-austin-tx/x53qf3m"
 
   # ---------------------------------------------------------------------------
   # Price Monitor

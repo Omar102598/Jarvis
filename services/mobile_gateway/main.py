@@ -133,6 +133,101 @@ def transcribe_audio(audio_bytes: bytes, filename: str = "audio.wav") -> str:
 # TTS
 # ---------------------------------------------------------------------------
 
+# Same neural voice as the Mac's tts_mac service (one .env setting drives
+# both surfaces). Piper stays as the offline fallback only — its robotic
+# delivery is what the app used to sound like.
+TTS_VOICE = os.environ.get("TTS_VOICE", "en-GB-RyanNeural")
+TTS_RATE = os.environ.get("TTS_RATE", "-5%")
+TTS_PITCH = os.environ.get("TTS_PITCH", "-5Hz")
+
+
+async def _synthesize_edge(text: str) -> bytes:
+    """edge-tts → mp3 → WAV (keeps the audio/wav contract for old clients).
+
+    Must be awaited from the caller's loop — running asyncio.run() here from
+    inside the endpoint's event loop was the bug that silently punted every
+    request back to robotic Piper.
+    """
+    import edge_tts
+
+    mp3_path = tempfile.mktemp(suffix=".mp3")
+    wav_path = tempfile.mktemp(suffix=".wav")
+    try:
+        comm = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
+        await comm.save(mp3_path)
+        subprocess.run(
+            ["ffmpeg", "-v", "quiet", "-y", "-i", mp3_path,
+             "-ar", "22050", "-ac", "1", wav_path],
+            check=True, timeout=30,
+        )
+        with open(wav_path, "rb") as f:
+            return f.read()
+    finally:
+        for p in (mp3_path, wav_path):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+# ElevenLabs premium tier (optional): ElevenLabs → edge-tts → piper.
+# Quota/auth failures trip a 10-min cooldown (don't hammer a drained account).
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "onwK4e9ZLuTAKqWW03F9")
+ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+_el_down_until = 0.0
+
+
+async def _synthesize_elevenlabs(text: str) -> Optional[bytes]:
+    global _el_down_until
+    import time as _time
+    if not ELEVENLABS_API_KEY or _time.time() < _el_down_until:
+        return None
+    import aiohttp
+    mp3_path = tempfile.mktemp(suffix=".mp3")
+    wav_path = tempfile.mktemp(suffix=".wav")
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
+                headers={"xi-api-key": ELEVENLABS_API_KEY},
+                json={"text": text, "model_id": ELEVENLABS_MODEL,
+                      "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as r:
+                if r.status in (401, 402, 429):
+                    print(f"[Gateway] ElevenLabs quota/auth ({r.status}) — "
+                          "edge-tts for the next 10 minutes")
+                    _el_down_until = _time.time() + 600
+                    return None
+                if r.status != 200:
+                    return None
+                data = await r.read()
+        with open(mp3_path, "wb") as f:
+            f.write(data)
+        subprocess.run(["ffmpeg", "-v", "quiet", "-y", "-i", mp3_path,
+                        "-ar", "22050", "-ac", "1", wav_path],
+                       check=True, timeout=30)
+        with open(wav_path, "rb") as f:
+            return f.read()
+    except Exception as e:
+        print(f"[Gateway] ElevenLabs failed ({e}) — falling back")
+        return None
+    finally:
+        for p in (mp3_path, wav_path):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+async def synthesize_speech_async(text: str) -> bytes:
+    el = await _synthesize_elevenlabs(text)
+    if el:
+        return el
+    try:
+        return await _synthesize_edge(text)
+    except Exception as exc:
+        print(f"[Gateway] edge-tts failed ({exc}) — falling back to piper")
+    return synthesize_speech(text)
+
+
 def synthesize_speech(text: str) -> bytes:
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         tmp_path = tmp.name
@@ -412,7 +507,7 @@ def _strip_for_speech(text: str) -> str:
 async def _run_pipeline_audio(text: str, source: str = "mobile") -> tuple[str, bytes]:
     """Send text through MQTT agent; return (response_text, wav_bytes)."""
     response_text = await _run_pipeline_text(text, source)
-    wav_bytes = synthesize_speech(_strip_for_speech(response_text))
+    wav_bytes = await synthesize_speech_async(_strip_for_speech(response_text))
     return response_text, wav_bytes
 
 
@@ -1147,6 +1242,26 @@ async def agents_feed(x_api_key: str = Header(default="")):
         raise HTTPException(503, f"Redis unavailable: {exc}")
     agents.sort(key=lambda a: a["last_run"], reverse=True)
     return {"agents": agents}
+
+
+@app.get("/agents/events", summary="[iOS app] Unified agent activity stream (token-free reads)")
+async def agents_events(limit: int = 100, x_api_key: str = Header(default="")):
+    """Newest-first stream of every agent's tool calls, thinking steps, and
+    findings — the same feed the dashboard's DEV panel renders. Written by
+    BaseAgent.log_event to jarvis:agent_events. Pure Redis — zero LLM tokens.
+    """
+    _check_api_key(x_api_key)
+    limit = max(1, min(limit, 500))
+    events = []
+    try:
+        for raw in _redis.lrange("jarvis:agent_events", 0, limit - 1):
+            try:
+                events.append(json.loads(raw))
+            except Exception:
+                pass
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+    return {"events": events}
 
 
 @app.get("/history", summary="[iOS/Mac app] Recent conversation history for chat restore")

@@ -40,12 +40,13 @@ MAX_STEPS = int(os.environ.get("DEV_AGENT_MAX_STEPS", "40"))
 # with full repo access and its own tools — it completes the task itself.
 DEV_PREFER_CLI = os.environ.get("DEV_PREFER_CLI", "true").lower() == "true"
 DEV_CLI_BIN = os.environ.get("DEV_CLI_BIN", "/usr/local/bin/claude")
-DEV_CLI_TIMEOUT_S = int(os.environ.get("DEV_CLI_TIMEOUT_S", "900"))
+DEV_CLI_TIMEOUT_S = int(os.environ.get("DEV_CLI_TIMEOUT_S", "1800"))
 DEV_CLI_ARGS = os.environ.get(
     "DEV_CLI_ARGS",
     '--permission-mode acceptEdits '
     '--allowedTools "Bash(git:*)" "Bash(python3:*)" "Bash(python:*)" '
-    '"Bash(npm:*)" "Bash(pytest:*)" "Bash(docker:*)" "Bash(ls:*)" "Bash(grep:*)"',
+    '"Bash(npm:*)" "Bash(pytest:*)" "Bash(docker:*)" "Bash(ls:*)" "Bash(grep:*)" '
+    '"Bash(xcodebuild:*)" "Bash(xcodegen:*)" "Bash(curl:*)"',
 )
 _TOOL_RESULT_LIMIT = 20_000  # chars per tool result kept in context
 
@@ -424,6 +425,16 @@ class DeveloperAgent(BaseAgent):
             self.r.ltrim("agent:developer:progress", 0, 99)
         except Exception:
             pass
+        # Mirror into the unified observability stream. Step lines look like
+        # "[3/40] tool_name {args}" → tool; terminal lines → finding.
+        if line.startswith("["):
+            kind = "tool"
+        elif line.rstrip(".").lower() in ("done", "cli run complete",
+                                          "step limit reached"):
+            kind = "finding"
+        else:
+            kind = "thinking"
+        self.log_event(kind, line)
         print(f"[Forge] {line}")
 
     @staticmethod

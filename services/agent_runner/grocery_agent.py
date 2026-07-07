@@ -88,8 +88,27 @@ PENDING_ORDER_KEY = "grocery:pending_order"
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-def _log(msg: str) -> None:
+# Bound to the running agent's BaseAgent.log_event by GroceryAgent.run(),
+# so the module-level pipeline functions feed the unified observability
+# stream without threading `self` through every helper.
+_EMIT = None
+
+
+def _log(msg: str, kind: str = "") -> None:
     print(f"[GroceryAgent] {msg}", flush=True)
+    if _EMIT is None:
+        return
+    stripped = msg.strip()
+    if not kind:
+        if stripped[:1] in ("✓", "✗", "⚠", "…"):
+            kind = "finding"
+        elif stripped.startswith(("[cart]", "[checkout]")) or any(
+            w in stripped for w in ("Scanning", "Fetching", "Navigating", "Resolving")
+        ):
+            kind = "tool"
+        else:
+            kind = "thinking"
+    _EMIT(kind, stripped)
 
 
 # ---------------------------------------------------------------------------
@@ -1244,6 +1263,8 @@ class GroceryAgent(BaseAgent):
     """
 
     async def run(self) -> str:
+        global _EMIT
+        _EMIT = self.log_event   # route _log() into the observability stream
         action = (self.params or {}).get("action", "")
 
         if action == "checkout":
@@ -1392,7 +1413,7 @@ class GroceryAgent(BaseAgent):
                  f"(cache-first, LLM only on miss)…")
             price_map: dict[str, list[PriceResult]] = {}
             for i, item in enumerate(grocery_list, 1):
-                _log(f"  [{i}/{len(grocery_list)}] {item}")
+                _log(f"  [{i}/{len(grocery_list)}] {item}", kind="tool")
                 price_map[item] = await _resolve_item(session, item, STORE_KEYS, self.r)
 
             priced = sum(

@@ -384,6 +384,13 @@ package-tracking (rides on Hermes once email creds land)
 - `[ ]` Proactive balance monitor (warn BEFORE failure) — needs Anthropic
         Admin API usage/cost endpoints (separate admin key from console)
 
+### Travel Agent  🔜 Planned (requested 2026-07-07)
+- Flights / hotels / Airbnb / VRBO search + booking assistant. Likely shape:
+  new persona agent using Playwright MCP (fresh sessions) or mac_chrome_*
+  (signed-in bookings), Google Maps for logistics, price tracking via the
+  existing price_monitor pattern, approval-gated bookings like grocery.
+  Design session with Omar before building.
+
 ### Glasses vision → kitchen inventory  🔒 Planned (needs Meta glasses purchase)
 - `[ ]` "Look at my fridge/pantry" — glasses photo(s) → existing `/ask/image`
         path → vision model extracts inventory → merge into a
