@@ -144,6 +144,7 @@ services:
       - JARVIS_USER_ID=${JARVIS_USER_ID:-default}
       # Google Maps MCP (config/mcp_servers.yml expands this)
       - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY:-}
+      - EXPEDIA_API_KEY=${EXPEDIA_API_KEY:-}
       # Ring live-view tool (start streams via gateway, push public URL)
       - GATEWAY_INTERNAL_URL=${GATEWAY_INTERNAL_URL:-http://mobile_gateway:8080}
       - GATEWAY_PUBLIC_URL=${GATEWAY_PUBLIC_URL:-http://omars-macbook-pro.tail7e74a7.ts.net:8080}

@@ -144,6 +144,37 @@ servers:
     description: "MCP Airbnb — listing search + details (Miles travel research)"
 
   # ---------------------------------------------------------------------------
+  # Jinko — hotel search + booking (2M+ hotels). Search needs no key; booking
+  # returns a PAYMENT LINK (approval-gated, never auto-charges). Powers Miles's
+  # hotel leg alongside the Airbnb MCP for rentals.
+  # ---------------------------------------------------------------------------
+  jinko_hotels:
+    enabled: true
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "jinko-mcp-dev@latest"
+    description: "MCP Jinko — hotel search + booking (payment-link, Miles)"
+
+  # ---------------------------------------------------------------------------
+  # Expedia (OFFICIAL, ExpediaGroup) — hotels/flights/activities/car rentals
+  # recommendations. uvx (Python). Requires EXPEDIA_API_KEY (Expedia Partner/
+  # Rapid API — partner-gated, not instant). Skips gracefully without the key.
+  # ---------------------------------------------------------------------------
+  expedia:
+    enabled: true
+    transport: stdio
+    command: uvx
+    args:
+      - "expedia_travel_recommendations_mcp"
+      - "--protocol"
+      - "stdio"
+    env:
+      EXPEDIA_API_KEY: "${EXPEDIA_API_KEY}"
+    description: "MCP Expedia (official) — hotels/flights/activities/cars"
+
+  # ---------------------------------------------------------------------------
   # Slack — read channels, post messages, search.
   # Requires SLACK_BOT_TOKEN and SLACK_TEAM_ID in .env.
   # ---------------------------------------------------------------------------

@@ -382,6 +382,44 @@ class WebMonitorAgent(BaseAgent):
             print(f"[Scout] direct fetch failed for {url}: {exc}")
             return ""
 
+    async def _bridge_read(self, session, nav_path: str, read_path: str, url: str) -> str:
+        """Navigate a mac_bridge browser to url, wait, and return its text.
+
+        Used for both the headless scraper (/scraper/*) and the warmed VISIBLE
+        browser (/browser/*) — the latter carries the user's Cloudflare
+        clearance cookies, so it passes challenges the scraper can't.
+        Returns "" on any failure (caller falls through to the next fetcher).
+        """
+        try:
+            async with session.post(
+                f"{MAC_BRIDGE_URL}{nav_path}",
+                json={"url": url, "wait_until": "domcontentloaded", "timeout_ms": 25000},
+                timeout=aiohttp.ClientTimeout(total=40),
+            ) as resp:
+                if resp.status != 200:
+                    return ""
+                body = await resp.json()
+                if isinstance(body, dict) and body.get("error"):
+                    return ""
+        except Exception as exc:
+            print(f"[Scout] {nav_path} failed for {url}: {exc}")
+            return ""
+
+        await asyncio.sleep(5)  # let the SPA / challenge settle before reading
+
+        try:
+            async with session.get(
+                f"{MAC_BRIDGE_URL}{read_path}",
+                timeout=aiohttp.ClientTimeout(total=25),
+            ) as resp:
+                if resp.status != 200:
+                    return ""
+                data = await resp.json()
+                return str(data.get("text") or "")
+        except Exception as exc:
+            print(f"[Scout] {read_path} failed for {url}: {exc}")
+            return ""
+
     async def _extract_units(self, name, url, goal, keywords, prev_raw, text) -> dict | None:
         previous = prev_raw if prev_raw else "NONE (first scan)"
         try:
