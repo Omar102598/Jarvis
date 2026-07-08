@@ -1,5 +1,6 @@
 """Smart Home tools for JARVIS — interfaces with Home Assistant."""
 
+import asyncio
 import os
 
 import aiohttp
@@ -49,6 +50,19 @@ async def control_device(entity_id: str, action: str, params: dict = None) -> st
                             f"entities: {', '.join(names) or 'none'}. "
                             "Use one of these exact ids.")
 
+        # Govee (and some cloud lights) won't power on AND apply an effect/
+        # color in one call. When turning on WITH a vibe (effect/rgb/color/
+        # brightness), power on plain first, then apply the vibe.
+        vibe_params = bool(params) and action == "turn_on" and any(
+            k in params for k in ("effect", "rgb_color", "color_temp_kelvin",
+                                   "color_temp", "brightness", "hs_color", "xy_color"))
+        if vibe_params:
+            async with session.post(f"{HA_URL}/api/services/{domain}/turn_on",
+                                    headers=_headers(),
+                                    json={"entity_id": entity_id}) as _:
+                pass
+            await asyncio.sleep(1.5)
+
         async with session.post(
             f"{HA_URL}/api/services/{domain}/{action}",
             headers=_headers(),
@@ -58,17 +72,25 @@ async def control_device(entity_id: str, action: str, params: dict = None) -> st
                 error = await resp.text()
                 return f"Error controlling {entity_id}: {resp.status} - {error}"
 
-        # Confirm the state actually changed (turn_on → 'on', etc.)
+        # Confirm the state changed — but tolerate cloud lag (Govee updates its
+        # reported state a few seconds late). Retry a couple times before
+        # concluding it failed; the 404 check above already prevents the main
+        # "reported success on a nonexistent entity" failure.
         if action in ("turn_on", "turn_off"):
-            async with session.get(f"{HA_URL}/api/states/{entity_id}",
-                                   headers=_headers()) as ver:
-                if ver.status == 200:
-                    st = (await ver.json()).get("state", "")
-                    want = "on" if action == "turn_on" else "off"
-                    if st != want:
-                        return (f"Sent {action} to {entity_id} but it's still "
-                                f"'{st}' — the device may be offline.")
-        return f"Done. {entity_id} → {action}"
+            want = "on" if action == "turn_on" else "off"
+            for _ in range(3):
+                await asyncio.sleep(2)
+                async with session.get(f"{HA_URL}/api/states/{entity_id}",
+                                       headers=_headers()) as ver:
+                    if ver.status == 200 and (await ver.json()).get("state") == want:
+                        break
+            else:
+                return (f"Sent {action}"
+                        + (f" + {list(params.keys())}" if params else "")
+                        + f" to {entity_id}. It's slow to confirm — likely just "
+                        "Govee cloud lag; check the light.")
+        extra = f" ({', '.join(params.keys())})" if params else ""
+        return f"Done. {entity_id} → {action}{extra}"
 
 
 @tool
@@ -89,14 +111,22 @@ async def get_device_states(area: str = None) -> str:
                 if area and area.lower() not in friendly.lower():
                     continue
                 eid = s["entity_id"]
+                # Skip the per-segment sub-entities (light.x_segment_N) — noise.
+                if "_segment_" in eid:
+                    continue
                 if eid.startswith(("light.", "switch.", "sensor.", "climate.", "media_player.")):
                     attrs = s.get("attributes", {})
-                    info = f"{friendly}: {s['state']}"
-                    if "brightness" in attrs:
-                        pct = round(attrs["brightness"] / 255 * 100)
-                        info += f" ({pct}% brightness)"
-                    if "rgb_color" in attrs:
-                        info += f" (color: {attrs['rgb_color']})"
+                    info = f"{eid} ({friendly}): {s['state']}"
+                    bri = attrs.get("brightness")
+                    if bri is not None:
+                        info += f" ({round(bri / 255 * 100)}% brightness)"
+                    if attrs.get("rgb_color"):
+                        info += f" rgb={attrs['rgb_color']}"
+                    # Expose available EFFECTS so the agent can set vibes on the
+                    # fly ("dance party", "sunset") via control_device(effect=...).
+                    effects = attrs.get("effect_list")
+                    if effects:
+                        info += f" | effects: {', '.join(effects[:60])}"
                     relevant.append(info)
             return "\n".join(relevant[:30]) or "No devices found."
 
