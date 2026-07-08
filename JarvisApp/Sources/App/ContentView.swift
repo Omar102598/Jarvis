@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var glassesManager: GlassesManager
     @EnvironmentObject var chatViewModel: ChatViewModel
+    @AppStorage("devMode") private var devMode = false
 
     var body: some View {
         ZStack {
@@ -20,6 +21,13 @@ struct ContentView: View {
                     .tabItem {
                         Label("Agents", systemImage: "person.3")
                     }
+
+                if devMode {
+                    ActivityView()
+                        .tabItem {
+                            Label("Activity", systemImage: "waveform.path.ecg")
+                        }
+                }
 
                 GlassesStatusView()
                     .tabItem {

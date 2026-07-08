@@ -117,7 +117,10 @@ agents:
     schedule: "0 */2 * * *"   # Every 2 hours
     params:
       queries: []
-      notify: true            # push + iMessage when a NEW unit appears
+      notify: true            # push + iMessage when a NEW item appears
+      # Generic watcher: each watch_url can set `goal` (what to extract),
+      # `noun`, and `alert_title` for ANY use case (restocks, tickets, jobs…).
+      alert_title: "🏠 Scout — new apartment availability"
       priority_keywords:      # flags a unit as priority (yard/patio potential)
         - "1st floor"
         - "first floor"

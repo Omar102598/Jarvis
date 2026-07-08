@@ -4,6 +4,7 @@ struct SettingsView: View {
     @State private var serverURL = JarvisConfig.serverURL
     @State private var apiKey    = JarvisConfig.apiKey
     @State private var saved     = false
+    @AppStorage("devMode") private var devMode = false
 
     var body: some View {
         NavigationStack {
@@ -35,6 +36,17 @@ struct SettingsView: View {
                         }
                         .disabled(serverURL.isEmpty)
                         .padding(.top, 4)
+
+                        sectionHeader("DEVELOPER")
+                        Toggle(isOn: $devMode) {
+                            Text("DEV MODE")
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.jText)
+                        }
+                        .tint(.jBlue)
+                        Text("Adds an Activity tab showing every agent's tool calls, reasoning, and findings in order — like watching Jarvis think.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.jBlueDim)
 
                         sectionHeader("ABOUT")
                         infoRow(label: "VERSION",   value: "1.0")

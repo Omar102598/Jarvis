@@ -112,6 +112,24 @@ final class JarvisClient {
         return response.agents
     }
 
+    // MARK: Dev mode — unified agent activity stream (tool/thinking/finding)
+
+    struct AgentEvent: Codable, Identifiable {
+        let agent: String
+        let kind: String        // tool | thinking | finding
+        let text: String
+        let ts: String
+        var id: String { "\(agent)-\(ts)-\(text.hashValue)" }
+    }
+
+    private struct AgentEventsResponse: Codable { let events: [AgentEvent] }
+
+    func fetchAgentEvents(limit: Int = 150) async throws -> [AgentEvent] {
+        let request = baseRequest(path: "/agents/events?limit=\(limit)")
+        let response: AgentEventsResponse = try await execute(request)
+        return response.events
+    }
+
     // MARK: Conversation history — restore chat across app launches
 
     struct HistoryMessage: Codable {

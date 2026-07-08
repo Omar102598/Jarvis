@@ -4,15 +4,17 @@ Two watch modes, both configured under params in config/agents.yml:
 
 1. ``queries``    — Tavily search queries; reports newly published results
                     (3-day dedup via Redis, unchanged from v1).
-2. ``watch_urls`` — specific pages watched for NEW AVAILABLE APARTMENT UNITS
-                    (or any listing-style content). Each run the page is
-                    rendered via the Mac Bridge headless scraper (falls back
-                    to a plain GET), the visible text is hashed, and ONLY when
-                    the page actually changed is an LLM asked to extract the
-                    current unit list and diff it against the last snapshot
-                    stored in Redis. New units trigger an iOS push + iMessage,
-                    with priority emphasis for units matching
-                    ``priority_keywords`` (e.g. "1st floor", "patio", "yard").
+2. ``watch_urls`` — specific pages watched for NEW ITEMS matching a per-watch
+                    goal. GENERIC: each watch can set ``goal`` (what to
+                    extract — apartment units, product restocks, job postings,
+                    concert tickets, price changes…), ``noun`` (word used in
+                    reports), ``alert_title``, and ``priority_keywords``.
+                    Defaults reproduce the original apartment behavior. Each
+                    run the page is rendered via the Mac Bridge scraper (falls
+                    back to a plain GET), the text is hashed, and ONLY when it
+                    changed is an LLM asked to extract the current item list and
+                    diff it against the last snapshot in Redis. New items
+                    trigger an iOS push + iMessage, priority items first.
 
                     Watches with ``type: sightmap`` (or a sightmap.com/app/api
                     URL) skip scraping + LLM entirely: SightMap embeds expose a
@@ -61,17 +63,27 @@ _SYSTEM_PROMPT = (
     "it under 300 words. Use bullet points."
 )
 
+# Default goal keeps the existing apartment watches working unchanged; any
+# watch can override with its own `goal` for a totally different use case
+# (product restocks, job postings, ticket drops, price changes, etc.).
+_DEFAULT_GOAL = (
+    "available apartment rental units or per-floor-plan availability. Use the "
+    "unit number as id when shown; infer floor from the unit number when a "
+    "garden/low-rise property (e.g. unit 1104 → floor 1)"
+)
+
 _EXTRACT_SYSTEM = (
-    "You are Scout, JARVIS's web monitor. You extract apartment/unit "
-    "availability from rendered page text and diff it against the previous "
-    "snapshot. Reply with STRICT JSON only — no prose, no markdown fences."
+    "You are Scout, JARVIS's web monitor. You extract a list of items matching "
+    "the user's watch goal from rendered page text and diff it against the "
+    "previous snapshot. Reply with STRICT JSON only — no prose, no markdown."
 )
 
 _EXTRACT_USER = """Watch: {name}
 URL: {url}
-Priority keywords: {keywords}
+WHAT TO WATCH FOR (extract these items): {goal}
+Priority keywords (flag matching items): {keywords}
 
-Previously seen available units (JSON): {previous}
+Previously seen items (JSON): {previous}
 
 Current page text:
 <<<
@@ -79,21 +91,21 @@ Current page text:
 >>>
 
 Return JSON exactly in this shape:
-{{"units": [{{"id": "...", "plan": "...", "floor": null, "price": "...", "available": "...", "priority": false, "why_priority": ""}}],
-  "new_unit_ids": [], "note": ""}}
+{{"items": [{{"id": "...", "label": "...", "detail": "", "price": "", "priority": false, "why_priority": ""}}],
+  "new_item_ids": [], "note": ""}}
 
 Rules:
-- "units": EVERY currently listed available unit (or per-floor-plan availability
-  entry) on the page. Use the apartment/unit number as "id" when shown;
-  otherwise use the floor plan name plus a distinguishing detail.
-- "floor": integer floor number if determinable (unit numbers often encode it,
-  e.g. unit 1104 on a garden property is likely floor 1), else null.
-- priority=true when the unit matches ANY priority keyword, is on floor 1 /
-  ground floor, or mentions a private patio/yard. Explain in "why_priority".
-- "new_unit_ids": ids from "units" NOT present in the previous snapshot
-  (match loosely on unit number / plan name). Empty list if none.
-- If the page shows no availability info (blocked, error page, empty), return
-  empty "units" and explain in "note"."""
+- "items": EVERY item on the page matching the watch goal above.
+- "id": a STABLE identifier for the item (unit/product/listing number, or a
+  distinctive name) — used to detect what's genuinely new across runs.
+- "label": short human name; "detail": any useful extras (floor, size, dates);
+  "price": price/rate if shown.
+- priority=true when the item matches ANY priority keyword; explain in
+  "why_priority".
+- "new_item_ids": ids from "items" NOT present in the previous snapshot (match
+  loosely). Empty list if none.
+- If the page shows no matching items (blocked, error page, empty), return
+  empty "items" and explain in "note"."""
 
 # Text that means the fetch was bot-blocked, not a real empty page.
 _BLOCK_RE = re.compile(
@@ -150,6 +162,8 @@ class WebMonitorAgent(BaseAgent):
                 continue
             self.log_event("tool", f"Checking watch '{name}': {url}")
             keywords = watch.get("priority_keywords", default_keywords)
+            goal = watch.get("goal", _DEFAULT_GOAL)   # what to extract (per-watch)
+            noun = watch.get("noun", "item")          # word used in reports/alerts
             wid = hashlib.md5(url.encode()).hexdigest()[:12]
             hash_key = f"agent:web_monitor:watch:{wid}:hash"
             units_key = f"agent:web_monitor:watch:{wid}:units"
@@ -166,7 +180,7 @@ class WebMonitorAgent(BaseAgent):
                     json.dumps(units, sort_keys=True).encode()
                 ).hexdigest()
                 if self.r.get(hash_key) == page_hash and prev_units_raw is not None:
-                    record(f"• {name}: unchanged ({len(units)} unit(s) available)")
+                    record(f"• {name}: unchanged ({len(units)} {noun}(s) available)")
                     continue
                 prev_ids = {
                     str(u.get("id", "")).strip().lower()
@@ -187,14 +201,14 @@ class WebMonitorAgent(BaseAgent):
                 page_hash = hashlib.md5(normalized.encode()).hexdigest()
                 if self.r.get(hash_key) == page_hash and prev_units_raw is not None:
                     count = len(json.loads(prev_units_raw))
-                    record(f"• {name}: unchanged ({count} unit(s) available)")
+                    record(f"• {name}: unchanged ({count} {noun}(s) available)")
                     continue
 
                 extracted = await self._extract_units(
-                    name, url, keywords, prev_units_raw, normalized[:11000]
+                    name, url, goal, keywords, prev_units_raw, normalized[:11000]
                 )
                 if extracted is None:
-                    record(f"• {name}: page changed but unit extraction failed — will retry next run")
+                    record(f"• {name}: page changed but extraction failed — will retry next run")
                     continue
 
                 units = extracted.get("units", [])
@@ -217,7 +231,7 @@ class WebMonitorAgent(BaseAgent):
             if prev_units_raw is None:
                 pri = sum(1 for u in units if u.get("priority"))
                 record(
-                    f"• {name}: baseline recorded — {len(units)} unit(s) available"
+                    f"• {name}: baseline recorded — {len(units)} {noun}(s) available"
                     + (f", {pri} priority (1st floor/patio/yard)" if pri else "")
                     + (f" [{note}]" if note else "")
                 )
@@ -236,11 +250,11 @@ class WebMonitorAgent(BaseAgent):
                     fresh.append(u)
 
             if not fresh:
-                record(f"• {name}: page changed, no new units ({len(units)} available)"
+                record(f"• {name}: page changed, no new {noun}s ({len(units)} available)"
                              + (f" [{note}]" if note else ""))
                 continue
 
-            record(f"• {name}: 🚨 {len(fresh)} NEW unit(s)!")
+            record(f"• {name}: 🚨 {len(fresh)} NEW {noun}(s)!")
             for u in fresh:
                 desc = self._unit_line(name, u)
                 if u.get("priority"):
@@ -250,13 +264,12 @@ class WebMonitorAgent(BaseAgent):
 
         all_alerts = priority_alerts + alerts
         if all_alerts and self.params.get("notify", True):
-            await self._notify(
-                "🏠 Scout — new apartment availability:\n" + "\n".join(all_alerts)
-            )
+            title = self.params.get("alert_title", "🔔 Scout — new matches")
+            await self._notify(title + ":\n" + "\n".join(all_alerts))
 
         report = "Scout — URL watches\n\n" + "\n".join(lines)
         if all_alerts:
-            report += "\n\nNew units:\n" + "\n".join(all_alerts)
+            report += "\n\nNew matches:\n" + "\n".join(all_alerts)
         return report
 
     @staticmethod
@@ -369,13 +382,13 @@ class WebMonitorAgent(BaseAgent):
             print(f"[Scout] direct fetch failed for {url}: {exc}")
             return ""
 
-    async def _extract_units(self, name, url, keywords, prev_raw, text) -> dict | None:
+    async def _extract_units(self, name, url, goal, keywords, prev_raw, text) -> dict | None:
         previous = prev_raw if prev_raw else "NONE (first scan)"
         try:
             reply = await complete(
                 system=_EXTRACT_SYSTEM,
                 user=_EXTRACT_USER.format(
-                    name=name, url=url, keywords=", ".join(keywords),
+                    name=name, url=url, goal=goal, keywords=", ".join(keywords),
                     previous=previous, text=text,
                 ),
                 max_tokens=1400,
@@ -385,7 +398,18 @@ class WebMonitorAgent(BaseAgent):
             if start < 0:
                 return None
             data = json.loads(reply[start:end])
-            return data if isinstance(data, dict) else None
+            if not isinstance(data, dict):
+                return None
+            # Normalize the generic item shape → the internal keys the rest of
+            # the agent consumes (keeps sightmap + LLM paths on one shape).
+            items = data.get("items", data.get("units", []))
+            for it in items:
+                it.setdefault("plan", it.get("label", ""))
+                it.setdefault("available", it.get("detail", ""))
+            return {"units": items,
+                    "new_unit_ids": data.get("new_item_ids",
+                                             data.get("new_unit_ids", [])),
+                    "note": data.get("note", "")}
         except Exception as exc:
             print(f"[Scout] extraction failed for {name}: {exc}")
             return None
