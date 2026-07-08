@@ -32,16 +32,43 @@ async def control_device(entity_id: str, action: str, params: dict = None) -> st
         payload.update(params)
 
     async with aiohttp.ClientSession() as session:
+        # Verify the entity EXISTS first — HA's turn_on returns 200 for unknown
+        # entities, so without this the agent guesses 'light.living_room'
+        # (nonexistent) and falsely reports success. Fail loudly with the real
+        # options so the agent self-corrects.
+        async with session.get(f"{HA_URL}/api/states/{entity_id}",
+                               headers=_headers()) as chk:
+            if chk.status == 404:
+                async with session.get(f"{HA_URL}/api/states",
+                                       headers=_headers()) as allst:
+                    names = []
+                    if allst.status == 200:
+                        names = [s["entity_id"] for s in await allst.json()
+                                 if s["entity_id"].startswith(domain + ".")]
+                    return (f"No such entity '{entity_id}'. Available {domain} "
+                            f"entities: {', '.join(names) or 'none'}. "
+                            "Use one of these exact ids.")
+
         async with session.post(
             f"{HA_URL}/api/services/{domain}/{action}",
             headers=_headers(),
             json=payload,
         ) as resp:
-            if resp.status == 200:
-                return f"Done. {entity_id} → {action}"
-            else:
+            if resp.status != 200:
                 error = await resp.text()
                 return f"Error controlling {entity_id}: {resp.status} - {error}"
+
+        # Confirm the state actually changed (turn_on → 'on', etc.)
+        if action in ("turn_on", "turn_off"):
+            async with session.get(f"{HA_URL}/api/states/{entity_id}",
+                                   headers=_headers()) as ver:
+                if ver.status == 200:
+                    st = (await ver.json()).get("state", "")
+                    want = "on" if action == "turn_on" else "off"
+                    if st != want:
+                        return (f"Sent {action} to {entity_id} but it's still "
+                                f"'{st}' — the device may be offline.")
+        return f"Done. {entity_id} → {action}"
 
 
 @tool

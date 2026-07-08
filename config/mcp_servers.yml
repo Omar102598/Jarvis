@@ -144,6 +144,16 @@ servers:
     description: "MCP Airbnb — listing search + details (Miles travel research)"
 
   # ---------------------------------------------------------------------------
+  # Kiwi.com — OFFICIAL flight search (aggregator). Free, NO key/account —
+  # hosted remote server. Powers Miles's flight leg (search + book links).
+  # ---------------------------------------------------------------------------
+  kiwi_flights:
+    enabled: true
+    transport: streamable_http
+    url: "https://mcp.kiwi.com"
+    description: "MCP Kiwi.com (official) — flight search, no key"
+
+  # ---------------------------------------------------------------------------
   # Jinko — hotel search + booking (2M+ hotels). Search needs no key; booking
   # returns a PAYMENT LINK (approval-gated, never auto-charges). Powers Miles's
   # hotel leg alongside the Airbnb MCP for rentals.
