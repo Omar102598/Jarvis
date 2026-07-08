@@ -483,7 +483,9 @@ struct MessageBubble: View {
                             .font(.system(size: 14))
                             .foregroundColor(.jText)
                         if let media = message.mediaURL, let url = URL(string: media) {
-                            MediaCard(url: url, isVideo: media.contains(".m3u8"))
+                            MediaCard(url: url,
+                                      isVideo: media.contains(".m3u8"),
+                                      cachedData: message.imageData)
                         }
                     }
                     .padding(.horizontal, 14)
@@ -508,6 +510,7 @@ import AVKit
 struct MediaCard: View {
     let url: URL
     let isVideo: Bool
+    var cachedData: Data? = nil
     @State private var showViewer = false
 
     var body: some View {
@@ -522,6 +525,12 @@ struct MediaCard: View {
                 .frame(maxWidth: .infinity, minHeight: 64)
                 .background(Color.jBlue.opacity(0.08))
                 .cornerRadius(10)
+            } else if let data = cachedData, let ui = UIImage(data: data) {
+                // Rendered from pinned bytes — cannot re-fetch or vanish.
+                Image(uiImage: ui).resizable().scaledToFill()
+                    .frame(maxWidth: 260, maxHeight: 160)
+                    .clipped()
+                    .cornerRadius(10)
             } else {
                 AsyncImage(url: url) { phase in
                     switch phase {
@@ -542,7 +551,7 @@ struct MediaCard: View {
         }
         .onTapGesture { showViewer = true }
         .fullScreenCover(isPresented: $showViewer) {
-            MediaViewer(url: url, isVideo: isVideo)
+            MediaViewer(url: url, isVideo: isVideo, cachedData: cachedData)
         }
     }
 }
@@ -550,6 +559,7 @@ struct MediaCard: View {
 struct MediaViewer: View {
     let url: URL
     let isVideo: Bool
+    var cachedData: Data? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer? = nil
 
@@ -565,6 +575,8 @@ struct MediaViewer: View {
                         p.play()
                     }
                     .onDisappear { player?.pause() }
+            } else if let data = cachedData, let ui = UIImage(data: data) {
+                Image(uiImage: ui).resizable().scaledToFit()
             } else {
                 AsyncImage(url: url) { phase in
                     if case .success(let image) = phase {

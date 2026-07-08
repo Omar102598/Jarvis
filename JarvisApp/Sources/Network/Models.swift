@@ -118,6 +118,10 @@ struct ChatMessage: Identifiable, Equatable {
     var isLoading: Bool = false
     /// Snapshot or HLS stream attached to the message (Ring alerts, live view)
     var mediaURL: String? = nil
+    /// Snapshot bytes downloaded ONCE when the card arrived, held in memory so
+    /// the image renders from data and never re-fetches (which was causing
+    /// snapshots to flash then vanish on list re-render). Videos stay URL-based.
+    var imageData: Data? = nil
 }
 
 // MARK: - Tool event model

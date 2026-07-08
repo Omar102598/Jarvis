@@ -55,8 +55,23 @@ final class ChatViewModel: ObservableObject {
         guard payload.type != .audioOnly else { return }
         let text = payload.body.isEmpty ? payload.title : payload.body
         guard !text.isEmpty else { return }
-        messages.append(ChatMessage(role: .jarvis, text: text,
-                                    mediaURL: payload.mediaURL))
+        let msg = ChatMessage(role: .jarvis, text: text, mediaURL: payload.mediaURL)
+        messages.append(msg)
+
+        // Snapshot (not a video stream): download the bytes once and pin them
+        // to the message so it renders from memory — never re-fetches, never
+        // flashes-then-vanishes on re-render.
+        if let m = payload.mediaURL, !m.contains(".m3u8"), let url = URL(string: m) {
+            let id = msg.id
+            Task { [weak self] in
+                guard let data = try? await URLSession.shared.data(from: url).0 else { return }
+                await MainActor.run {
+                    if let idx = self?.messages.firstIndex(where: { $0.id == id }) {
+                        self?.messages[idx].imageData = data
+                    }
+                }
+            }
+        }
     }
 
     // MARK: Local notifications — surface pushes that arrive while backgrounded
