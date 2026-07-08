@@ -1204,6 +1204,40 @@ async def ring_live_files(device: str, fname: str):
                         headers={"Cache-Control": "no-store"})
 
 
+class PresenceLocationRequest(BaseModel):
+    event: str   # "arrived" | "left"
+
+
+@app.post("/presence/location", summary="[iOS app] Home geofence enter/exit")
+async def presence_location(req: PresenceLocationRequest,
+                            x_api_key: str = Header(default="")):
+    """Phone geofence crossed home — the reliable arrival signal Sentry's lone
+    indoor camera can't provide. Records presence and publishes an MQTT event
+    the agent_runner turns into an arrival greeting + scene (on 'arrived') or
+    updates away-state (on 'left', which routes proactive alerts to the phone).
+    """
+    _check_api_key(x_api_key)
+    ev = req.event.strip().lower()
+    if ev not in ("arrived", "left"):
+        raise HTTPException(400, "event must be 'arrived' or 'left'")
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        _redis.set("user:presence:home", "1" if ev == "arrived" else "0")
+        _redis.set("user:presence:updated", now)
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+    # Fire-and-forget MQTT so the agent_runner can react
+    try:
+        import paho.mqtt.publish as _pub
+        _pub.single("jarvis/presence/home",
+                    json.dumps({"event": ev, "ts": now}),
+                    hostname=MQTT_HOST, port=MQTT_PORT)
+    except Exception as e:
+        print(f"[Gateway] presence publish failed: {e}")
+    print(f"[Gateway] presence: {ev}")
+    return {"ok": True, "event": ev}
+
+
 @app.get("/agents/feed", summary="[iOS app] All agents + their latest reports (token-free reads)")
 async def agents_feed(x_api_key: str = Header(default="")):
     """Dynamic agent feed for the app's Agents tab: whatever agents exist in

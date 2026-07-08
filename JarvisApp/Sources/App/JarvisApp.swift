@@ -34,6 +34,7 @@ struct JarvisApp: App {
                     await chatViewModel.loadHistory()
                     chatViewModel.requestNotificationPermission()
                     PresenceManager.shared.startHeartbeat()
+                    LocationManager.shared.start()
                     // Month 4: push HealthKit + calendar context to the backend
                     await HealthKitManager.shared.syncOnLaunch()
                     await CalendarManager.shared.syncOnLaunch()

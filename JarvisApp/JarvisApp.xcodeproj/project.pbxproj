@@ -16,6 +16,7 @@
 		2E47D8CDED7CF6798EC70AFC /* AskJarvisIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27E6BAE82F385B773B0F166D /* AskJarvisIntent.swift */; };
 		365191E0FC23319F9CA2C898 /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = FF438430EB2C80F2F63E9EBD /* MWDATCore */; };
 		3E914859A26FDA6884D89F35 /* JarvisTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ED77026FB4C749323DEFB83 /* JarvisTheme.swift */; };
+		5804145E27C3BCB4DC363141 /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12B2DA705EF3A7EF2CE84457 /* LocationManager.swift */; };
 		69FE3CB9F475B44F9F2CD865 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DB76D2E01AE4FFC890367A0D /* Assets.xcassets */; };
 		6D3A81EEB495E8BCC8E6CEE6 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = 76CEC077EB6AB178FEB46CFA /* MWDATCamera */; };
 		778B3926A24EFF71053F3603 /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E06625565B69F6487B5E4A9 /* HealthKitManager.swift */; };
@@ -35,6 +36,7 @@
 		01850FC46EF51C52C729FEDD /* JarvisClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisClient.swift; sourceTree = "<group>"; };
 		0351D2CCD443344D2D3C6A55 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		05324E07DB759668AAED1FC0 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
+		12B2DA705EF3A7EF2CE84457 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
 		12BF08499D6DED3B05E5AEC0 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		1A0CD866B2962AE9EBBBFCC0 /* JarvisApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisApp.swift; sourceTree = "<group>"; };
 		27E6BAE82F385B773B0F166D /* AskJarvisIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskJarvisIntent.swift; sourceTree = "<group>"; };
@@ -42,7 +44,7 @@
 		3E06625565B69F6487B5E4A9 /* HealthKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitManager.swift; sourceTree = "<group>"; };
 		46A89DD221C88129D350CA3E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		62305609ECC5C1E0BF545BC6 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
-		6931A58F122A71990D09EF46 /* JarvisApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JarvisApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6931A58F122A71990D09EF46 /* JarvisApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = JarvisApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6ED77026FB4C749323DEFB83 /* JarvisTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisTheme.swift; sourceTree = "<group>"; };
 		7E1D7CE5DA8EE7405878BE41 /* HUDRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDRenderer.swift; sourceTree = "<group>"; };
 		AFE2853AF41CA3597BC07C02 /* GlassesManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassesManager.swift; sourceTree = "<group>"; };
@@ -127,10 +129,19 @@
 				38C0A69499BE6D1B87E2DC6C /* Glasses */,
 				EEF9E31C398C3F2610C6EA7E /* Health */,
 				94AC871F30078C785D4978B4 /* Intents */,
+				947C728BD89EB2D3CE93176E /* Location */,
 				E8BBCD41F755932DAB9C0AA8 /* Network */,
 				8446BEE6E6414514DBF7470E /* Settings */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		947C728BD89EB2D3CE93176E /* Location */ = {
+			isa = PBXGroup;
+			children = (
+				12B2DA705EF3A7EF2CE84457 /* LocationManager.swift */,
+			);
+			path = Location;
 			sourceTree = "<group>";
 		};
 		94AC871F30078C785D4978B4 /* Intents */ = {
@@ -222,6 +233,7 @@
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
 					CE37E25EDF3A9F2A5BDA9298 = {
+						DevelopmentTeam = 9A2248P7R6;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -277,6 +289,7 @@
 				A6C598CF1AD360258E0EE920 /* JarvisApp.swift in Sources */,
 				299C52A2483D4B83A86BADFD /* JarvisClient.swift in Sources */,
 				3E914859A26FDA6884D89F35 /* JarvisTheme.swift in Sources */,
+				5804145E27C3BCB4DC363141 /* LocationManager.swift in Sources */,
 				916FD28AD327E03F2DEFDA3D /* Models.swift in Sources */,
 				2C9303C3D0E1EF897AD2BD9C /* PresenceManager.swift in Sources */,
 				0470F816916DC59969908838 /* SettingsView.swift in Sources */,
@@ -294,7 +307,7 @@
 				CODE_SIGN_ENTITLEMENTS = JarvisApp.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = FCTJWGB3C4;
+				DEVELOPMENT_TEAM = 9A2248P7R6;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -434,7 +447,7 @@
 				CODE_SIGN_ENTITLEMENTS = JarvisApp.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = FCTJWGB3C4;
+				DEVELOPMENT_TEAM = 9A2248P7R6;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

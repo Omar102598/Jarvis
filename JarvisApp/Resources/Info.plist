@@ -64,11 +64,16 @@
 	<string>Jarvis reads your fitness data (steps, sleep, heart rate, workouts) to tailor your grocery plan and flag health anomalies.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Jarvis uses the microphone to accept your voice commands.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Jarvis uses your location to set your home and know when you arrive.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Jarvis watches a geofence around your home in the background so it can greet you and set the scene when you arrive — even when the app is closed.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Jarvis uses on-device speech recognition for wake-word detection.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>location</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

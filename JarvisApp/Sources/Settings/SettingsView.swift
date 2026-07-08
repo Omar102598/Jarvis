@@ -5,6 +5,7 @@ struct SettingsView: View {
     @State private var apiKey    = JarvisConfig.apiKey
     @State private var saved     = false
     @AppStorage("devMode") private var devMode = false
+    @StateObject private var location = LocationManager.shared
 
     var body: some View {
         NavigationStack {
@@ -36,6 +37,22 @@ struct SettingsView: View {
                         }
                         .disabled(serverURL.isEmpty)
                         .padding(.top, 4)
+
+                        sectionHeader("HOME LOCATION")
+                        Text("Set your home so Jarvis can greet you and set the scene when you arrive — the reliable signal a single indoor camera can't give.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.jBlueDim)
+                        HStack {
+                            Text(location.status.uppercased())
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .foregroundColor(location.homeSet ? .jGreen : .jBlueDim)
+                            Spacer()
+                            Button("SET CURRENT LOCATION AS HOME") {
+                                location.setHomeToCurrentLocation()
+                            }
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(.jBlue)
+                        }
 
                         sectionHeader("DEVELOPER")
                         Toggle(isOn: $devMode) {

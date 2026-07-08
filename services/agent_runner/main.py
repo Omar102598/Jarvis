@@ -190,9 +190,84 @@ def _on_connect(client, userdata, flags, rc):
         client.subscribe("ring/#")
         client.subscribe("homeassistant/camera/+/+/config")
         client.subscribe("homeassistant/binary_sensor/+/+/config")
-        print("[AgentRunner] MQTT connected, subscribed to trigger + ring topics.")
+        client.subscribe("jarvis/presence/home")   # iPhone geofence arrivals
+        print("[AgentRunner] MQTT connected, subscribed to trigger + ring + presence topics.")
     else:
         print(f"[AgentRunner] MQTT connect failed (rc={rc})", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Home arrival (iPhone geofence) — the reliable presence signal Sentry's lone
+# indoor camera can't give. On "arrived": run the arrival scene (warm lamps)
+# and speak a welcome; a re-arrival within ARRIVAL_DEBOUNCE is ignored so a
+# GPS flap at the geofence edge doesn't re-greet.
+# ---------------------------------------------------------------------------
+
+ARRIVAL_DEBOUNCE_S = int(os.environ.get("ARRIVAL_DEBOUNCE_S", "1800"))
+
+
+def _on_presence(client, userdata, msg):
+    try:
+        ev = json.loads(msg.payload).get("event", "")
+    except Exception:
+        return
+    if ev == "arrived":
+        if not _redis.set("jarvis:arrival:debounce", "1", nx=True, ex=ARRIVAL_DEBOUNCE_S):
+            print("[AgentRunner] arrival within debounce — skipping greeting")
+            return
+        print("[AgentRunner] iPhone geofence: ARRIVED home → scene + greeting")
+        try:
+            profile = json.loads(_redis.get("user:profile") or "{}")
+        except Exception:
+            profile = {}
+
+        # 1) Arrival scene: warm living-room lamps (HA), evening-gated by the
+        #    profile if desired; falls back to a named Shortcut if configured.
+        _run_arrival_scene(profile)
+
+        # 2) Warm spoken welcome to the active room + phone fanout.
+        who = profile.get("resident_name", "sir")
+        client.publish("jarvis/tts/office/speak", json.dumps({
+            "text": f"Welcome home, {who}. I've brought the lights up for you.",
+            "room": "office", "is_final": True,
+        }))
+    elif ev == "left":
+        _redis.delete("jarvis:arrival:debounce")
+        print("[AgentRunner] iPhone geofence: LEFT home (away — alerts route to phone)")
+
+
+def _run_arrival_scene(profile: dict) -> None:
+    """Warm the living-room lamps via HA (preferred) or a named Shortcut."""
+    import urllib.request as _rq
+    ha_url = os.environ.get("HA_URL", "")
+    ha_token = os.environ.get("HA_TOKEN", "")
+    entities = profile.get("arrival_lights",
+                           ["light.living_room_left", "light.living_room_right"])
+    if ha_url and ha_token:
+        try:
+            body = json.dumps({
+                "entity_id": entities,
+                "color_temp_kelvin": int(profile.get("arrival_kelvin", 2700)),
+                "brightness_pct": int(profile.get("arrival_brightness_pct", 40)),
+            }).encode()
+            req = _rq.Request(f"{ha_url}/api/services/light/turn_on", data=body,
+                              headers={"Authorization": f"Bearer {ha_token}",
+                                       "Content-Type": "application/json"})
+            _rq.urlopen(req, timeout=15)
+            print(f"[AgentRunner] arrival scene: warmed {entities}")
+            return
+        except Exception as exc:
+            print(f"[AgentRunner] arrival HA scene failed: {exc}")
+    # Fallback: a macOS Shortcut, if the user set one
+    sc = (profile.get("arrival_scene_shortcut") or "").strip()
+    if sc:
+        try:
+            body = json.dumps({"name": sc, "timeout": 30}).encode()
+            _rq.urlopen(_rq.Request("http://host.docker.internal:7777/shortcut/run",
+                                    data=body, headers={"Content-Type": "application/json"}),
+                        timeout=35)
+        except Exception as exc:
+            print(f"[AgentRunner] arrival shortcut failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +455,7 @@ async def main() -> None:
     _mqtt.message_callback_add("ring/#", _on_ring_event)
     _mqtt.message_callback_add("homeassistant/camera/+/+/config", _on_ring_discovery)
     _mqtt.message_callback_add("homeassistant/binary_sensor/+/+/config", _on_ring_discovery)
+    _mqtt.message_callback_add("jarvis/presence/home", _on_presence)
     _mqtt.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
     _mqtt.loop_start()
 
