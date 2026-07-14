@@ -354,6 +354,11 @@ def _on_surface_push(client, userdata, msg):
     Optional ``media_url`` in the payload turns the push into an image card —
     used by Sentry to attach the camera snapshot to its alerts (renders on the
     app HUD view and, later, the glasses display).
+
+    Every push is ALSO persisted to Redis (``surface:pushes``) so the app can
+    fetch what it missed: iOS suspends the WebSocket in the background, and a
+    push relayed to zero connected clients used to vanish — Sentry snapshot
+    cards never appeared unless the app was open at that exact moment.
     """
     global _event_loop
     try:
@@ -366,6 +371,16 @@ def _on_surface_push(client, userdata, msg):
         ptype = "text"
         if media_url:
             ptype = "video" if ".m3u8" in media_url else "image"
+        try:
+            _redis.lpush("surface:pushes", json.dumps({
+                "id": uuid.uuid4().hex,
+                "title": title, "text": text, "media_url": media_url,
+                "type": ptype,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }))
+            _redis.ltrim("surface:pushes", 0, 49)
+        except Exception as exc:
+            print(f"[Gateway] push persist failed: {exc}")
         payload = DisplayPayload(ptype, title, text[:200], media_url, text)
         if _event_loop is not None:
             asyncio.run_coroutine_threadsafe(_push_display_payload(payload), _event_loop)
@@ -971,6 +986,72 @@ class HealthSnapshotRequest(BaseModel):
     source: str = "ios_healthkit"
 
 
+def _compute_readiness(snapshot: dict, history: list[dict]) -> dict:
+    """Fuse HealthKit signals into ONE readiness score (0-100) that sets the
+    day's tone — Apollo's volume, Kai's intensity ranking, the morning brief.
+
+    Baselines come from the user's own recent history (median), so the score is
+    personal, not absolute. Missing signals are simply skipped.
+    """
+    import statistics as _stats
+
+    def _med(key):
+        vals = [h.get(key) for h in history[1:15] if h.get(key) is not None]
+        return _stats.median(vals) if vals else None
+
+    score = 100.0
+    factors: list[str] = []
+
+    hrv, hrv_base = snapshot.get("hrv_ms"), _med("hrv_ms")
+    if hrv is not None and hrv_base:
+        delta = (hrv - hrv_base) / hrv_base
+        if delta < 0:
+            pen = min(30.0, abs(delta) * 100)
+            score -= pen
+            factors.append(f"HRV {round(hrv)}ms below ~{round(hrv_base)}ms baseline")
+        else:
+            factors.append(f"HRV {round(hrv)}ms at/above baseline")
+
+    rhr, rhr_base = snapshot.get("resting_heart_rate"), _med("resting_heart_rate")
+    if rhr is not None and rhr_base:
+        delta = (rhr - rhr_base) / rhr_base
+        if delta > 0:
+            score -= min(25.0, delta * 250)
+            factors.append(f"resting HR {round(rhr)} above ~{round(rhr_base)}")
+
+    sleep = snapshot.get("sleep_hours")
+    if sleep is not None:
+        if sleep < 7:
+            score -= min(30.0, (7 - sleep) * 8)
+            factors.append(f"{sleep:g}h sleep")
+        elif sleep >= 7.5:
+            factors.append(f"{sleep:g}h sleep")
+
+    # Yesterday's training load (from the previous day's snapshot) → fatigue.
+    prev_load = history[1].get("workout_minutes_today") if len(history) > 1 else None
+    if prev_load and prev_load > 90:
+        score -= 10
+        factors.append(f"{int(prev_load)}min training yesterday")
+
+    score = max(0, min(100, round(score)))
+    if score >= 75:
+        band = "primed"
+    elif score >= 55:
+        band = "good"
+    elif score >= 40:
+        band = "moderate strain"
+    else:
+        band = "prioritise recovery"
+
+    return {
+        "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "score": score,
+        "band": band,
+        "factors": factors[:4],
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.post("/health/snapshot", summary="[iOS app] Push a HealthKit fitness snapshot")
 async def health_snapshot(req: HealthSnapshotRequest, x_api_key: str = Header(default="")):
     """Store the latest HealthKit snapshot in Redis.
@@ -1011,6 +1092,14 @@ async def health_snapshot(req: HealthSnapshotRequest, x_api_key: str = Header(de
         else:
             _redis.lpush("user:health:history", json.dumps(snapshot))
         _redis.ltrim("user:health:history", 0, 29)   # ~30 distinct days
+
+        # Fuse into a single readiness score for the day (sets Apollo/Kai/brief tone).
+        try:
+            hist = [json.loads(h) for h in _redis.lrange("user:health:history", 0, 14)]
+            _redis.set("user:readiness:today",
+                       json.dumps(_compute_readiness(snapshot, hist)))
+        except Exception:
+            pass
 
         # Keep the user profile's weight in sync with HealthKit body mass
         if req.body_mass_lbs:
@@ -1084,6 +1173,26 @@ async def ring_snapshot(device: str, k: str = ""):
         raise HTTPException(status_code=404, detail="no snapshot cached for this camera")
     return Response(content=base64.b64decode(snap), media_type="image/jpeg",
                     headers={"Cache-Control": "no-store"})
+
+
+@app.get("/ring/snapshot/event/{event_id}.jpg",
+         summary="Snapshot pinned to a specific Sentry event")
+async def ring_event_snapshot(event_id: str, k: str = ""):
+    """Serve the frame Sentry actually assessed for one event. The per-camera
+    cache above is overwritten by every new snapshot, so alert cards fetched
+    later (push feed, app relaunch) would show the WRONG moment — Sentry pins
+    the assessed frame under ring:snapshot:event:{id} (48h TTL) and points its
+    media_url here instead."""
+    expected = os.environ.get("MOBILE_API_KEY", "")
+    if expected and k != expected:
+        raise HTTPException(status_code=401, detail="bad key")
+    if not re.fullmatch(r"[a-f0-9]{32}", event_id):
+        raise HTTPException(status_code=400, detail="bad event id")
+    snap = _redis.get(f"ring:snapshot:event:{event_id}")
+    if not snap:
+        raise HTTPException(status_code=404, detail="event snapshot expired or unknown")
+    return Response(content=base64.b64decode(snap), media_type="image/jpeg",
+                    headers={"Cache-Control": "max-age=86400"})
 
 
 # ---------------------------------------------------------------------------
@@ -1330,6 +1439,81 @@ async def get_history(x_api_key: str = Header(default=""), limit: int = 40):
         if role in ("user", "assistant"):
             messages.append({"role": role, "text": content.strip()})
     return {"messages": messages}
+
+
+class FaceEnrollRequest(BaseModel):
+    name: str
+    images: list[str]          # base64 JPEGs (app selfies)
+    finalize: bool = True
+
+
+@app.post("/face/enroll", summary="[iOS app] Teach Jarvis a face from selfies")
+async def face_enroll(req: FaceEnrollRequest, x_api_key: str = Header(default="")):
+    """Self-service face enrollment — works with zero home hardware.
+
+    Relays each selfie to the vision service (MQTT jarvis/vision/enroll_image),
+    which extracts a face embedding per usable image; finalize averages them
+    into the face:{name} identity Sentry's recognition compares against.
+    Re-enrolling the same name REPLACES the identity (fresh sample buffer).
+    """
+    _check_api_key(x_api_key)
+    name = re.sub(r"[^a-z0-9_-]", "", req.name.strip().lower())
+    if not name:
+        raise HTTPException(400, "name must contain letters/numbers")
+    if not req.images:
+        raise HTTPException(400, "no images provided")
+    if len(req.images) > 8:
+        raise HTTPException(400, "at most 8 images per enrollment")
+
+    _redis.delete(f"face_samples:{name}")
+    for img in req.images:
+        _mqtt_client.publish("jarvis/vision/enroll_image",
+                             json.dumps({"name": name, "image_b64": img}))
+
+    # Vision processes asynchronously — wait for the sample count to settle
+    # (a few seconds per image on CPU), then finalize.
+    samples, stable = 0, 0
+    for _ in range(30):                        # up to ~15s
+        await asyncio.sleep(0.5)
+        n = int(_redis.llen(f"face_samples:{name}") or 0)
+        stable = stable + 1 if n == samples else 0
+        samples = n
+        if samples >= len(req.images) or (samples > 0 and stable >= 6):
+            break
+
+    if samples == 0:
+        raise HTTPException(422, "no usable face found in any image — "
+                                 "try closer, well-lit, face-on selfies")
+    enrolled = False
+    if req.finalize:
+        _mqtt_client.publish("jarvis/vision/enroll_finalize",
+                             json.dumps({"name": name}))
+        for _ in range(10):                    # wait for face:{name} to land
+            await asyncio.sleep(0.5)
+            if _redis.exists(f"face:{name}"):
+                enrolled = True
+                break
+    return {"name": name, "samples": samples, "of": len(req.images),
+            "enrolled": enrolled}
+
+
+@app.get("/pushes", summary="[iOS/Mac app] Recent proactive pushes (Sentry cards etc.)")
+async def get_pushes(x_api_key: str = Header(default=""), limit: int = 20):
+    """Return recent surface pushes (newest last) so the app can show cards it
+    missed while suspended — the WebSocket only reaches a foregrounded app.
+    Items carry a stable ``id`` for client-side dedupe."""
+    _check_api_key(x_api_key)
+    try:
+        raw = _redis.lrange("surface:pushes", 0, min(limit, 50) - 1)
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+    pushes = []
+    for item in reversed(raw):   # stored newest-first; serve oldest-first
+        try:
+            pushes.append(json.loads(item))
+        except Exception:
+            continue
+    return {"pushes": pushes}
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,8 @@ from .mac import (
 from .memory import forget, recall, remember
 from .chronicle import recall_journal
 from .finance_insights import get_spending_insights
+from .tasks import manage_tasks
+from .health import get_readiness
 from .notes import manage_notes
 from .notifications import send_notification
 from .petkit import (

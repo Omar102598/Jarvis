@@ -51,6 +51,8 @@ from tools.notifications import send_notification
 from tools.memory import forget, recall, remember
 from tools.chronicle import recall_journal
 from tools.finance_insights import get_spending_insights
+from tools.tasks import manage_tasks
+from tools.health import get_readiness
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
@@ -223,6 +225,8 @@ _core_tools = [
     get_agent_report, trigger_agent, spawn_task, ask_subagent,
     # Integrations
     spotify_control, spotify_desktop, github_tool, manage_notes,
+    # Task loop (GTD: inbox / next-actions / projects)
+    manage_tasks,
     # macOS laptop control
     mac_screenshot, mac_clipboard, mac_system_info, mac_shell, mac_applescript,
     mac_open, mac_spotlight, mac_type, mac_notify,
@@ -244,8 +248,8 @@ _core_tools = [
     # Grocery agent control
     get_grocery_status, approve_grocery_order, trigger_grocery_run, suggest_meals,
     learn_fresh_cart, get_usual_order, pin_favorite_product,
-    # Workout coach (Apollo)
-    get_todays_workout, get_workout_plan, plan_workout_week,
+    # Workout coach (Apollo) + fused readiness score
+    get_todays_workout, get_workout_plan, plan_workout_week, get_readiness,
     trigger_classpass_scan, get_class_suggestions, book_class, manage_classpass_favorites,
     search_classpass, join_classpass_waitlist,
 ]

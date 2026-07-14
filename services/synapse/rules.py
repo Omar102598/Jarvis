@@ -23,6 +23,8 @@ import json
 import os
 from dataclasses import dataclass, field
 
+USER_ID = os.environ.get("JARVIS_USER_ID", "default")
+
 # Per-rule cooldown so a standing condition (e.g. low cash all week) surfaces
 # once, not every timer tick.
 DEFAULT_COOLDOWN_S = int(os.environ.get("SYNAPSE_RULE_COOLDOWN_S", "43200"))  # 12h
@@ -244,4 +246,41 @@ def _dining_spend_vs_groceries(r) -> Insight | None:
               "days. Want Remy to build a meal-prep grocery list to cut that down? "
               "Say \"Remy, plan meal prep\"."),
         cooldown_s=6 * 24 * 3600,   # weekly at most
+    )
+
+
+@rule("stale_next_actions")
+def _stale_next_actions(r) -> Insight | None:
+    """Next-actions that have sat untouched for a while → a gentle resurfacing.
+    Join: the GTD task loop × time."""
+    from datetime import datetime, timezone
+
+    try:
+        raw = r.hgetall(f"{USER_ID}:jarvis:tasks") or {}
+    except Exception:
+        return None
+    now = datetime.now(timezone.utc)
+    stale = []
+    for val in raw.values():
+        try:
+            t = json.loads(val)
+        except Exception:
+            continue
+        if t.get("status") != "next":
+            continue
+        try:
+            age_days = (now - datetime.fromisoformat(t["created"])).days
+        except Exception:
+            continue
+        if age_days >= 4:
+            stale.append((age_days, t.get("text", "")))
+    if not stale:
+        return None
+    stale.sort(reverse=True)
+    top = "; ".join(txt for _, txt in stale[:4])
+    return Insight(
+        title="📌 Stalled next-actions",
+        text=(f"{len(stale)} next-action(s) have been sitting a while: {top}. "
+              "Knock one out, or say \"reschedule\" / \"drop it\"."),
+        cooldown_s=3 * 24 * 3600,
     )
