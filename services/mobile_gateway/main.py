@@ -1117,6 +1117,42 @@ async def health_snapshot(req: HealthSnapshotRequest, x_api_key: str = Header(de
 
 
 # ---------------------------------------------------------------------------
+# Generic webhook ingress — let external services (IFTTT, GitHub, Stripe,
+# calendar/webhook providers, home automations) push events onto the JARVIS bus.
+# Routed through jarvis/notify so Synapse's router decides urgent-vs-digest.
+# Auth: WEBHOOK_SECRET (separate from the app's MOBILE_API_KEY) via ?secret= or
+# the X-Webhook-Secret header. Leave WEBHOOK_SECRET empty to disable this route.
+# ---------------------------------------------------------------------------
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+
+
+@app.post("/webhook/{source}", summary="Inbound webhook → JARVIS notification bus")
+async def inbound_webhook(source: str, request: Request, secret: str = "",
+                          x_webhook_secret: str = Header(default="")):
+    if not WEBHOOK_SECRET:
+        raise HTTPException(404, "Webhook ingress disabled (set WEBHOOK_SECRET).")
+    if secret != WEBHOOK_SECRET and x_webhook_secret != WEBHOOK_SECRET:
+        raise HTTPException(401, "Invalid webhook secret.")
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {"value": body}
+    except Exception:
+        body = {"raw": (await request.body()).decode("utf-8", "ignore")[:500]}
+
+    title = str(body.get("title") or f"🔔 {source}")[:80]
+    text = str(body.get("text") or body.get("message") or json.dumps(body))[:500]
+    urgency = str(body.get("urgency") or "normal").lower()
+    try:
+        _mqtt_client.publish("jarvis/notify", json.dumps({
+            "title": title, "text": text, "urgency": urgency, "source": source,
+        }))
+    except Exception as exc:
+        raise HTTPException(503, f"Bus publish failed: {exc}")
+    return {"ok": True, "routed": source, "urgency": urgency}
+
+
+# ---------------------------------------------------------------------------
 # Calendar ingestion (Month 4c) — feeds the ambient agent's countdown trigger
 # ---------------------------------------------------------------------------
 

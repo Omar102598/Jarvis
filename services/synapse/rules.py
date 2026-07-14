@@ -249,6 +249,38 @@ def _dining_spend_vs_groceries(r) -> Insight | None:
     )
 
 
+@rule("supplement_reminder")
+def _supplement_reminder(r) -> Insight | None:
+    """A daily supplement/medication nudge at the configured hour.
+    Set via profile: supplements ("creatine, vitamin d") + supplement_hour (0-23)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    p = _profile(r)
+    supps = p.get("supplements")
+    if not supps:
+        return None
+    try:
+        hour = int(p.get("supplement_hour", 8))
+    except Exception:
+        hour = 8
+    try:
+        now = datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago")))
+    except Exception:
+        now = datetime.now()
+    if now.hour != hour:
+        return None
+    names = supps if isinstance(supps, list) else [s.strip() for s in str(supps).split(",")]
+    names = [n for n in names if n]
+    if not names:
+        return None
+    return Insight(
+        title="💊 Supplements",
+        text="Time for your supplements: " + ", ".join(names) + ".",
+        cooldown_s=20 * 3600,   # once per day
+    )
+
+
 @rule("stale_next_actions")
 def _stale_next_actions(r) -> Insight | None:
     """Next-actions that have sat untouched for a while → a gentle resurfacing.

@@ -107,6 +107,11 @@ services:
       - REDIS_HOST=redis
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8000
+      # Local model tier (Month 3): set OLLAMA_BASE_URL (e.g.
+      # http://host.docker.internal:11434/v1) to route the "local" tier to a
+      # local Ollama. LOCAL_LLM_MODEL picks the model. Unset = cloud tiers only.
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-llama3.1}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
@@ -228,6 +233,9 @@ services:
       - TTS_RATE=${TTS_RATE:--5%}
       - TTS_PITCH=${TTS_PITCH:--5Hz}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      # Generic webhook ingress (POST /webhook/{source}) — set a secret to enable
+      # external services (IFTTT, GitHub, Stripe, automations) to push to the bus.
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
       - ELEVENLABS_VOICE_ID=${ELEVENLABS_VOICE_ID:-onwK4e9ZLuTAKqWW03F9}
       - ELEVENLABS_MODEL=${ELEVENLABS_MODEL:-eleven_turbo_v2_5}
     volumes:

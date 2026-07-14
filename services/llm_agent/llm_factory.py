@@ -22,6 +22,13 @@ TIER_MODELS = {
     "opus":   "claude-opus-4-8",
 }
 
+# Local (on-device) tier — Month 3. When OLLAMA_BASE_URL is set, the "local"
+# tier (and any model routed there) runs against a local Ollama via its
+# OpenAI-compatible API — $0/call, fully on-device. Point cheap, latency-tolerant
+# work (classification, summarization) here; keep Anthropic tiers for reasoning.
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "").strip()
+LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL", "llama3.1").strip()
+
 # Header that enables Anthropic prompt caching (beta)
 _CACHE_HEADER = {"anthropic-beta": "prompt-caching-2024-07-31"}
 
@@ -47,7 +54,15 @@ def build_llm(model: str = "", temperature: float = 0.3, enable_cache: bool = Tr
         temperature: sampling temperature
         enable_cache: attach Anthropic prompt-caching beta header (no-op for OpenAI)
     """
-    model_name = TIER_MODELS.get(model, model) if model else resolve_model()
+    # Local tier → Ollama (OpenAI-compatible) when configured.
+    if model == "local" or (model_name := (TIER_MODELS.get(model, model) if model else resolve_model())) == "local":
+        if OLLAMA_BASE_URL:
+            from langchain_openai import ChatOpenAI
+            print(f"[LLM] Using local Ollama: {LOCAL_LLM_MODEL} @ {OLLAMA_BASE_URL}")
+            return ChatOpenAI(model=LOCAL_LLM_MODEL, temperature=temperature,
+                              base_url=OLLAMA_BASE_URL, api_key="ollama")
+        # No local endpoint configured — fall back to the cheap cloud tier.
+        model_name = TIER_MODELS["haiku"]
 
     if "claude" in model_name.lower() or model_name.startswith("anthropic"):
         from langchain_anthropic import ChatAnthropic

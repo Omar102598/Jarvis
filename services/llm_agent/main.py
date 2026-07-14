@@ -692,6 +692,17 @@ def _handle_request(client, data):
     text = data["text"]
     room = data["room"]
 
+    # Household multi-user foundation: record the verified speaker (from
+    # speaker_verify) so JARVIS can address people by name and future per-user
+    # logic can key off it. Full per-user profile isolation needs each voice
+    # enrolled; this is the non-breaking hook that makes it possible.
+    speaker = data.get("speaker")
+    if speaker:
+        try:
+            r.set("jarvis:current_speaker", str(speaker), ex=1800)
+        except Exception:
+            pass
+
     # Drop Jarvis's own voice echoed back through the follow-up mic window.
     if _is_self_echo(text):
         print(f"[LLM] Dropped self-echo (not processing): '{text[:60]}'")
