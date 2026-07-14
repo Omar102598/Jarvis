@@ -635,9 +635,65 @@ def _fanout_to_active_surfaces(
         print(f"[LLM] Surface fanout error: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Self-echo suppression — the follow-up mic window catches Jarvis's own TTS
+# playback and re-submits it as a "command", creating a feedback loop that
+# derails conversations and burns tokens. We remember what Jarvis just said and
+# drop incoming voice text that matches it (targeted — real user speech, even a
+# follow-up, won't match Jarvis's own words).
+# ---------------------------------------------------------------------------
+import collections as _collections
+import difflib as _difflib
+import re as _re
+import time as _time
+
+_recent_replies: "_collections.deque" = _collections.deque(maxlen=16)
+_recent_replies_lock = threading.Lock()
+_ECHO_WINDOW_S = 60.0
+
+
+def _norm_echo(t: str) -> str:
+    return _re.sub(r"[^a-z0-9 ]", "", (t or "").lower()).strip()
+
+
+def _record_reply(text: str) -> None:
+    n = _norm_echo(text)
+    if len(n) >= 4:
+        with _recent_replies_lock:
+            _recent_replies.append((_time.time(), n))
+
+
+def _is_self_echo(text: str) -> bool:
+    n = _norm_echo(text)
+    if len(n) < 4:
+        return False
+    now = _time.time()
+    with _recent_replies_lock:
+        recents = [rt for ts, rt in _recent_replies if now - ts < _ECHO_WINDOW_S]
+    words = set(n.split())
+    for rt in recents:
+        if n in rt or rt in n:
+            return True
+        if _difflib.SequenceMatcher(None, n, rt).ratio() > 0.80:
+            return True
+        rt_words = set(rt.split())
+        if words and len(words & rt_words) / len(words) > 0.70:
+            return True
+    return False
+
+
 def _handle_request(client, data):
     text = data["text"]
     room = data["room"]
+
+    # Drop Jarvis's own voice echoed back through the follow-up mic window.
+    if _is_self_echo(text):
+        print(f"[LLM] Dropped self-echo (not processing): '{text[:60]}'")
+        try:
+            r.set(f"jarvis:voice:state:{room}", "ready")
+        except Exception:
+            pass
+        return
 
     tier = _classify_tier(text)
     print(f"[LLM] Processing (tier={tier}): '{text}' (from {room})")
@@ -690,6 +746,7 @@ def _handle_request(client, data):
 
     for i, sentence in enumerate(_sentence_queue):
         is_final = (i == len(_sentence_queue) - 1)
+        _record_reply(sentence)   # remember it so the echo doesn't loop back
         client.publish(
             f"jarvis/tts/{room}/speak",
             json.dumps({"text": sentence, "room": room, "is_final": is_final}),

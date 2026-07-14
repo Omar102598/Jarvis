@@ -25,11 +25,14 @@ import redis
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 THRESHOLD = float(os.environ.get("VERIFY_THRESHOLD", "0.25"))
 VERIFY_MODE = os.environ.get("VERIFY_MODE", "log").lower()
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models/speaker_model")
 
-r = redis.Redis(host=REDIS_HOST)
+# Was defaulting to 6379 (port ignored) → "connection refused" spam and broken
+# verification, since Redis is exposed on 6380 for native services.
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
 
 _classifier = None
 
