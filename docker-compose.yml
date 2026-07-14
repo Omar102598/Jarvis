@@ -145,6 +145,10 @@ services:
       # Google Maps MCP (config/mcp_servers.yml expands this)
       - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY:-}
       - EXPEDIA_API_KEY=${EXPEDIA_API_KEY:-}
+      # Package tracking + Resy MCPs (config/mcp_servers.yml expands these)
+      - API_TOKEN_17TRACK=${API_TOKEN_17TRACK:-}
+      - RESY_EMAIL=${RESY_EMAIL:-}
+      - RESY_PASSWORD=${RESY_PASSWORD:-}
       # Ring live-view tool (start streams via gateway, push public URL)
       - GATEWAY_INTERNAL_URL=${GATEWAY_INTERNAL_URL:-http://mobile_gateway:8080}
       - GATEWAY_PUBLIC_URL=${GATEWAY_PUBLIC_URL:-http://omars-macbook-pro.tail7e74a7.ts.net:8080}
@@ -174,6 +178,9 @@ services:
 
   # --- Vision (Phase 3) ---
 
+  # Face recognition over Ring snapshots (InsightFace) — Sentry's deterministic
+  # "is that the resident?" signal. Enroll via scripts/enroll_face_ring.sh.
+  # (Profile gate removed 2026-07-13: this is part of the Sentry pipeline now.)
   vision:
     build: ./services/vision
     container_name: jarvis-vision
@@ -183,14 +190,15 @@ services:
     environment:
       - MQTT_HOST=mosquitto
       - REDIS_HOST=redis
-      - CAMERA_URLS=${CAMERA_URLS:-{}}
-      - PROCESS_FPS=${PROCESS_FPS:-5}
-      - FACE_THRESHOLD=${FACE_THRESHOLD:-0.4}
+      - FACE_SIMILARITY_THRESHOLD=${FACE_SIMILARITY_THRESHOLD:-0.45}
+      # Legacy webcam mode: set CAMERAS='{"name":"rtsp://..."}' (needs
+      # ultralytics re-added to requirements)
+      - CAMERAS=${CAMERAS:-{}}
     volumes:
       - ./models:/models
       - ./data:/data
-    profiles:
-      - vision  # Only start with: docker compose --profile vision up -d
+      # buffalo_l model pack (~300MB) downloads on first start — persist it
+      - ./models/insightface:/root/.insightface
     restart: always
 
   # --- Mobile Gateway (iPhone / Siri Shortcut) ---
@@ -269,6 +277,27 @@ services:
       - SENTRY_COOLDOWN_S=${SENTRY_COOLDOWN_S:-600}
     volumes:
       - ./config:/config:ro
+    restart: always
+
+  # --- Synapse: event store + notification router + cross-agent correlation ---
+  # Always-on bus consumer. Mirrors meaningful traffic into a durable, replayable
+  # Redis Stream (jarvis:events), funnels jarvis/notify into immediate pushes or a
+  # batched digest, and periodically joins signals across agents into insights.
+  # Near-no-op when the house is quiet; no LLM calls on the hot path.
+  synapse:
+    build: ./services/synapse
+    container_name: jarvis-synapse
+    depends_on:
+      - mosquitto
+      - redis
+    environment:
+      - MQTT_HOST=mosquitto
+      - REDIS_HOST=redis
+      - SYNAPSE_RULE_INTERVAL_S=${SYNAPSE_RULE_INTERVAL_S:-300}
+      - SYNAPSE_RULE_COOLDOWN_S=${SYNAPSE_RULE_COOLDOWN_S:-43200}
+      - DIGEST_INTERVAL_S=${DIGEST_INTERVAL_S:-3600}
+      - DIGEST_MAX=${DIGEST_MAX:-8}
+      - NOTIFY_DEDUP_TTL_S=${NOTIFY_DEDUP_TTL_S:-1800}
     restart: always
 
   dashboard:

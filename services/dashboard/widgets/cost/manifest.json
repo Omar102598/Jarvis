@@ -1,0 +1,5 @@
+{
+  "name": "cost",
+  "title": "LLM Spend (today)",
+  "refresh_secs": 120
+}

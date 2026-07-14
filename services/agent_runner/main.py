@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -105,6 +106,13 @@ async def run_agent(name: str, agent_class, params: dict) -> None:
     """
     print(f"[AgentRunner] Starting: {name}")
     _redis.set(f"agent:{name}:status", "running")
+    # Stamp the agent for automatic LLM cost attribution (usage.record reads this
+    # contextvar); scoped to this task so concurrent agents don't cross-attribute.
+    try:
+        import usage
+        usage.set_current_agent(name)
+    except Exception:
+        pass
     notify_room = (params or {}).get("notify_room", "")
 
     try:
@@ -204,6 +212,26 @@ def _on_connect(client, userdata, flags, rc):
 # ---------------------------------------------------------------------------
 
 ARRIVAL_DEBOUNCE_S = int(os.environ.get("ARRIVAL_DEBOUNCE_S", "1800"))
+# The 120m geofence fires while the user is still WALKING UP — hold the
+# spoken greeting until a camera motion confirms they're actually inside,
+# with this timer as the fallback so camera-less arrivals still get greeted.
+ARRIVAL_GREET_FALLBACK_S = int(os.environ.get("ARRIVAL_GREET_FALLBACK_S", "150"))
+
+
+def _speak_pending_greeting() -> None:
+    """Speak the held arrival greeting exactly once (motion or timer wins)."""
+    try:
+        raw = _redis.get("jarvis:arrival:pending")
+        if not raw or not _redis.delete("jarvis:arrival:pending"):
+            return   # already consumed by the other path
+        data = json.loads(raw)
+        room = data.get("room", "office")
+        _mqtt.publish(f"jarvis/tts/{room}/speak", json.dumps({
+            "text": data.get("text", ""), "room": room, "is_final": True,
+        }))
+        print("[AgentRunner] arrival greeting spoken")
+    except Exception as exc:
+        print(f"[AgentRunner] pending greeting error: {exc}")
 
 
 def _on_presence(client, userdata, msg):
@@ -221,24 +249,53 @@ def _on_presence(client, userdata, msg):
         except Exception:
             profile = {}
 
-        # 1) Arrival scene: warm living-room lamps (HA), evening-gated by the
-        #    profile if desired; falls back to a named Shortcut if configured.
-        _run_arrival_scene(profile)
+        # 1) Arrival scene: warm living-room lamps (HA) — only during the
+        #    profile's scene window (default 18-07); a noon arrival shouldn't
+        #    turn lamps on. Falls back to a named Shortcut if configured.
+        scene_ran = _run_arrival_scene(profile)
 
-        # 2) Warm spoken welcome to the active room + phone fanout.
+        # 2) Warm spoken welcome — HELD until the first camera motion says
+        #    the user is actually inside (the geofence fires ~120m out).
+        #    Timer fallback guarantees it still fires without cameras.
+        #    Only claim the lights when we actually touched them.
         who = profile.get("resident_name", "sir")
-        client.publish("jarvis/tts/office/speak", json.dumps({
-            "text": f"Welcome home, {who}. I've brought the lights up for you.",
-            "room": "office", "is_final": True,
-        }))
+        text = (f"Welcome home, {who}. I've brought the lights up for you."
+                if scene_ran else f"Welcome home, {who}.")
+        room = profile.get("sentry_greeting_room", "office")
+        _redis.set("jarvis:arrival:pending",
+                   json.dumps({"text": text, "room": room}), ex=600)
+        threading.Timer(ARRIVAL_GREET_FALLBACK_S,
+                        _speak_pending_greeting).start()
     elif ev == "left":
-        _redis.delete("jarvis:arrival:debounce")
+        # Deliberately KEEP the arrival debounce: deleting it here meant a GPS
+        # flap at the geofence edge (left→arrived seconds apart) re-greeted
+        # every time. The 30-min TTL from the last greeting is the guard.
+        _redis.delete("jarvis:arrival:pending")
         print("[AgentRunner] iPhone geofence: LEFT home (away — alerts route to phone)")
 
 
-def _run_arrival_scene(profile: dict) -> None:
-    """Warm the living-room lamps via HA (preferred) or a named Shortcut."""
+def _in_scene_hours(profile: dict) -> bool:
+    """True inside the arrival-scene window (profile arrival_scene_hours,
+    default 18-07 local) — same semantics as Sentry's _is_dark_hours."""
+    try:
+        from zoneinfo import ZoneInfo
+        hour = datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago"))).hour
+    except Exception:
+        hour = datetime.now().hour
+    try:
+        start, end = (int(x) for x in str(profile.get("arrival_scene_hours", "18-07")).split("-"))
+    except Exception:
+        start, end = 18, 7
+    return hour >= start or hour < end if start > end else start <= hour < end
+
+
+def _run_arrival_scene(profile: dict) -> bool:
+    """Warm the living-room lamps via HA (preferred) or a named Shortcut.
+    Returns True if a scene actually ran (so the greeting can be honest)."""
     import urllib.request as _rq
+    if not _in_scene_hours(profile):
+        print("[AgentRunner] arrival outside scene hours — lamps untouched")
+        return False
     ha_url = os.environ.get("HA_URL", "")
     ha_token = os.environ.get("HA_TOKEN", "")
     entities = profile.get("arrival_lights",
@@ -255,7 +312,7 @@ def _run_arrival_scene(profile: dict) -> None:
                                        "Content-Type": "application/json"})
             _rq.urlopen(req, timeout=15)
             print(f"[AgentRunner] arrival scene: warmed {entities}")
-            return
+            return True
         except Exception as exc:
             print(f"[AgentRunner] arrival HA scene failed: {exc}")
     # Fallback: a macOS Shortcut, if the user set one
@@ -266,8 +323,10 @@ def _run_arrival_scene(profile: dict) -> None:
             _rq.urlopen(_rq.Request("http://host.docker.internal:7777/shortcut/run",
                                     data=body, headers={"Content-Type": "application/json"}),
                         timeout=35)
+            return True
         except Exception as exc:
             print(f"[AgentRunner] arrival shortcut failed: {exc}")
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +380,11 @@ def _on_ring_event(client, userdata, msg):
             return
         if suffix in ("motion/state", "ding/state") and msg.payload == b"ON":
             kind = parts[4]  # motion | ding
+
+            # Held arrival greeting: first camera activity after a geofence
+            # arrival means the user is actually inside/at the door — say it.
+            if _redis.get("jarvis:arrival:pending"):
+                _speak_pending_greeting()
 
             # Wake detection is PERSON-gated in Sentry's vision verdict now —
             # raw motion here was waking the briefing for the CATS. During an

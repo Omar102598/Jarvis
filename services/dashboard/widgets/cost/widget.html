@@ -1,0 +1,44 @@
+<style>
+  .cost-wrap { display:flex; flex-direction:column; padding:6px 2px; }
+  .cost-total { text-align:center; margin-bottom:12px; }
+  .cost-total-amt { font-size:1.7em; font-weight:700; color:#ffb020; line-height:1; }
+  .cost-total-lbl { font-size:0.6em; letter-spacing:0.08em; text-transform:uppercase; opacity:0.5; margin-top:4px; }
+  .cost-row { display:flex; align-items:center; gap:8px; font-size:0.74em; margin:3px 0; }
+  .cost-name { width:78px; opacity:0.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .cost-bar-bg { flex:1; height:7px; background:rgba(255,255,255,0.07); border-radius:4px; overflow:hidden; }
+  .cost-bar { height:100%; background:#ffb020; border-radius:4px; }
+  .cost-amt { width:52px; text-align:right; opacity:0.8; }
+  .cost-updated { opacity:.35; font-size:.62em; margin-top:10px; text-align:center; }
+</style>
+<div class="cost-wrap" id="cost-content">
+  <div style="opacity:.5;font-size:.85em">Loading…</div>
+</div>
+<script>
+(function(){
+  function money(n){ return '$'+Number(n||0).toFixed(2); }
+  function load(){
+    fetch('/api/widgets/cost/data').then(function(r){ return r.json(); }).then(function(resp){
+      var el = document.getElementById('cost-content');
+      var d = (resp && resp.data) ? resp.data : (resp || {});
+      if(d.total_cost == null){ el.innerHTML='<div style="opacity:.5;font-size:.85em">No spend recorded yet today.</div>'; return; }
+      var agents = (d.agents || []).filter(function(a){ return a.cost > 0; });
+      var max = agents.reduce(function(m,a){ return Math.max(m, a.cost); }, 0) || 1;
+      var rows = agents.slice(0,8).map(function(a){
+        var pct = Math.max(3, (a.cost / max) * 100);
+        return '<div class="cost-row">'
+          +'<span class="cost-name">'+a.name+'</span>'
+          +'<span class="cost-bar-bg"><span class="cost-bar" style="width:'+pct+'%"></span></span>'
+          +'<span class="cost-amt">'+money(a.cost)+'</span>'
+        +'</div>';
+      }).join('');
+      if(!rows) rows = '<div style="opacity:.5;font-size:.8em;text-align:center">No attributed spend yet.</div>';
+      el.innerHTML =
+        '<div class="cost-total"><div class="cost-total-amt">'+money(d.total_cost)+'</div>'
+        +'<div class="cost-total-lbl">Agent LLM spend today</div></div>'
+        + rows
+        + (d.updated ? '<div class="cost-updated">Updated '+d.updated+'</div>' : '');
+    }).catch(function(){ document.getElementById('cost-content').innerHTML='<div style="opacity:.5">Unavailable</div>'; });
+  }
+  load(); setInterval(load, 120000);
+})();
+</script>

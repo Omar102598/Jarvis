@@ -36,6 +36,7 @@ async def complete(system: str, user: str, max_tokens: int = 800,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
+        _record_usage(model, getattr(resp, "usage", None), "anthropic")
         return "".join(block.text for block in resp.content if hasattr(block, "text"))
 
     from openai import AsyncOpenAI
@@ -50,7 +51,28 @@ async def complete(system: str, user: str, max_tokens: int = 800,
             {"role": "user", "content": user},
         ],
     )
+    _record_usage(model, getattr(resp, "usage", None), "openai")
     return resp.choices[0].message.content or ""
+
+
+def _record_usage(model: str, usage_obj, provider: str) -> None:
+    """Best-effort cost accounting. Attribution comes from usage.current_agent()."""
+    if usage_obj is None:
+        return
+    try:
+        import redis as _redis_mod
+        import usage as _usage
+        if provider == "anthropic":
+            in_tok = getattr(usage_obj, "input_tokens", 0) or 0
+            out_tok = getattr(usage_obj, "output_tokens", 0) or 0
+        else:
+            in_tok = getattr(usage_obj, "prompt_tokens", 0) or 0
+            out_tok = getattr(usage_obj, "completion_tokens", 0) or 0
+        r = _redis_mod.Redis(host=os.environ.get("REDIS_HOST", "redis"),
+                             decode_responses=True)
+        _usage.record(r, model, in_tok, out_tok)
+    except Exception:
+        pass
 
 
 async def tavily_search(query: str, max_results: int = 5, depth: str = "basic") -> list:
