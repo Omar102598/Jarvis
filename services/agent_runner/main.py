@@ -20,6 +20,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from ambient_agent import AmbientAgent
+from chronicle_agent import ChronicleAgent
 from classpass_agent import ClasspassAgent
 from developer_agent import DeveloperAgent
 from email_agent import EmailAgent
@@ -59,6 +60,7 @@ AGENT_CLASSES = {
     "workout": WorkoutAgent,
     "sentry": SentryAgent,
     "morning_brief": AmbientAgent,   # dedicated daily-briefing schedule
+    "chronicle": ChronicleAgent,     # nightly daily-memory journal
 }
 
 # Agents that can be dispatched on demand with params from the trigger payload

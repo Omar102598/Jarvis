@@ -100,17 +100,148 @@ def evaluate_all(r) -> list[Insight]:
     return fired
 
 
-# ===========================================================================
-# Rule set
 # ---------------------------------------------------------------------------
-# Real cross-domain rules are added in the Synapse step once the exact Redis
-# keys (health snapshot, finance widget, calendar) are verified live, so nothing
-# fires off a guessed key. The engine above is complete and tested; rules plug
-# in with the @rule decorator, e.g.:
-#
-#   @rule("low_cash_before_rent")
-#   def _low_cash_before_rent(r) -> Insight | None:
-#       fin = json.loads(r.get("widget:finance:data") or "{}")
-#       ...
-#       return Insight(title="💸 Heads up", text="Rent's due Friday and cash is low.")
+# Shared state readers (keys verified live against the running system)
+#   user:health:latest    {hrv_ms, resting_heart_rate, sleep_hours, ts, …}
+#   user:health:history   list, newest-first, ~30 daily snapshots
+#   jarvis:calendar:next_event  {title, start (ISO), location}
+#   widget:finance:data   {total_cash, available_balance, total_spent_30d,
+#                          budgets:[{category, spent}], updated}
+#   workout:plan          Apollo's current week plan
+#   grocery:pending_order / grocery:meal_plan  Remy's latest shopping state
+# ---------------------------------------------------------------------------
+
+
+def _json(r, key: str, default):
+    try:
+        raw = r.get(key)
+        return json.loads(raw) if raw else default
+    except Exception:
+        return default
+
+
+def _health_history(r, limit: int = 14) -> list[dict]:
+    try:
+        rows = r.lrange("user:health:history", 0, limit - 1) or []
+    except Exception:
+        return []
+    out = []
+    for row in rows:
+        try:
+            out.append(json.loads(row))
+        except Exception:
+            continue
+    return out
+
+
+def _median(vals: list[float]) -> float | None:
+    vals = sorted(v for v in vals if v is not None)
+    if not vals:
+        return None
+    n = len(vals)
+    mid = n // 2
+    return vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2
+
+
 # ===========================================================================
+# Rule set — conservative, side-effect-free cross-domain joins.
+# Each reads verified keys, guards missing data, and returns normal-urgency
+# insights (they land in the digest, not as interrupts) with long cooldowns.
+# ===========================================================================
+
+
+@rule("recovery_vs_training")
+def _recovery_vs_training(r) -> Insight | None:
+    """HealthKit recovery is poor AND Apollo has a workout planned today →
+    suggest easing off. Join: HealthKit × Apollo."""
+    latest = _json(r, "user:health:latest", {})
+    if not latest:
+        return None
+    if not r.exists("workout:plan"):
+        return None   # nothing planned to ease off from
+
+    hist = _health_history(r, 14)[1:]   # exclude today's head for the baseline
+    hrv_base = _median([h.get("hrv_ms") for h in hist])
+    rhr_base = _median([h.get("resting_heart_rate") for h in hist])
+
+    hrv = latest.get("hrv_ms")
+    rhr = latest.get("resting_heart_rate")
+    sleep = latest.get("sleep_hours")
+
+    flags = []
+    if hrv is not None and hrv_base and hrv < 0.80 * hrv_base:
+        flags.append(f"HRV {round(hrv)}ms (↓ vs your ~{round(hrv_base)}ms baseline)")
+    if rhr is not None and rhr_base and rhr > 1.10 * rhr_base:
+        flags.append(f"resting HR {round(rhr)} (↑ vs ~{round(rhr_base)})")
+    if sleep is not None and sleep < 6:
+        flags.append(f"{sleep:g}h sleep")
+    if len(flags) < 1:
+        return None
+
+    return Insight(
+        title="🫀 Recovery is running low",
+        text=("Your recovery signals are down (" + "; ".join(flags) +
+              ") but a workout's on Apollo's plan today. Want an active-recovery "
+              "day instead? Say \"Apollo, make today easy\"."),
+        cooldown_s=20 * 3600,   # once per day at most
+    )
+
+
+@rule("short_sleep_before_early_start")
+def _short_sleep_before_early_start(r) -> Insight | None:
+    """Slept short AND the next event starts early → a gentle wind-down nudge.
+    Join: HealthKit × calendar."""
+    from datetime import datetime, timezone
+
+    latest = _json(r, "user:health:latest", {})
+    sleep = latest.get("sleep_hours")
+    if sleep is None or sleep >= 6.5:
+        return None
+    evt = _json(r, "jarvis:calendar:next_event", {})
+    start = evt.get("start")
+    if not start:
+        return None
+    try:
+        dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    now = datetime.now(dt.tzinfo or timezone.utc)
+    hours_away = (dt - now).total_seconds() / 3600
+    if not (0 < hours_away < 18):
+        return None
+    if dt.hour >= 8:      # only "early" starts
+        return None
+    title = evt.get("title", "an event")
+    return Insight(
+        title="😴 Short night, early start",
+        text=(f"You logged {sleep:g}h last night and \"{title}\" starts at "
+              f"{dt.strftime('%-I:%M %p')}. Might be a night to wind down early."),
+        cooldown_s=16 * 3600,
+    )
+
+
+@rule("dining_spend_vs_groceries")
+def _dining_spend_vs_groceries(r) -> Insight | None:
+    """High recent dining/takeout spend AND no fresh grocery plan → suggest Remy
+    build a meal-prep list. Join: finance × grocery."""
+    fin = _json(r, "widget:finance:data", {})
+    budgets = fin.get("budgets") or []
+    dining = 0.0
+    for b in budgets:
+        cat = (b.get("category") or "").lower()
+        if any(k in cat for k in ("dining", "restaurant", "takeout", "food & drink", "fast food")):
+            dining += float(b.get("spent") or 0)
+    profile = _profile(r)
+    threshold = float(profile.get("dining_alert_usd", 250))
+    if dining < threshold:
+        return None
+    # Only nudge if there isn't already a fresh grocery plan in flight.
+    if r.exists("grocery:pending_order"):
+        return None
+    return Insight(
+        title="🍽️ Takeout is adding up",
+        text=(f"You've spent about ${dining:,.0f} on dining/takeout in the last 30 "
+              "days. Want Remy to build a meal-prep grocery list to cut that down? "
+              "Say \"Remy, plan meal prep\"."),
+        cooldown_s=6 * 24 * 3600,   # weekly at most
+    )

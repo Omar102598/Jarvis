@@ -49,6 +49,7 @@ from tools.calendar import get_calendar_events, set_reminder
 from tools.weather import get_weather
 from tools.notifications import send_notification
 from tools.memory import forget, recall, remember
+from tools.chronicle import recall_journal
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
@@ -212,7 +213,7 @@ _core_tools = [
     check_ring_camera, list_ring_cameras, ring_privacy,
     ring_live_view, who_came_by,
     # Memory
-    remember, recall, forget,
+    remember, recall, forget, recall_journal,
     # Files & system
     read_file, write_file, list_files, run_shell, run_python,
     # Communication

@@ -21,9 +21,15 @@ def _resolve_model() -> str:
 
 
 async def complete(system: str, user: str, max_tokens: int = 800,
-                   temperature: float = 0.3) -> str:
-    """Single-shot completion. Returns the assistant's text."""
-    model = _resolve_model()
+                   temperature: float = 0.3, model: str = "") -> str:
+    """Single-shot completion. Returns the assistant's text.
+
+    ``model`` overrides the env-resolved model for this call only — used by
+    Chronicle to route summarization to a local model (e.g. an Ollama model via
+    the OpenAI-compatible path) without changing the global default. For local
+    models, set OPENAI_BASE_URL (e.g. http://host.docker.internal:11434/v1).
+    """
+    model = model or _resolve_model()
 
     if "claude" in model.lower() or model.startswith("anthropic"):
         from anthropic import AsyncAnthropic
@@ -41,7 +47,11 @@ async def complete(system: str, user: str, max_tokens: int = 800,
 
     from openai import AsyncOpenAI
 
-    client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", "placeholder"))
+    # base_url lets this path target any OpenAI-compatible server — notably a
+    # local Ollama (http://host.docker.internal:11434/v1) for the local tier.
+    base_url = os.environ.get("OPENAI_BASE_URL", "").strip() or None
+    client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", "placeholder"),
+                         base_url=base_url)
     resp = await client.chat.completions.create(
         model=model,
         max_tokens=max_tokens,

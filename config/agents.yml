@@ -318,6 +318,34 @@ agents:
       room: "office"
 
   # ---------------------------------------------------------------------------
+  # Chronicle — the daily memory / journaling agent.
+  #
+  # Each night it reads the day's lived signals (the durable event stream, each
+  # agent's reports, camera events, health, spending) and writes a concise
+  # journal entry to Redis so JARVIS remembers your days: "what did I do last
+  # Tuesday?", "when did the plumber come?", "how many gym days this month?".
+  # The brain's recall_journal tool answers those by indexing entries into Chroma.
+  #
+  # Catch-up: summarizes every day since the last entry (up to CHRONICLE_CATCHUP_MAX),
+  # so a night with the Mac asleep is filled in on the next run rather than lost.
+  #
+  # Local-or-API: set CHRONICLE_LLM_MODEL (+ OPENAI_BASE_URL for a local Ollama)
+  # to summarize on-device for $0/night; unset uses the normal API model.
+  #
+  # Runs nightly at 11:15 PM CDT (04:15 UTC) — end of day, and the catch-up makes
+  # the exact fire time non-critical.
+  # ---------------------------------------------------------------------------
+  - name: chronicle
+    display_name: "Chronicle (Daily Memory)"
+    description: >
+      Chronicle — writes a nightly journal of your day from all of JARVIS's
+      signals so he can recall what happened, when. Catches up missed days;
+      can summarize on-device via a local model.
+    enabled: true
+    schedule: "15 4 * * *"   # 11:15 PM CDT (04:15 UTC) nightly
+    params: {}
+
+  # ---------------------------------------------------------------------------
   # Sentry — Ring camera watch (EVENT-driven, not scheduled)
   #
   # Dispatched automatically by the runner's ring/# MQTT handler whenever a

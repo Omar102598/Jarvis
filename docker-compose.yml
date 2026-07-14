@@ -271,6 +271,12 @@ services:
       - IMAP_PASSWORD=${IMAP_PASSWORD:-}
       # User-local timezone for day math (container clock is UTC)
       - USER_TZ=${USER_TZ:-America/Chicago}
+      # Chronicle (daily memory): optional local-model summarization. Set
+      # CHRONICLE_LLM_MODEL (+ OPENAI_BASE_URL for a local Ollama) to journal
+      # on-device for $0/night; unset uses the normal API model.
+      - CHRONICLE_LLM_MODEL=${CHRONICLE_LLM_MODEL:-}
+      - CHRONICLE_CATCHUP_MAX=${CHRONICLE_CATCHUP_MAX:-3}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       # Sentry: snapshot links in app pushes + iMessage identity
       - GATEWAY_PUBLIC_URL=${GATEWAY_PUBLIC_URL:-http://omars-macbook-pro.tail7e74a7.ts.net:8080}
       - MOBILE_API_KEY=${MOBILE_API_KEY:-}
