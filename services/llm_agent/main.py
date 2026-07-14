@@ -56,6 +56,10 @@ from tools.chronicle import recall_journal
 from tools.finance_insights import get_spending_insights
 from tools.tasks import manage_tasks
 from tools.health import get_readiness
+from tools.nutrition import log_meal, get_nutrition_today
+from tools.visual_memory import log_sighting, recall_visual
+from tools.capture import quick_capture
+from tools.packages import get_packages
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
@@ -217,7 +221,7 @@ _core_tools = [
     web_search, fetch_url, get_camera_snapshot, get_weather, get_calendar_events,
     # Ring cameras (via ring-mqtt bridge)
     check_ring_camera, list_ring_cameras, ring_privacy,
-    ring_live_view, who_came_by,
+    ring_live_view, who_came_by, get_packages,
     # Memory
     remember, recall, forget, recall_journal,
     # Files & system
@@ -255,6 +259,8 @@ _core_tools = [
     learn_fresh_cart, get_usual_order, pin_favorite_product,
     # Workout coach (Apollo) + fused readiness score
     get_todays_workout, get_workout_plan, plan_workout_week, get_readiness,
+    # Nutrition (Sage), visual memory (glasses), hands-free capture
+    log_meal, get_nutrition_today, log_sighting, recall_visual, quick_capture,
     trigger_classpass_scan, get_class_suggestions, book_class, manage_classpass_favorites,
     search_classpass, join_classpass_waitlist,
 ]

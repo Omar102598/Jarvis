@@ -28,6 +28,10 @@ from .chronicle import recall_journal
 from .finance_insights import get_spending_insights
 from .tasks import manage_tasks
 from .health import get_readiness
+from .nutrition import log_meal, get_nutrition_today
+from .visual_memory import log_sighting, recall_visual
+from .capture import quick_capture
+from .packages import get_packages
 from .notes import manage_notes
 from .notifications import send_notification
 from .petkit import (

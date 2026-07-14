@@ -31,32 +31,53 @@ MOBILE_API_KEY = os.environ.get("MOBILE_API_KEY", "")
 _ASSESS_PROMPT = """You are Sentry, a home-camera watch agent. A {kind} event just fired on
 the '{camera}' Ring camera. Assess this snapshot.
 
-NOTABLE (worth interrupting the user): a person (describe them briefly), a
-package/delivery, a vehicle in the driveway, a door/gate open that shouldn't
-be, the dog (Finley) somewhere unusual or doing something destructive, smoke,
-or anything genuinely unusual.
-NOT notable: empty scene, shadows/light changes, plants moving, the dog
-simply resting/walking normally, known furniture.
+CONTEXT (use it — it changes what is notable):
+- This is an {placement} camera.
+- The resident is currently {presence} (phone geofence — reliable).
+- Household pets: {pets}. Pets alone are NEVER notable, indoors or out.
+{face_line}
+{resident_hint}
+
+NOTABLE (worth interrupting the user): a package/delivery, a vehicle in the
+driveway, a door/gate open that shouldn't be, a pet doing something
+DESTRUCTIVE (not just existing/resting/walking), smoke, or anything genuinely
+unusual. For PEOPLE, apply the presence rules:
+- Resident HOME + indoor camera: a person is EXPECTED — it is almost
+  certainly the resident living their life. NOT notable and NO announce
+  unless the person is clearly a STRANGER doing something suspicious.
+- Resident HOME + outdoor camera: visitors/deliveries are notable; the
+  resident in their own yard is not.
+- Resident AWAY + indoor camera: ANY person is ALWAYS notable — possible
+  intruder; say so plainly and describe them.
+- Resident AWAY + outdoor camera: people at the door/on the property are
+  notable.
+NOT notable: empty scene, shadows/light changes, plants moving, pets being
+pets, known furniture.
 
 A doorbell ding is ALWAYS notable — describe who/what is at the door.
 
-If a PERSON is arriving (walking toward the door / at the door / doorbell),
-also write "announce": one short spoken line in the voice of JARVIS (the
-Iron Man AI — British, warm, dry wit) announcing the arrival indoors.
-{resident_hint}
-If the person plausibly matches the resident's description, treat it as the
-resident coming home: announce a warm personal welcome ("Welcome home, sir —
-I trust the walk went well") and set "arrival": "resident". If clearly
-someone else: describe them ("Sir, someone's approaching — tall gentleman,
-navy jacket") and set "arrival": "guest". Unsure → "arrival": "unknown"
-with a neutral announce. Empty announce if no one is arriving.
+"announce" (one short spoken line, JARVIS voice — British, warm, dry wit) is
+ONLY for a person ARRIVING from OUTSIDE (walking toward the door, at the
+door, doorbell). NEVER announce anyone seen on an indoor camera — someone
+already inside is not "arriving". If the arriving person plausibly matches
+the resident's description set "arrival": "resident" with a warm welcome
+("Welcome home, sir — I trust the walk went well"). Clearly someone else →
+"arrival": "guest" with a description ("Sir, someone's approaching — tall
+gentleman, navy jacket"). Unsure → "arrival": "unknown", neutral announce.
+No one arriving → "arrival": "", "announce": "".
 
 Return ONLY JSON: {{"notable": true/false, "summary": "one sentence of what
 you see", "detail": "1-2 sentences with anything useful (appearance,
-direction, what they're carrying)", "announce": "",
+direction, what they're carrying)", "announce": "", "arrival": "",
 "package_visible": true/false, "person_visible": true/false}}
 ("package_visible": is a package/box/envelope sitting unattended in frame?
-"person_visible": is a HUMAN in frame? Pets alone = false.)"""
+"person_visible": is a HUMAN in frame? Pets alone = false. Only mark true
+when you're confident it's a human — a cat or dog is NOT a person.)"""
+
+# Camera-name substrings treated as INDOOR (overridable via profile
+# ``indoor_cameras``, a list of name fragments). Everything else = outdoor.
+_INDOOR_HINTS = ("living", "bedroom", "kitchen", "office", "hallway",
+                 "indoor", "room")
 
 
 class SentryAgent(BaseAgent):
@@ -83,7 +104,7 @@ class SentryAgent(BaseAgent):
             return f"Motion on {camera} but no snapshot cached yet — skipping."
 
         self.log_event("thinking", f"{kind} on '{camera}' — assessing snapshot with vision")
-        verdict = await self._assess(snap_b64, camera, kind)
+        verdict = await self._assess(snap_b64, camera, kind, device)
         if verdict is None:
             self.log_event("finding", f"{camera}: vision assessment failed")
             return f"Sentry: vision assessment failed for {camera}."
@@ -138,6 +159,12 @@ class SentryAgent(BaseAgent):
                 "summary": summary}), ex=86400)
             pkg_note = self._delivery_email_context()
             notable = True
+            # Doorbell concierge: log every delivery, and add extra context when
+            # the resident is AWAY (jarvis:away set by the geofence departure).
+            self._log_package(camera, summary)
+            if self._is_away():
+                pkg_note += (" You're out — I've logged the delivery and I'm "
+                             "keeping watch until you're back.")
         elif pkg_was and not pkg_now:
             self.r.delete(pkg_key)
             try:
@@ -147,7 +174,7 @@ class SentryAgent(BaseAgent):
             await self._notify(
                 f"📦 {camera}: the package (there since {seen}) is no longer "
                 f"visible. If you didn't grab it, worth a look — {summary}",
-                media_url=self._snapshot_url(device))
+                media_url=self._pin_event_snapshot(snap_b64))
             return f"Package-gone alert sent for {camera}."
 
         if not notable:
@@ -159,32 +186,100 @@ class SentryAgent(BaseAgent):
             msg += f" {detail}"
         if pkg_note:
             msg += pkg_note
-        await self._notify(msg, media_url=self._snapshot_url(device))
+        await self._notify(msg, media_url=self._pin_event_snapshot(snap_b64))
 
-        # Arrival greeting — spoken indoors (profile-gated, on by default)
+        # Arrival greeting — spoken indoors (profile-gated, on by default).
+        # The iPhone geofence is the AUTHORITATIVE resident-arrival signal
+        # (main._on_presence greets + runs the scene). Camera-based resident
+        # greetings are only the fallback when the geofence missed — never
+        # while presence already says HOME, and always through the SAME
+        # debounce key so the two paths can't both greet one arrival.
         announce = (verdict.get("announce") or "").strip()
+        arrival = (verdict.get("arrival") or "").strip()
         try:
             profile = json.loads(self.r.get("user:profile") or "{}")
         except Exception:
             profile = {}
+        greeted = False
         if announce and profile.get("sentry_greetings", True):
+            if arrival == "resident":
+                if not self._resident_home() and \
+                        self.r.set("jarvis:arrival:debounce", "1", nx=True, ex=1800):
+                    greeted = True
+            else:   # guest/unknown at the door — always worth saying
+                greeted = True
+        if greeted:
             self._speak(announce, room=profile.get("sentry_greeting_room", "office"))
 
-        # Arrival scene: run a HomeKit Shortcut on evening arrivals, e.g.
-        # profile arrival_scene_shortcut = "Turn on living room"
+        # Arrival scene (Shortcut fallback path): geofence owns the resident
+        # arrival scene now — only fire from camera vision when we actually
+        # greeted a resident arrival here (geofence missed) in dark hours.
         scene = (profile.get("arrival_scene_shortcut") or "").strip()
-        if scene and announce and self._is_dark_hours(profile):
+        if scene and greeted and arrival == "resident" and self._is_dark_hours(profile):
             await self._run_shortcut(scene)
 
         return f"ALERT sent — {msg}"
 
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _snapshot_url(device: str) -> str:
+    def _pin_event_snapshot(self, snap_b64: str) -> str:
+        """Pin the assessed frame under an event id and return its URL.
+
+        The per-camera snapshot cache is overwritten by every new frame, so a
+        card fetched later (push feed / app relaunch) would show the wrong
+        moment. Pinning freezes THIS event's image for 48h.
+        """
         if not GATEWAY_PUBLIC_URL:
             return ""
-        return f"{GATEWAY_PUBLIC_URL}/ring/snapshot/{device}.jpg?k={MOBILE_API_KEY}"
+        import uuid as _uuid
+        event_id = _uuid.uuid4().hex
+        try:
+            self.r.set(f"ring:snapshot:event:{event_id}", snap_b64, ex=172800)
+        except Exception:
+            return ""
+        return (f"{GATEWAY_PUBLIC_URL}/ring/snapshot/event/{event_id}.jpg"
+                f"?k={MOBILE_API_KEY}")
+
+    def _resident_home(self) -> bool:
+        return (self.r.get("user:presence:home") or "") == "1"
+
+    async def _face_context(self, device: str) -> str:
+        """Deterministic face-ID line for the prompt, from the vision service.
+
+        The vision container processes the same ring-mqtt snapshot in parallel
+        with this agent, so poll briefly for a verdict newer than ~2 minutes
+        (ring:camera:{device}:face_id, written per snapshot). Degrades to
+        'unavailable' if the service is down/still warming — the LLM then
+        falls back to the resident_description hint alone.
+        """
+        import asyncio
+        for attempt in range(4):
+            raw = self.r.get(f"ring:camera:{device}:face_id")
+            if raw:
+                try:
+                    fid = json.loads(raw)
+                    age = (datetime.now(timezone.utc) -
+                           datetime.fromisoformat(fid.get("ts", ""))
+                           ).total_seconds()
+                except Exception:
+                    break
+                if age <= 120:
+                    if not fid.get("faces"):
+                        return ("- Face recognition: no face discernible in "
+                                "this frame (too far/turned away is common — "
+                                "not evidence of a stranger).")
+                    name = fid.get("name", "unknown")
+                    score = fid.get("score", 0)
+                    if name != "unknown":
+                        return (f"- Face recognition (deterministic — TRUST "
+                                f"this over visual guessing): {name}, an "
+                                f"ENROLLED household member (similarity "
+                                f"{score}).")
+                    return (f"- Face recognition: {fid.get('faces')} face(s) "
+                            f"detected, matching NO enrolled person (best "
+                            f"similarity {score}).")
+            await asyncio.sleep(1)
+        return "- Face recognition: unavailable for this event."
 
     def _delivery_email_context(self) -> str:
         """Cross-reference Hermes's latest inbox triage for delivery mentions.
@@ -242,17 +337,27 @@ class SentryAgent(BaseAgent):
 
     # ------------------------------------------------------------------
 
-    async def _assess(self, snap_b64: str, camera: str, kind: str) -> dict | None:
+    async def _assess(self, snap_b64: str, camera: str, kind: str,
+                      device: str = "") -> dict | None:
         try:
             profile = json.loads(self.r.get("user:profile") or "{}")
         except Exception:
             profile = {}
         desc = profile.get("resident_description", "")
         resident_hint = (
-            f"The RESIDENT looks like: {desc}. They often have a dog (Finley)."
+            f"- The RESIDENT looks like: {desc}."
             if desc else
-            "No resident description is on file — use \"arrival\": \"unknown\"."
+            "- No resident description is on file — for arrivals use "
+            "\"arrival\": \"unknown\"."
         )
+        pets = profile.get("pets_description", "a dog (Finley) and house cats")
+        indoor_hints = [str(h).lower() for h in
+                        profile.get("indoor_cameras", _INDOOR_HINTS)]
+        placement = ("INDOOR" if any(h in camera.lower() for h in indoor_hints)
+                     else "OUTDOOR")
+        presence = "HOME" if self._resident_home() else "AWAY"
+        face_line = await self._face_context(device) if device else \
+            "- Face recognition: unavailable for this event."
         try:
             from anthropic import AsyncAnthropic
             client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
@@ -266,8 +371,10 @@ class SentryAgent(BaseAgent):
                             "type": "base64", "media_type": "image/jpeg",
                             "data": snap_b64}},
                         {"type": "text",
-                         "text": _ASSESS_PROMPT.format(kind=kind, camera=camera,
-                                                       resident_hint=resident_hint)},
+                         "text": _ASSESS_PROMPT.format(
+                             kind=kind, camera=camera, placement=placement,
+                             presence=presence, pets=pets, face_line=face_line,
+                             resident_hint=resident_hint)},
                     ],
                 }],
             )
@@ -277,6 +384,26 @@ class SentryAgent(BaseAgent):
         except Exception as exc:
             print(f"[Sentry] vision error: {exc}")
             return None
+
+    def _is_away(self) -> bool:
+        """True when the geofence says the resident has left (departure set it)."""
+        try:
+            return bool(self.r.exists("jarvis:away"))
+        except Exception:
+            return False
+
+    def _log_package(self, camera: str, summary: str) -> None:
+        """Append a delivery to the package log so 'any packages come?' works."""
+        try:
+            self.r.lpush("packages:log", json.dumps({
+                "camera": camera,
+                "summary": summary,
+                "away": self._is_away(),
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }))
+            self.r.ltrim("packages:log", 0, 99)
+        except Exception:
+            pass
 
     async def _notify(self, text: str, media_url: str = "") -> None:
         self.log_event("tool", f"notify (push + iMessage): {text}")
