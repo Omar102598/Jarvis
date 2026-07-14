@@ -257,6 +257,10 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
+      # Scout (web_monitor): Firecrawl for URL-watch scrape+schema-extraction.
+      # Set FIRECRAWL_API_KEY to use it; unset = local scraper + LLM fallback.
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+      - FIRECRAWL_URL=${FIRECRAWL_URL:-https://api.firecrawl.dev}
       - AGENTS_CONFIG=/config/agents.yml
       # HA calendar access — used by the ClassPass agent for calendar-gap ranking
       - HA_URL=${HA_URL:-http://homeassistant:8123}
