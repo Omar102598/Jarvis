@@ -611,16 +611,24 @@ def process_request(text: str, room: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _fanout_to_active_surfaces(
-    client, response: str, source_room: str = "", title: str = "Jarvis"
+    client, response: str, source_room: str = "", title: str = "Jarvis",
+    always_persist: bool = False,
 ) -> None:
     """Push a message to every active surface that didn't originate the request.
 
     Used both after a user-initiated reply and (via on_agent_report) when a
     background agent completes, so proactive results reach the iPhone / glasses
     HUD instead of only being spoken in one room.
+
+    ``always_persist``: for PROACTIVE content (morning brief, agent reports),
+    publish to the iPhone push topic even when no iPhone surface is currently
+    active — the gateway persists every push to surface:pushes, so it's waiting
+    in the app's feed when opened. Without this, a 6 AM brief spoken to an empty
+    room (app not connected) vanishes with no trace — exactly the bug seen.
     """
     source_is_mobile = source_room.startswith(("mobile-", "glasses-", "siri-"))
     try:
+        pushed_iphone = False
         active = r.smembers("jarvis:active_surfaces")
         for surface_id in active:
             meta_raw = r.get(f"jarvis:surface:{surface_id}:meta")
@@ -635,8 +643,16 @@ def _fanout_to_active_surfaces(
                     "jarvis/surfaces/iphone/push",
                     json.dumps({"text": response, "title": title}),
                 )
+                pushed_iphone = True
             elif surface_type == "mac":
                 pass  # Mac already hears the spoken response
+        # Proactive content: guarantee it reaches the phone feed even if the app
+        # wasn't connected (the gateway persists it for later fetch).
+        if always_persist and not pushed_iphone and not source_is_mobile:
+            client.publish(
+                "jarvis/surfaces/iphone/push",
+                json.dumps({"text": response, "title": title}),
+            )
     except Exception as e:
         print(f"[LLM] Surface fanout error: {e}")
 
@@ -771,7 +787,9 @@ def _handle_request(client, data):
 
     print(f"[LLM] Tier={tier}, {len(_sentence_queue)} sentence(s): '{response[:80]}...'")
 
-    _fanout_to_active_surfaces(client, response, source_room=room)
+    # Proactive dispatches (e.g. the morning brief) always land in the phone feed.
+    _fanout_to_active_surfaces(client, response, source_room=room,
+                               always_persist=bool(data.get("proactive")))
 
 
 def on_llm_request(client, userdata, msg):
@@ -798,6 +816,10 @@ def on_tts_done(client, userdata, msg):
 _FANOUT_AGENT_BLOCKLIST = {
     "newsletter", "job_monitor", "web_monitor", "price_monitor", "grocery",
     "classpass", "ambient",
+    # morning_brief's report is just an internal "dispatched to the brain"
+    # status — the actual briefing reaches surfaces via the brain's proactive
+    # response, so don't also push the status as a card.
+    "morning_brief",
     # finance runs every 30 min to refresh the widget — don't push each run.
     # Its daily report is read on demand via the get_financial_report tool.
     "finance",
@@ -817,7 +839,8 @@ def on_agent_report(client, userdata, msg):
         if not report or name in _FANOUT_AGENT_BLOCKLIST:
             return
         summary = report if len(report) <= 240 else report[:237] + "…"
-        _fanout_to_active_surfaces(client, summary, title=name.replace("_", " ").title())
+        _fanout_to_active_surfaces(client, summary, title=name.replace("_", " ").title(),
+                                   always_persist=True)
         print(f"[LLM] Fanned out '{name}' report to surfaces.")
     except Exception as e:
         print(f"[LLM] on_agent_report error: {e}")

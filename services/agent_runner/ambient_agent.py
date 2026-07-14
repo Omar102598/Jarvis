@@ -77,7 +77,7 @@ class AmbientAgent(BaseAgent):
                 "available. Speak it warmly in 5-6 sentences — this is my "
                 "wake-up greeting."
             )
-            self._publish(prompt, room, is_llm_request=True)
+            self._publish(prompt, room, is_llm_request=True, proactive=True)
             return "Morning briefing dispatched to the brain."
         calendar_lookahead_min = int(params.get("calendar_lookahead_min", 30))
         morning_hour = int(params.get("morning_hour", 8))
@@ -160,7 +160,7 @@ class AmbientAgent(BaseAgent):
             "any upcoming calendar events today, current weather, and one key item "
             "from the daily newsletter if available. Keep it under 4 sentences."
         )
-        self._publish(prompt, room, is_llm_request=True)
+        self._publish(prompt, room, is_llm_request=True, proactive=True)
         self._mark_fired(trigger_id)
         return ["morning_briefing"]
 
@@ -398,36 +398,44 @@ class AmbientAgent(BaseAgent):
         self.r.set(key, str(datetime.now().timestamp()))
 
     def _publish(
-        self, text: str, room: str, is_llm_request: bool = False, title: str = "Jarvis"
+        self, text: str, room: str, is_llm_request: bool = False, title: str = "Jarvis",
+        proactive: bool = False,
     ) -> None:
         """Publish a message — either direct TTS or routed through the LLM.
 
         Direct (already-composed) alerts are also fanned out to active iPhone /
         glasses surfaces so they appear on the HUD, not only spoken in the room.
-        """
-        try:
-            client = mqtt.Client()
-            client.connect(MQTT_HOST, MQTT_PORT, keepalive=10)
 
+        ``proactive`` marks unprompted content (the morning brief) so the brain
+        ALWAYS persists it to the phone feed — otherwise it's only spoken in the
+        room and is lost if the app wasn't open (why a 6 AM brief went unseen).
+        """
+        # Use publish.single (blocking connect+publish+flush+disconnect). The
+        # previous connect()/publish()/disconnect() WITHOUT a network loop queued
+        # the message but disconnected before paho transmitted it — so morning
+        # briefs and other ambient alerts were silently dropped on a race.
+        import paho.mqtt.publish as mqtt_publish
+        try:
             if is_llm_request:
                 # Route through the LLM agent so Jarvis composes the full response
                 # (the LLM agent fans the result out to surfaces itself).
-                client.publish(
+                mqtt_publish.single(
                     "jarvis/llm/request",
-                    json.dumps({"text": text, "room": room}),
+                    json.dumps({"text": text, "room": room, "proactive": proactive}),
+                    hostname=MQTT_HOST, port=MQTT_PORT,
                 )
             else:
                 # Speak directly (no LLM needed — message is already composed)
-                client.publish(
+                mqtt_publish.single(
                     f"jarvis/tts/{room}/speak",
                     json.dumps({"text": text, "room": room, "is_final": True}),
+                    hostname=MQTT_HOST, port=MQTT_PORT,
                 )
                 # Fan out the same alert to iPhone / glasses HUD surfaces
-                client.publish(
+                mqtt_publish.single(
                     "jarvis/surfaces/iphone/push",
                     json.dumps({"text": text, "title": title}),
+                    hostname=MQTT_HOST, port=MQTT_PORT,
                 )
-
-            client.disconnect()
         except Exception as e:
             print(f"[AmbientAgent] MQTT publish error: {e}")
