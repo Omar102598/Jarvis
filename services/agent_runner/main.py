@@ -221,6 +221,9 @@ ARRIVAL_DEBOUNCE_S = int(os.environ.get("ARRIVAL_DEBOUNCE_S", "1800"))
 # spoken greeting until a camera motion confirms they're actually inside,
 # with this timer as the fallback so camera-less arrivals still get greeted.
 ARRIVAL_GREET_FALLBACK_S = int(os.environ.get("ARRIVAL_GREET_FALLBACK_S", "150"))
+# A "left" within this many seconds of an "arrived" is treated as GPS jitter at
+# the geofence edge and ignored (prevents phantom departures eating the greeting).
+DEPARTURE_GRACE_S = int(os.environ.get("DEPARTURE_GRACE_S", "120"))
 
 
 def _speak_pending_greeting() -> None:
@@ -245,12 +248,17 @@ def _on_presence(client, userdata, msg):
     except Exception:
         return
     if ev == "arrived":
+        # Clear away/departure state on ANY arrival — even a debounced re-arrival —
+        # so away-mode can't stick at 1 while the user is actually home (it did:
+        # a flapped arrived→left→arrived left 'away' set with the user home).
+        _redis.delete("jarvis:away")
+        _redis.delete("jarvis:departure:debounce")
+        _redis.set("jarvis:arrival:ts",
+                   str(datetime.now(timezone.utc).timestamp()), ex=3600)
         if not _redis.set("jarvis:arrival:debounce", "1", nx=True, ex=ARRIVAL_DEBOUNCE_S):
-            print("[AgentRunner] arrival within debounce — skipping greeting")
+            print("[AgentRunner] arrival within debounce — home state refreshed, skipping greeting")
             return
         print("[AgentRunner] iPhone geofence: ARRIVED home → scene + greeting")
-        _redis.delete("jarvis:away")          # back home — clear away mode
-        _redis.delete("jarvis:departure:debounce")
         try:
             profile = json.loads(_redis.get("user:profile") or "{}")
         except Exception:
@@ -274,6 +282,18 @@ def _on_presence(client, userdata, msg):
         threading.Timer(ARRIVAL_GREET_FALLBACK_S,
                         _speak_pending_greeting).start()
     elif ev == "left":
+        # GPS-flap hysteresis: a "left" fired shortly after an "arrived" is jitter
+        # at the geofence boundary (the 120m radius trips while walking up). Ignore
+        # it — otherwise it cancels the held arrival greeting and runs a phantom
+        # departure (turning the lamps back off), which is exactly what ate a
+        # greeting on an arrived→left→arrived flap.
+        try:
+            arr_ts = float(_redis.get("jarvis:arrival:ts") or 0)
+        except Exception:
+            arr_ts = 0.0
+        if arr_ts and (datetime.now(timezone.utc).timestamp() - arr_ts) < DEPARTURE_GRACE_S:
+            print("[AgentRunner] 'left' within grace of arrival — GPS flap, ignoring")
+            return
         # Deliberately KEEP the arrival debounce: deleting it here meant a GPS
         # flap at the geofence edge (left→arrived seconds apart) re-greeted
         # every time. The 30-min TTL from the last greeting is the guard.
