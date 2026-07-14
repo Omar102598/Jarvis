@@ -249,6 +249,8 @@ def _on_presence(client, userdata, msg):
             print("[AgentRunner] arrival within debounce — skipping greeting")
             return
         print("[AgentRunner] iPhone geofence: ARRIVED home → scene + greeting")
+        _redis.delete("jarvis:away")          # back home — clear away mode
+        _redis.delete("jarvis:departure:debounce")
         try:
             profile = json.loads(_redis.get("user:profile") or "{}")
         except Exception:
@@ -276,7 +278,44 @@ def _on_presence(client, userdata, msg):
         # flap at the geofence edge (left→arrived seconds apart) re-greeted
         # every time. The 30-min TTL from the last greeting is the guard.
         _redis.delete("jarvis:arrival:pending")
-        print("[AgentRunner] iPhone geofence: LEFT home (away — alerts route to phone)")
+        # Departure debounce: a GPS flap at the edge shouldn't kill the lights
+        # and re-arm repeatedly.
+        if not _redis.set("jarvis:departure:debounce", "1", nx=True, ex=ARRIVAL_DEBOUNCE_S):
+            print("[AgentRunner] departure within debounce — skipping scene")
+            return
+        print("[AgentRunner] iPhone geofence: LEFT home → departure scene + away mode")
+        try:
+            profile = json.loads(_redis.get("user:profile") or "{}")
+        except Exception:
+            profile = {}
+        # Away mode: Sentry reads this to escalate (any person = alert, not just
+        # notable). Cleared on the next arrival.
+        _redis.set("jarvis:away", "1")
+        _run_departure_scene(profile)
+    return
+
+
+def _run_departure_scene(profile: dict) -> None:
+    """On leaving home: turn the managed lamps off (unless disabled) so nothing
+    is left burning. Guarded — a failure must not affect away-mode."""
+    import urllib.request as _rq
+    if not profile.get("departure_lights_off", True):
+        return
+    ha_url = os.environ.get("HA_URL", "")
+    ha_token = os.environ.get("HA_TOKEN", "")
+    entities = profile.get("arrival_lights",
+                           ["light.living_room_left", "light.living_room_right"])
+    if not (ha_url and ha_token):
+        return
+    try:
+        body = json.dumps({"entity_id": entities}).encode()
+        req = _rq.Request(f"{ha_url}/api/services/light/turn_off", data=body,
+                          headers={"Authorization": f"Bearer {ha_token}",
+                                   "Content-Type": "application/json"})
+        _rq.urlopen(req, timeout=15)
+        print(f"[AgentRunner] departure scene: turned off {entities}")
+    except Exception as exc:
+        print(f"[AgentRunner] departure HA scene failed: {exc}")
 
 
 def _in_scene_hours(profile: dict) -> bool:

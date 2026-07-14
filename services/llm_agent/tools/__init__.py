@@ -40,6 +40,9 @@ from .petkit import (
 )
 from .shell import run_shell
 from .smart_home import control_device, get_device_states, get_presence, set_scene
+from .scenes import manage_scenes
+from .email_drafts import get_email_drafts
+from .focus import focus_mode
 from .spotify import spotify_control
 from .spotify_desktop import spotify_desktop
 from .self_modify import (

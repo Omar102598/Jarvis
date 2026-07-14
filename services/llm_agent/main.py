@@ -42,6 +42,9 @@ from llm_factory import TIER_MODELS, build_llm
 from plugin_registry import PluginRegistry
 from tools.agents import get_agent_report, trigger_agent
 from tools.smart_home import control_device, get_device_states, get_presence, set_scene
+from tools.scenes import manage_scenes
+from tools.email_drafts import get_email_drafts
+from tools.focus import focus_mode
 from tools.web_search import web_search
 from tools.web import fetch_url
 from tools.vision import get_camera_snapshot
@@ -206,7 +209,7 @@ def _start_thinking_rotation(stop_event: threading.Event) -> None:
 
 _core_tools = [
     # Smart home
-    control_device, get_device_states, set_scene, get_presence,
+    control_device, get_device_states, set_scene, get_presence, manage_scenes,
     # PetKit pet feeders + water fountains (via Home Assistant)
     feed_pet, get_feeder_status, get_feeding_schedule, toggle_feeding_plan,
     get_fountain_status, list_petkit_devices,
@@ -220,7 +223,9 @@ _core_tools = [
     # Files & system
     read_file, write_file, list_files, run_shell, run_python,
     # Communication
-    send_notification, send_email, send_sms, set_reminder,
+    send_notification, send_email, send_sms, set_reminder, get_email_drafts,
+    # Deep-work Focus mode (holds non-urgent notifications)
+    focus_mode,
     # Background agents & dispatch
     get_agent_report, trigger_agent, spawn_task, ask_subagent,
     # Integrations

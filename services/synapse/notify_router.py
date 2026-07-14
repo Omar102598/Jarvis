@@ -40,6 +40,14 @@ DEDUP_TTL_S = int(os.environ.get("NOTIFY_DEDUP_TTL_S", "1800"))
 _ALWAYS_IMMEDIATE_WITH_MEDIA = True
 
 
+def _focus_active(r) -> bool:
+    """True while the user is in Focus/deep-work mode — hold non-urgent notifs."""
+    try:
+        return bool(r.exists("jarvis:focus"))
+    except Exception:
+        return False
+
+
 def _publish_surface(mqtt_client, title: str, text: str, media_url: str = "") -> None:
     body = {"title": title, "text": text}
     if media_url:
@@ -83,7 +91,8 @@ def handle(r, mqtt_client, raw: bytes) -> None:
             "ts": datetime.now(timezone.utc).isoformat(),
         }))
         r.ltrim(DIGEST_QUEUE, 0, 199)
-        if r.llen(DIGEST_QUEUE) >= DIGEST_MAX:
+        # Don't flush on size while in Focus mode — hold the batch until it ends.
+        if r.llen(DIGEST_QUEUE) >= DIGEST_MAX and not _focus_active(r):
             flush(r, mqtt_client)
     except Exception:
         # If Redis is unhappy, fail open — deliver it now rather than lose it.
@@ -129,6 +138,8 @@ def flush(r, mqtt_client, force: bool = False) -> int:
 def maybe_flush_on_timer(r, mqtt_client) -> None:
     """Called by Synapse's timer loop. Flush if enough time has elapsed since
     the last flush AND the queue is non-empty."""
+    if _focus_active(r):
+        return   # stay silent during deep work; the batch waits
     try:
         last = float(r.get("jarvis:digest:last_flush") or 0)
     except Exception:
