@@ -29,6 +29,7 @@ from grocery_agent import GroceryAgent
 from job_monitor_agent import JobMonitorAgent
 from newsletter_agent import NewsletterAgent
 from price_monitor_agent import PriceMonitorAgent
+from spend_guardian_agent import SpendGuardianAgent
 from research_agent import ResearchAgent
 from sentry_agent import SentryAgent
 from task_agent import TaskAgent
@@ -61,6 +62,7 @@ AGENT_CLASSES = {
     "sentry": SentryAgent,
     "morning_brief": AmbientAgent,   # dedicated daily-briefing schedule
     "chronicle": ChronicleAgent,     # nightly daily-memory journal
+    "spend_guardian": SpendGuardianAgent,   # subscriptions + unusual-charge watch
 }
 
 # Agents that can be dispatched on demand with params from the trigger payload
@@ -73,6 +75,7 @@ DISPATCHABLE = {"research", "task", "developer", "workout"}
 # (price_monitor, ambient) intentionally have no persona.
 AGENT_PERSONAS = {
     "finance":    ("Brad",   "finance — balances, budgets, spending analysis, money advice"),
+    "spend_guardian": ("Brad", "finance watch — subscriptions, unusual charges, low-balance alerts"),
     "grocery":    ("Remy",   "groceries — fitness-aware meal planning and shopping"),
     "classpass":  ("Kai",    "fitness classes — finding and booking studio classes"),
     "newsletter": ("Walter", "daily news digest"),

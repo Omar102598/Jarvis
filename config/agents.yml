@@ -275,6 +275,25 @@ agents:
     params: {}
 
   # ---------------------------------------------------------------------------
+  # Spend Guardian — Brad's watchful side.
+  # Reuses the BankSync client to watch the transaction feed for recurring
+  # charges (subscriptions, with a monthly-total estimate + next-hit forecast),
+  # unusual one-off charges, and low available cash vs your buffer
+  # (user:profile cash_buffer_usd, default $500). Alerts route through the
+  # notification router (digest urgency). View anytime: get_spending_insights.
+  # Runs daily at 8:00 AM CDT (13:00 UTC).
+  # ---------------------------------------------------------------------------
+  - name: spend_guardian
+    display_name: "Spend Guardian"
+    description: >
+      Brad's watch — flags new subscriptions (with monthly total + next-charge
+      forecast), unusual charges, and low balances from your BankSync feed.
+      Requires BANKSYNC_API_KEY.
+    enabled: true
+    schedule: "0 13 * * *"   # 8:00 AM CDT (13:00 UTC) daily
+    params: {}
+
+  # ---------------------------------------------------------------------------
   # Workout Agent — "Apollo", the personal trainer
   #
   # Programs the training week around three signals:

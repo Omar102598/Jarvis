@@ -50,6 +50,7 @@ from tools.weather import get_weather
 from tools.notifications import send_notification
 from tools.memory import forget, recall, remember
 from tools.chronicle import recall_journal
+from tools.finance_insights import get_spending_insights
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
@@ -238,6 +239,8 @@ _core_tools = [
     jarvis_restart_safe, list_mcp_servers, list_plugins, test_tool,
     get_user_profile, update_user_profile,
     get_setup_status, personalize_jarvis,
+    # Finance — unified spending insights (Spend Guardian + budgets)
+    get_spending_insights,
     # Grocery agent control
     get_grocery_status, approve_grocery_order, trigger_grocery_run, suggest_meals,
     learn_fresh_cart, get_usual_order, pin_favorite_product,
