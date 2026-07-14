@@ -239,19 +239,40 @@ def pin_favorite_product(item: str, action: str = "pin") -> str:
 
 
 @tool
-def learn_fresh_cart(store: str = "amazon") -> str:
-    """Scan the user's current store cart(s) and learn them as their usual order.
+def learn_fresh_cart(store: str = "amazon", source: str = "cart") -> str:
+    """Learn the user's usual grocery order — from their current cart OR their
+    past Amazon order history.
 
-    Use when the user says "learn my Fresh cart", "scan my Target cart",
-    "memorize what's in my carts", etc. The user builds the cart themselves;
-    the grocery agent scrapes it, saves the items as their habitual staples,
-    and every future weekly grocery list is built around them. Safe to run
+    Use when the user says "learn my Fresh cart", "scan my Target cart", or
+    "learn from my past Amazon orders" / "what have I ordered before?". The
+    learned staples bias every future weekly grocery list. Safe to run
     repeatedly — items seen across multiple scans rank higher.
 
     Args:
-        store: Which cart to scan — 'amazon' (Fresh, default), 'whole_foods',
-            'target', 'heb', or 'all' for every store at once.
+        store: Which cart to scan for source='cart' — 'amazon' (Fresh, default),
+            'whole_foods', 'target', 'heb', or 'all'. Ignored for source='orders'.
+        source: 'cart' (default) scans the current cart the user built; 'orders'
+            reads the user's Amazon order HISTORY and keeps only grocery/food
+            items (Amazon only). Use 'orders' when the user wants to learn from
+            what they've bought before rather than building a new cart.
     """
+    source = source.strip().lower()
+    if source in ("orders", "order", "history", "past", "past_orders", "order_history"):
+        try:
+            mqtt_publish.single(
+                "jarvis/agents/grocery/trigger",
+                json.dumps({"params": {"action": "learn_orders"}}),
+                hostname=MQTT_HOST,
+                port=MQTT_PORT,
+            )
+        except Exception as exc:
+            return f"Failed to trigger the order-history scan: {exc}"
+        return (
+            "On it, sir — Remy is reading your Amazon order history and keeping the "
+            "grocery items as your usual order. This needs the Jarvis browser signed "
+            "in to Amazon. Ask for the grocery agent's report in a minute."
+        )
+
     store = store.strip().lower() or "amazon"
     if store not in ("amazon", "whole_foods", "target", "heb", "all"):
         return f"Unknown store '{store}'. Options: amazon, whole_foods, target, heb, all."
