@@ -89,14 +89,60 @@ Requires Tier 2 GPU for real-time YOLO + face recognition.
 
 ---
 
-## Tier 5: Meta Ray-Ban Display + Multi-Room — ~$450–550 (optional, last)
+## Tier 4.5: Multi-Room Audio (mouth) + Mic Satellites (ears) — ~$250–700
+
+> **Key insight:** speakers and microphones are SEPARATE problems. Sonos = Jarvis's
+> voice + music per room (output) — but Sonos mics are walled off to Alexa/Google/
+> Sonos Voice, so **they can never be Jarvis's ears**. Don't pay the mic premium.
+> Ears come from cheap per-room satellites that stream into the existing
+> `jarvis/audio/mic/{room}` pipeline.
+
+### The mouth — Sonos (Spotify Connect + native HA integration)
+
+Jarvis's `spotify_control` already targets devices by room name, and Sonos appears
+both as Spotify Connect devices AND as HA `media_player` entities (for TTS
+announcements + grouping) the moment they join your Wi-Fi. Zero new code.
+
+| Item | Est. Price | Link | Notes |
+|------|-----------|------|-------|
+| **Sonos Era 100** (recommended, per room) | ~$199–249 | [sonos.com](https://www.sonos.com/en-us/shop/era-100) | The room workhorse: stereo, great far-field sound, Spotify Connect, AirPlay 2, native HA. Mic hard-off switch (use it — the mic is useless to Jarvis anyway). |
+| **IKEA SYMFONISK bookshelf gen 2** (budget) | ~$120–140 | [ikea.com — search SYMFONISK](https://www.ikea.com/us/en/search/?q=SYMFONISK) | Same Sonos ecosystem/app at nearly half price. Cheapest entry into Sonos multi-room; sounds noticeably worse than Era 100 but fine for kitchen/bathroom. |
+| **Sonos Beam Gen 2** *(optional, TV)* | ~$399–499 | [sonos.com](https://www.sonos.com/en-us/shop/beam) | Only if you also want TV audio in the ecosystem; joins the same room groups. |
+
+Start with **2× Era 100** (living room + bedroom) or **1× Era 100 + 1× SYMFONISK**.
+"Play jazz in the living room and kitchen" works day one.
+
+### The ears — per-room mic satellites
+
+| Option | Est. Price/room | Link | Tradeoff |
+|--------|----------------|------|----------|
+| **🥇 Pi Zero 2 W + ReSpeaker 2-Mics Pi HAT** | ~$45 ($15 + $13 + SD $8 + PSU $8) | [raspberrypi.com](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) · [seeedstudio.com](https://www.seeedstudio.com/ReSpeaker-2-Mics-Pi-HAT.html) | Drops straight into Jarvis's existing wake-word/STT MQTT pipeline (`jarvis/audio/mic/<room>/speech`) — same brain, same rooms, no glue layer. DIY: flash + a satellite script (Jarvis can write it). |
+| **🥈 Home Assistant Voice Preview Edition** | ~$59 | [home-assistant.io/voice-pe](https://www.home-assistant.io/voice-pe/) | Better far-field hardware (XMOS audio processing) and zero DIY — but routes to HA's Assist pipeline, so it needs a small bridge to hand transcripts to Jarvis's brain instead of HA's. Pick this if you'd rather not tinker. |
+| **$0: AirPods** (already working) | $0 | — | Hands-free "Hey Jarvis" follows you anywhere. Great on the move; doesn't cover "walk in empty-handed and talk." |
+
+Start with **one Pi satellite** for the living room and validate the experience
+before multiplying rooms.
+
+### Apple TV control — $0
+
+Already owned. Pair each Apple TV in HA once (Settings → Devices & Services →
+"Apple TV" → PIN on screen) and Jarvis's `apple_tv` tool gets power, app launch,
+navigation, and now-playing per room. HDMI-CEC means "turn on the living room TV"
+actually turns on the television too.
+
+**Tier 4.5 subtotal: ~$250 (1 speaker + 1 satellite) to ~$700 (3 speakers + 2 satellites)**
+
+---
+
+## Tier 5: Meta Ray-Ban Display — ~$300–500 (optional, last)
 
 | Item | Est. Price | Notes |
 |------|-----------|-------|
 | **Meta Ray-Ban (Display model)** | ~$299–349 | Full-color 600×600 waveguide HUD, 42 PPD, 30 Hz content, 5,000 nit brightness. Requires Meta AI app v272+ + Developer Mode. **Not on the App Store yet** (MFi restriction; Meta expects broader distribution later in 2026 — sideload via Xcode for now). |
 | **Meta Neural Band** *(optional)* | ~$99–149 | EMG wristband — subtle finger gestures activate the "Ask Jarvis" button on the HUD without touching the frame. Not required; frame cap-touch works without it. |
 | **iPhone (existing)** | $0 | iOS 16+. Sideload the `JarvisApp/` Xcode project. The old Siri Shortcuts bridge still works as a fallback. |
-| **ReSpeaker mic (×2) + Pi Zero 2 W (×2) + USB audio + speakers (×2)** | ~$130–165 | Per-room Snapcast satellites (unchanged). |
+
+*(Per-room speakers + mic satellites moved to Tier 4.5 above.)*
 
 > **Developer-preview caveats (SDK 0.7):**
 > - Meta AI app is a mandatory pairing bridge — your app registers through it.
@@ -121,7 +167,8 @@ Requires Tier 2 GPU for real-time YOLO + face recognition.
 | **2** | Fast STT, local LLMs, vision | $450–900 | When CPU latency annoys you |
 | **3** | Smart home control | $25–125 | Anytime after Tier 1 |
 | **4** | Camera AI | $0–220 | After Tier 2 |
-| **5** | Glasses + multi-room | $500–650 | Last |
+| **4.5** | Multi-room music + per-room ears + Apple TV | $250–700 | When one room isn't enough |
+| **5** | Glasses | $300–500 | Last |
 | **Total (everything)** | | **~$1,400–2,100** | Spread over months |
 
 ---

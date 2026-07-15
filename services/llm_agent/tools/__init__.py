@@ -40,6 +40,7 @@ from .travel import plan_trip, get_trips
 from .calls import make_call
 from .watches import manage_watches
 from .presence import arrive_home, leave_home
+from .apple_tv import apple_tv
 from .notes import manage_notes
 from .notifications import send_notification
 from .petkit import (
