@@ -249,6 +249,50 @@ def _dining_spend_vs_groceries(r) -> Insight | None:
     )
 
 
+@rule("birthdays_and_reconnect")
+def _birthdays_and_reconnect(r) -> Insight | None:
+    """Upcoming birthdays + gentle "reach out" nudges. Join: people memory × time."""
+    from datetime import datetime, timezone
+
+    try:
+        people = r.hgetall(f"people:{USER_ID}") or {}
+    except Exception:
+        return None
+    if not people:
+        return None
+    now = datetime.now(timezone.utc)
+    today_md = now.strftime("%m-%d")
+    bdays, stale = [], []
+    for _, val in people.items():
+        try:
+            p = json.loads(val)
+        except Exception:
+            continue
+        bd = str(p.get("birthday", ""))
+        md = bd[-5:] if len(bd) >= 5 else ""
+        if md and md == today_md:
+            bdays.append(p.get("name", "someone"))
+        # Reconnect: a known relationship not contacted in 45+ days.
+        lc = p.get("last_contact")
+        if p.get("relationship") and lc:
+            try:
+                days = (now - datetime.fromisoformat(lc.replace("Z", "+00:00"))).days
+                if days >= 45:
+                    stale.append((days, p.get("name", "someone")))
+            except Exception:
+                pass
+    parts = []
+    if bdays:
+        parts.append("🎂 Birthday today: " + ", ".join(bdays) + ".")
+    if stale:
+        stale.sort(reverse=True)
+        who = stale[0][1]
+        parts.append(f"You haven't been in touch with {who} in a while — worth a hello?")
+    if not parts:
+        return None
+    return Insight(title="👋 People", text=" ".join(parts), cooldown_s=20 * 3600)
+
+
 @rule("protein_gap")
 def _protein_gap(r) -> Insight | None:
     """Afternoon/evening nudge if the day's logged protein is well short of target.
