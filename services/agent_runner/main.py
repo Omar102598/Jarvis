@@ -245,7 +245,9 @@ def _speak_pending_greeting() -> None:
 
 def _on_presence(client, userdata, msg):
     try:
-        ev = json.loads(msg.payload).get("event", "")
+        _payload = json.loads(msg.payload)
+        ev = _payload.get("event", "")
+        source = _payload.get("source", "")
     except Exception:
         return
     if ev == "arrived":
@@ -256,6 +258,17 @@ def _on_presence(client, userdata, msg):
         _redis.delete("jarvis:departure:debounce")
         _redis.set("jarvis:arrival:ts",
                    str(datetime.now(timezone.utc).timestamp()), ex=3600)
+        # Voice-triggered ("Jarvis, I'm home"): run the scene, but the BRAIN speaks
+        # the welcome itself — skip the held camera-gated greeting and the debounce.
+        if source == "voice":
+            _redis.set("user:presence:home", "1")
+            try:
+                profile = json.loads(_redis.get("user:profile") or "{}")
+            except Exception:
+                profile = {}
+            _run_arrival_scene(profile)
+            print("[AgentRunner] VOICE arrival → scene (brain speaks the welcome)")
+            return
         if not _redis.set("jarvis:arrival:debounce", "1", nx=True, ex=ARRIVAL_DEBOUNCE_S):
             print("[AgentRunner] arrival within debounce — home state refreshed, skipping greeting")
             return

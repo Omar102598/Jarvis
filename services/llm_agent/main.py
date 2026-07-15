@@ -67,6 +67,7 @@ from tools.routines import detect_routines
 from tools.travel import plan_trip, get_trips
 from tools.calls import make_call
 from tools.watches import manage_watches
+from tools.presence import arrive_home, leave_home
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
@@ -219,8 +220,9 @@ def _start_thinking_rotation(stop_event: threading.Event) -> None:
 # ---------------------------------------------------------------------------
 
 _core_tools = [
-    # Smart home
+    # Smart home + manual presence (geofence fallback)
     control_device, get_device_states, set_scene, get_presence, manage_scenes,
+    arrive_home, leave_home,
     # PetKit pet feeders + water fountains (via Home Assistant)
     feed_pet, get_feeder_status, get_feeding_schedule, toggle_feeding_plan,
     get_fountain_status, list_petkit_devices,

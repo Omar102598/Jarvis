@@ -44,6 +44,9 @@ struct JarvisApp: App {
                     // to the foreground so the ambient agent always has fresh data,
                     // and pull chat turns that happened on other surfaces meanwhile.
                     guard phase == .active else { return }
+                    // Self-heal a missed arrival: if the geofence was killed while
+                    // we were out, coming back to the app posts "arrived" now.
+                    LocationManager.shared.refreshOnForeground()
                     Task {
                         await chatViewModel.refreshHistory()
                         await HealthKitManager.shared.pushSnapshot()
