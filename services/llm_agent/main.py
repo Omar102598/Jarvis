@@ -63,6 +63,7 @@ from tools.packages import get_packages
 from tools.actions import get_recent_actions, undo_last_action
 from tools.firecrawl import scrape_page
 from tools.people import manage_people
+from tools.routines import detect_routines
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
@@ -237,8 +238,8 @@ _core_tools = [
     get_agent_report, trigger_agent, spawn_task, ask_subagent,
     # Integrations
     spotify_control, spotify_desktop, github_tool, manage_notes,
-    # Relationship memory (CRM-lite)
-    manage_people,
+    # Relationship memory (CRM-lite) + routine detection from history
+    manage_people, detect_routines,
     # Task loop (GTD: inbox / next-actions / projects) + action journal/undo
     manage_tasks, get_recent_actions, undo_last_action,
     # macOS laptop control
