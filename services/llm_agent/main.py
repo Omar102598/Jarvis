@@ -66,6 +66,7 @@ from tools.people import manage_people
 from tools.routines import detect_routines
 from tools.travel import plan_trip, get_trips
 from tools.calls import make_call
+from tools.watches import manage_watches
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
@@ -242,8 +243,8 @@ _core_tools = [
     spotify_control, spotify_desktop, github_tool, manage_notes,
     # Relationship memory (CRM-lite) + routine detection from history
     manage_people, detect_routines,
-    # Travel (Miles) + outbound calls
-    plan_trip, get_trips, make_call,
+    # Travel (Miles) + outbound calls + dynamic Scout watches
+    plan_trip, get_trips, make_call, manage_watches,
     # Task loop (GTD: inbox / next-actions / projects) + action journal/undo
     manage_tasks, get_recent_actions, undo_last_action,
     # macOS laptop control

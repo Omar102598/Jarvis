@@ -61,7 +61,7 @@ servers:
   # GitHub's maintained server is the hosted remote below (PAT via headers).
   # ---------------------------------------------------------------------------
   github:
-    enabled: false
+    enabled: true
     transport: streamable_http
     url: "https://api.githubcopilot.com/mcp/"
     headers:
@@ -89,6 +89,26 @@ servers:
       - "--no-sandbox"
       - "--isolated"
     description: "MCP Playwright browser automation (headless, fresh sessions)"
+
+  # ---------------------------------------------------------------------------
+  # Chrome (mcp-chrome) — SIGNED-IN browsing for the brain via the user's REAL
+  # Chrome on the Mac (extension + native host = real fingerprint, real
+  # sessions, existing tabs). Complements playwright (fresh/headless) exactly
+  # like mac_chrome_* complements it today, but as first-class MCP tools.
+  # Mac side (one-time): mcp-chrome-bridge installed+registered 2026-07-12;
+  # Omar loads data/mcp-chrome-extension/ via chrome://extensions ("Developer
+  # mode" → "Load unpacked") and clicks the extension icon → Connect (port
+  # 12306). Until then this server skips gracefully at startup.
+  # host.docker.internal reaches the Mac from the container (same as
+  # mac_bridge). The brain acts inside the user's logged-in browser —
+  # anything transactional (purchases, sends, bookings) must be confirmed
+  # with the user first.
+  # ---------------------------------------------------------------------------
+  chrome:
+    enabled: true
+    transport: streamable_http
+    url: "http://host.docker.internal:12306/mcp"
+    description: "MCP Chrome (mcp-chrome) — the user's real signed-in browser; confirm before transactional actions"
 
   # ---------------------------------------------------------------------------
   # Memory — knowledge-graph memory (entities + relations), complements Chroma
@@ -164,7 +184,10 @@ servers:
     command: npx
     args:
       - "-y"
-      - "jinko-mcp-dev@latest"
+      # jinko-mcp-dev@latest (0.0.22) failed to load; try the non-dev package.
+      # If this also fails it skips gracefully (0 tools) — Airbnb + scrape_page
+      # cover lodging either way.
+      - "jinko-mcp@latest"
     description: "MCP Jinko — hotel search + booking (payment-link, Miles)"
 
   # ---------------------------------------------------------------------------
@@ -172,8 +195,14 @@ servers:
   # recommendations. uvx (Python). Requires EXPEDIA_API_KEY (Expedia Partner/
   # Rapid API — partner-gated, not instant). Skips gracefully without the key.
   # ---------------------------------------------------------------------------
+  # DISABLED 2026-07-14: the upstream package pins an old fastmcp that a current
+  # pydantic rejects ("cannot specify both default and default_factory") → crashes
+  # on load; AND it needs a partner-gated EXPEDIA_API_KEY we don't have. Zero value,
+  # only added startup errors + delay. Kiwi (flights) + Airbnb (rentals) +
+  # scrape_page (any hotel site) cover travel. Re-enable if the package is fixed
+  # AND a partner key is obtained.
   expedia:
-    enabled: true
+    enabled: false
     transport: stdio
     command: uvx
     args:
@@ -182,7 +211,171 @@ servers:
       - "stdio"
     env:
       EXPEDIA_API_KEY: "${EXPEDIA_API_KEY}"
-    description: "MCP Expedia (official) — hotels/flights/activities/cars"
+    description: "MCP Expedia (official) — hotels/flights/activities/cars [disabled]"
+
+  # ---------------------------------------------------------------------------
+  # Home Assistant (OFFICIAL core integration) — ALL Assist-exposed entities
+  # (Govee lamps, future PetKit, anything added later) as MCP tools, no
+  # per-endpoint maintenance in tools/smart_home.py. The `mcp_server`
+  # integration was enabled via HA's config-flow API 2026-07-12.
+  # Complements (does not yet replace) the custom smart_home tools.
+  # ---------------------------------------------------------------------------
+  home_assistant:
+    enabled: true
+    transport: sse
+    url: "http://homeassistant:8123/mcp_server/sse"
+    headers:
+      Authorization: "Bearer ${HA_TOKEN}"
+    description: "MCP Home Assistant (official) — control/query all Assist-exposed entities"
+
+  # ---------------------------------------------------------------------------
+  # Gmail (OFFICIAL Google-hosted MCP) — real inbox actions for Hermes and the
+  # brain: search, read, archive, label, drafts (scope gmail.modify; SENDING
+  # stays on the existing SMTP tool). OAuth against accounts.google.com — NO
+  # dynamic registration, so a static OAuth client (Desktop-app type, which
+  # gets refresh tokens by default) is REQUIRED:
+  #   one-time: scripts/authorize_google_mcps.sh <client_id> <client_secret>
+  # Tokens + client info land in /data/mcp_auth (same bridge as uber_eats).
+  # Skips gracefully until authorized.
+  # ---------------------------------------------------------------------------
+  gmail:
+    enabled: true
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "mcp-remote@latest"
+      - "https://gmailmcp.googleapis.com/mcp/v1"
+      - "--static-oauth-client-info"
+      - "@/data/mcp_auth/google_oauth_client.json"
+      - "--static-oauth-client-metadata"
+      - '{"scope":"https://www.googleapis.com/auth/gmail.modify"}'
+    env:
+      MCP_REMOTE_CONFIG_DIR: "/data/mcp_auth"
+    description: "MCP Gmail (official hosted) — search/read/label/archive/drafts (OAuth via mcp-remote)"
+
+  # ---------------------------------------------------------------------------
+  # Google Calendar (OFFICIAL Google-hosted MCP) — WRITE access at last (today
+  # Jarvis only reads next-event pushes from the iPhone via EventKit): create/
+  # move/delete events, list calendars, free-time. Same OAuth client + one-time
+  # script as gmail. Skips gracefully until authorized.
+  # ---------------------------------------------------------------------------
+  google_calendar:
+    enabled: true
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "mcp-remote@latest"
+      - "https://calendarmcp.googleapis.com/mcp/v1"
+      - "--static-oauth-client-info"
+      - "@/data/mcp_auth/google_oauth_client.json"
+      - "--static-oauth-client-metadata"
+      - '{"scope":"https://www.googleapis.com/auth/calendar"}'
+    env:
+      MCP_REMOTE_CONFIG_DIR: "/data/mcp_auth"
+    description: "MCP Google Calendar (official hosted) — full event read/write (OAuth via mcp-remote)"
+
+  # Google Drive / People — same pattern (drivemcp.googleapis.com/mcp/v1,
+  # people.googleapis.com/mcp/v1); OFF to avoid tool bloat until needed.
+
+  # ---------------------------------------------------------------------------
+  # Package tracking (17TRACK) — universal carrier tracking (2900+ carriers,
+  # free tier 100 trackings/mo). Closes the loop: Hermes finds tracking numbers
+  # in email → this follows the shipment → Sentry watches the porch.
+  # Requires API_TOKEN_17TRACK in .env (17track.net → Settings → API key);
+  # skips gracefully without it.
+  # ---------------------------------------------------------------------------
+  package_tracking:
+    enabled: true
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "mcp-server-17track"
+    env:
+      API_TOKEN_17TRACK: "${API_TOKEN_17TRACK}"
+    description: "MCP 17TRACK — package tracking across 2900+ carriers"
+
+  # ---------------------------------------------------------------------------
+  # Resy — restaurant search + REAL booking on the user's own Resy account
+  # (community server; email/password auth, auto token refresh; fetchproxy
+  # browser bridge disabled — creds path works headless). Personal use of
+  # YOUR OWN account only; Resy ToS frowns on automation — same category as
+  # the ClassPass/Amazon Fresh automation. Booking is approval-gated: Jarvis
+  # must confirm with the user before resy_book/resy_cancel.
+  # Needs RESY_EMAIL + RESY_PASSWORD in .env (compose passthrough wired).
+  # ---------------------------------------------------------------------------
+  resy:
+    enabled: true
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "resy-mcp"
+    env:
+      RESY_EMAIL: "${RESY_EMAIL}"
+      RESY_PASSWORD: "${RESY_PASSWORD}"
+      RESY_DISABLE_FETCHPROXY: "1"
+    description: "MCP Resy — restaurant search + booking on the user's account (confirm before booking)"
+
+  # ---------------------------------------------------------------------------
+  # OpenTable — search works keyless, but booking rides a signed-in browser
+  # via the fetchproxy EXTENSION on the Mac (server listens on 127.0.0.1:37149
+  # for the extension's WebSocket) — that port/plumbing doesn't reach into
+  # this container without extra compose wiring. OFF until wanted; OpenTable
+  # booking links can also come from the resy/maps/playwright path.
+  # ---------------------------------------------------------------------------
+  opentable:
+    enabled: false
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "opentable-mcp"
+    description: "MCP OpenTable — search + booking links (needs fetchproxy browser bridge)"
+
+  # ---------------------------------------------------------------------------
+  # Uber Eats (OFFICIAL) — restaurant/dish search, menus, cart + order planning
+  # against YOUR Uber Eats account. The hosted server uses interactive OAuth,
+  # which a headless container can't do — so we bridge through mcp-remote,
+  # which caches OAuth tokens in MCP_REMOTE_CONFIG_DIR (/data/mcp_auth, the
+  # ./data volume). ONE-TIME SETUP on the Mac: scripts/authorize_food_mcps.sh
+  # (opens a browser to sign in), then restart llm_agent. Until tokens exist
+  # the server fails to start and mcp_loader SKIPS it gracefully.
+  # Checkout/payment is a handoff into the user's own account — Jarvis must
+  # always confirm with the user before placing any order.
+  # ---------------------------------------------------------------------------
+  uber_eats:
+    enabled: true
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "mcp-remote@latest"
+      - "https://mcp.ubereats.com/eats-claude/mcp"
+    env:
+      MCP_REMOTE_CONFIG_DIR: "/data/mcp_auth"
+    description: "MCP Uber Eats (official) — restaurant search, menus, order planning (OAuth via mcp-remote)"
+
+  # ---------------------------------------------------------------------------
+  # DoorDash (OFFICIAL, consumer) — restaurant discovery, menu/price compare,
+  # order planning against YOUR DoorDash account. Same mcp-remote OAuth bridge
+  # + shared /data/mcp_auth token cache as uber_eats; authorized by the same
+  # scripts/authorize_food_mcps.sh one-time step. Skips gracefully w/o tokens.
+  # Same rule: Jarvis must confirm with the user before placing any order.
+  # ---------------------------------------------------------------------------
+  doordash:
+    enabled: true
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "mcp-remote@latest"
+      - "https://openapi.doordash.com/mcp/consumer"
+    env:
+      MCP_REMOTE_CONFIG_DIR: "/data/mcp_auth"
+    description: "MCP DoorDash (official) — restaurant discovery, menus, order planning (OAuth via mcp-remote)"
 
   # ---------------------------------------------------------------------------
   # Slack — read channels, post messages, search.

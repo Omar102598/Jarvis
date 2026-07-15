@@ -37,6 +37,16 @@ phrases below are illustrative, not magic strings. A few are **automatic**
 | Supplement reminders | set profile, then automatic | setup+auto |
 | Watchdog | automatic (every 5 min) | auto |
 | Local model tier | set `OLLAMA_BASE_URL` | setup |
+| Weekly review | automatic (Sun 6pm) | auto |
+| Protein-gap nudge | automatic (Sage-driven) | auto |
+| Undo / audit | "undo that" / "what did you just do?" | ask |
+| Web scrape+extract | "scrape/read this page: …" (scrape_page) | ask |
+| People / relationships | "remember Sarah is my sister, birthday 03-14" | ask |
+| Routines | "what are my routines?" | ask |
+| Trip planning (Miles) | "plan a trip to Lisbon in October" | ask |
+| Memory cleanup | "consolidate your memory" | ask |
+| Outbound call | "call +1… and say …" (needs Twilio) | ask |
+| Dynamic web watch | "watch this URL for concert tickets" (manage_watches) | ask |
 
 ---
 
@@ -213,6 +223,62 @@ voice enrolled — this is the non-breaking hook it builds on.
 
 ---
 
+## Round 2 — Closing the loops & beyond
+
+The Phase 0–4 features produced signals; this round makes them **feed each other**,
+adds reliability, and expands capability.
+
+### Closed loops (mostly automatic)
+- **Readiness drives the day** — the morning brief calls `get_readiness` and lets
+  the score set its tone; Apollo scales training volume to it.
+- **Protein-gap nudge** — Synapse flags an afternoon/evening protein shortfall from
+  what Sage logged, vs your profile target.
+- **Weekly review** — Sunday 6pm, Chronicle delivers a "week in review" card:
+  what happened, trends (sleep/training/spend/subscriptions), one suggestion.
+
+### Reliability
+- **Disk-space guardian** — the watchdog prunes Docker images/cache when reclaimable
+  ≥ `DISK_PRUNE_THRESHOLD_GB` (20), and emergency-prunes if Redis can't write.
+- **Nightly backup** — `scripts/backup.sh` snapshots Redis + Chroma to `./backups/`
+  (rotates to `BACKUP_KEEP`); restore steps in the script header.
+- **Undo + audit** — "what did you just do?" (`get_recent_actions`) and "undo that"
+  (`undo_last_action`) — reverses reversible actions (a task add/complete, a setting),
+  reports that sends/orders can't be taken back.
+
+### New capabilities
+- **Web scrape+extract** (`scrape_page`) — renders JS/anti-bot pages to clean text
+  and can pull out a specific fact/table. Use over `fetch_url` for hard pages.
+- **People / relationships** (`manage_people`) — remember people (relationship,
+  birthday, notes, last contact); Synapse surfaces birthdays + "reach out" nudges.
+- **Routines** (`detect_routines`) — mines the event stream for recurring habits
+  ("usually leaves ~5pm Tue/Thu").
+- **Trip planning — Miles** (`plan_trip` / `get_trips`) — records a trip and runs the
+  planning workflow; **flights via Kiwi MCP** + **rentals via Airbnb MCP** + hotels via
+  `scrape_page`. (Jinko/Expedia hotel MCPs are flaky upstream — see notes.)
+- **Memory consolidation** (`consolidate_memory`) — dedupes remembered facts.
+- **Outbound calls** (`make_call`) — speaks a message via Twilio (creds-gated;
+  confirm before dialing).
+- **Notification feedback** — Synapse suppresses rules you keep dismissing (backend
+  ready; iOS posts `/notify/feedback {key, action}` on tap/dismiss).
+
+### Dynamic web watches (how Scout works)
+Scout (web_monitor) watches specific pages for **new items matching a goal**
+(apartments, restocks, ticket drops, price/job changes). Each run it fetches the
+page (**Firecrawl** when `FIRECRAWL_API_KEY` is set, else the local scraper),
+**hashes the text, and only calls the LLM to extract + diff when the page actually
+changed** — so idle cost is ~zero.
+
+Two ways to define watches:
+- **Static** — `params.watch_urls` in `config/agents.yml` (needs an `agent_runner`
+  restart to reload). Each entry can set `url`, `goal` (what to extract), `noun`,
+  `alert_title`, and `priority_keywords`.
+- **Dynamic** — `manage_watches` (voice): "watch `<url>` for `<goal>`", "what am I
+  watching?", "stop watching …". Stored in Redis `scout:watches` and **merged with
+  the config watches each run** — no restart, no YAML edit. New matches → iOS push +
+  iMessage, priority items first.
+
+---
+
 ## Configuration reference
 
 ### `.env` (compose passthroughs — rebuild service to apply)
@@ -226,6 +292,10 @@ voice enrolled — this is the non-breaking hook it builds on.
 | `OLLAMA_BASE_URL` / `LOCAL_LLM_MODEL` | — / llama3.1 | local model tier |
 | `WEBHOOK_SECRET` | — | enable `/webhook/{source}` |
 | `DEPARTURE_GRACE_S` | 120 | GPS-flap hysteresis on leaving |
+| `FIRECRAWL_API_KEY` | — | Scout + `scrape_page` managed scraping |
+| `TWILIO_ACCOUNT_SID` / `AUTH_TOKEN` / `FROM_NUMBER` | — | enable `make_call` |
+| `DISK_PRUNE_THRESHOLD_GB` | 20 | watchdog auto-prune trigger |
+| `BACKUP_KEEP` | 7 | nightly snapshots to retain |
 
 ### `user:profile` (set by voice — no rebuild)
 | Field | Purpose |

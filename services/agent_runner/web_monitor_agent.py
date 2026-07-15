@@ -165,11 +165,20 @@ class WebMonitorAgent(BaseAgent):
 
     async def run(self) -> str:
         queries: list[str] = self.params.get("queries", [])
-        watches: list[dict] = self.params.get("watch_urls", [])
+        watches: list[dict] = list(self.params.get("watch_urls", []))
+        # DYNAMIC watches added at runtime via the manage_watches tool (stored in
+        # Redis scout:watches) are merged with the static agents.yml ones, so you
+        # can say "watch this URL for X" without editing config or restarting.
+        try:
+            dynamic = json.loads(self.r.get("scout:watches") or "[]")
+            if isinstance(dynamic, list):
+                watches += [w for w in dynamic if isinstance(w, dict) and w.get("url")]
+        except Exception:
+            pass
         if not queries and not watches:
             return (
-                "Web monitor agent: nothing configured. Add params.queries "
-                "and/or params.watch_urls in config/agents.yml."
+                "Web monitor agent: nothing configured. Add a watch via "
+                "\"watch this URL for …\" (manage_watches) or params in config/agents.yml."
             )
 
         sections: list[str] = []
