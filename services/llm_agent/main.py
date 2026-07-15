@@ -60,6 +60,7 @@ from tools.nutrition import log_meal, get_nutrition_today
 from tools.visual_memory import log_sighting, recall_visual
 from tools.capture import quick_capture
 from tools.packages import get_packages
+from tools.actions import get_recent_actions, undo_last_action
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
@@ -234,8 +235,8 @@ _core_tools = [
     get_agent_report, trigger_agent, spawn_task, ask_subagent,
     # Integrations
     spotify_control, spotify_desktop, github_tool, manage_notes,
-    # Task loop (GTD: inbox / next-actions / projects)
-    manage_tasks,
+    # Task loop (GTD: inbox / next-actions / projects) + action journal/undo
+    manage_tasks, get_recent_actions, undo_last_action,
     # macOS laptop control
     mac_screenshot, mac_clipboard, mac_system_info, mac_shell, mac_applescript,
     mac_open, mac_spotlight, mac_type, mac_notify,
