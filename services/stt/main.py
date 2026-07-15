@@ -28,6 +28,18 @@ from faster_whisper import WhisperModel
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 
+# Redis (for the brain's conversation-end signal). Native services reach Redis on
+# host port 6380. Optional — the follow-up window still works if Redis is down.
+try:
+    import redis as _redis_mod
+    _r = _redis_mod.Redis(
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", "6380")),
+        decode_responses=True,
+    )
+except Exception:
+    _r = None
+
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 1600  # 100ms at 16kHz
 SILENCE_THRESHOLD = int(os.environ.get("STT_SILENCE_THRESHOLD", "150"))  # RMS; lower = more sensitive
@@ -226,6 +238,18 @@ def on_tts_done(client, userdata, msg):
     except Exception:
         room = "office"
 
+    # Conversation-end reasoning: the brain sets jarvis:voice:end_turn:{room} when
+    # the user's turn was a closer ("thanks", "that's all"). The reply just played;
+    # now DON'T re-open the mic — the conversation is naturally over.
+    if _r is not None:
+        try:
+            if _r.get(f"jarvis:voice:end_turn:{room}"):
+                _r.delete(f"jarvis:voice:end_turn:{room}")
+                print(f"[STT] Conversation ended (brain signalled end-of-turn) in '{room}'.")
+                return
+        except Exception:
+            pass
+
     # Brief pause so the mic doesn't pick up audio reverb from the speaker
     time.sleep(0.6)
     print(f"[STT] Follow-up window open for {FOLLOWUP_WINDOW}s in '{room}'...")
@@ -239,13 +263,9 @@ def on_tts_done(client, userdata, msg):
     text = " ".join([s.text for s in segments]).strip()
 
     if text and not _is_hallucination(text):
-        lower = text.lower().strip(".,!?")
-        if lower in ("goodbye", "goodbye jarvis", "bye", "bye jarvis",
-                     "that's all", "thats all", "thank you", "thanks"):
-            print(f"[STT] Conversation ended by user: '{text}'")
-            if audio_path and os.path.exists(audio_path):
-                os.unlink(audio_path)
-            return
+        # Closers ("thanks", "that's all") are no longer swallowed silently here —
+        # they go to the brain, which replies warmly AND sets the end-turn flag so
+        # the NEXT on_tts_done won't re-open the mic. Feels like a natural sign-off.
         print(f"[STT] Follow-up ({room}): '{text}'")
         _publish_speech(client, room, text, audio_path)
     else:

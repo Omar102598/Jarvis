@@ -126,25 +126,52 @@ class SentryAgent(BaseAgent):
         }))
         self.r.ltrim("ring:events:assessed", 0, 99)
 
-        # ---- Wake briefing: fire on the first HUMAN of the morning ---------
-        # (raw motion was waking the briefing for the CATS; the vision verdict
-        # is the person filter). Once per local day, gated by WAKE_WINDOW.
+        # ---- Wake briefing: fire when the user is actually UP for the day ----
+        # A person being visible ≠ awake — a single 5am glimpse (bathroom trip)
+        # used to fire the brief before the user was up. Now we require either:
+        #   • SUSTAINED presence — ≥2 person-sightings spanning ≥WAKE_CONFIRM_GAP_S
+        #     (a passthrough is one sighting; getting up for the day is repeated
+        #     activity over minutes), OR
+        #   • an authoritative "awake" signal from the Apple Watch (user:awake:today,
+        #     posted by the iOS app from HealthKit sleep tracking) — fires at once.
+        # Person-gated (verdict), once per local day (the brief's own SET NX dedupes).
         if verdict.get("person_visible"):
             try:
+                import time as _time
                 from zoneinfo import ZoneInfo
                 lt = datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago")))
                 ws, we = (int(x) for x in os.environ.get("WAKE_WINDOW", "5-10").split("-"))
-                if ws <= lt.hour < we and \
-                        not self.r.get(f"jarvis:briefed:{lt.strftime('%Y-%m-%d')}"):
-                    # The briefing agent's own SET NX is the authoritative dedupe
-                    import paho.mqtt.publish as mqtt_pub
-                    mqtt_pub.single(
-                        "jarvis/agents/morning_brief/trigger",
-                        json.dumps({"params": {"action": "morning_brief",
-                                               "room": "office"}}),
-                        hostname=MQTT_HOST, port=MQTT_PORT,
-                    )
-                    print("[Sentry] First human of the morning → wake briefing")
+                date = lt.strftime("%Y-%m-%d")
+                if (ws <= lt.hour < we) and not self.r.get(f"jarvis:briefed:{date}"):
+                    gap = int(os.environ.get("WAKE_CONFIRM_GAP_S", "240"))
+                    skey = f"jarvis:wake:sightings:{date}"
+                    now_ts = _time.time()
+                    self.r.lpush(skey, str(now_ts))
+                    self.r.ltrim(skey, 0, 29)
+                    self.r.expire(skey, 6 * 3600)
+                    sightings = []
+                    for x in (self.r.lrange(skey, 0, 29) or []):
+                        try:
+                            sightings.append(float(x))
+                        except Exception:
+                            pass
+                    awake = bool(self.r.get("user:awake:today"))
+                    span = (now_ts - min(sightings)) if sightings else 0
+                    sustained = len(sightings) >= 2 and span >= gap
+                    if awake or sustained:
+                        import paho.mqtt.publish as mqtt_pub
+                        mqtt_pub.single(
+                            "jarvis/agents/morning_brief/trigger",
+                            json.dumps({"params": {"action": "morning_brief",
+                                                   "room": "office"}}),
+                            hostname=MQTT_HOST, port=MQTT_PORT,
+                        )
+                        why = ("watch-confirmed awake" if awake
+                               else f"sustained presence ({len(sightings)} sightings/{int(span/60)}min)")
+                        print(f"[Sentry] Morning wake → briefing ({why})")
+                    else:
+                        print(f"[Sentry] person in wake window but not sustained yet "
+                              f"({len(sightings)} sighting(s)) — holding brief")
             except Exception as exc:
                 print(f"[Sentry] wake-brief dispatch failed: {exc}")
 

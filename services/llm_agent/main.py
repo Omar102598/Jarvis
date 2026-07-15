@@ -715,6 +715,42 @@ def _is_self_echo(text: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Conversation-end reasoning — decide when a spoken exchange is naturally over so
+# the STT doesn't keep the follow-up mic open. A closing turn ("thanks", "ok that's
+# all", "goodbye") still gets a warm reply, but we signal the STT to stop listening
+# (via jarvis:voice:end_turn:{room}) instead of re-opening the window.
+# ---------------------------------------------------------------------------
+_CLOSER_PHRASES = {
+    "thanks", "thank you", "thanks a lot", "thanks so much", "thank you so much",
+    "thx", "ty", "ok", "okay", "cool", "got it", "great", "perfect", "awesome",
+    "nice", "sounds good", "nevermind", "never mind", "thats all", "that's all",
+    "thats it", "that's it", "no thats it", "no that's it", "thats everything",
+    "that's everything", "goodbye", "bye", "good night", "goodnight", "night",
+    "nope", "no thanks", "no thank you", "all good", "appreciate it", "stop",
+    "that will be all", "that'll be all", "we're good", "were good", "im good",
+    "i'm good", "you're the best", "youre the best",
+}
+
+
+def _is_conversation_closer(text: str) -> bool:
+    """True if the user's turn is a closing/acknowledgment with no new request."""
+    if "?" in text:
+        return False   # a question always expects an answer
+    t = _re.sub(r"[^a-z' ]", " ", text.lower())
+    t = " ".join(t.split())
+    if not t:
+        return False
+    if t in _CLOSER_PHRASES:
+        return True
+    words = t.split()
+    if len(words) <= 4:
+        for c in _CLOSER_PHRASES:
+            if t == c or t.startswith(c + " ") or t.endswith(" " + c):
+                return True
+    return False
+
+
 def _handle_request(client, data):
     text = data["text"]
     room = data["room"]
@@ -797,6 +833,16 @@ def _handle_request(client, data):
         )
 
     print(f"[LLM] Tier={tier}, {len(_sentence_queue)} sentence(s): '{response[:80]}...'")
+
+    # Conversation-end reasoning: if the user's turn was a closer, still let the
+    # reply play, but tell the STT to STOP listening instead of re-opening the
+    # follow-up mic. Skipped for non-voice surfaces (mobile/glasses/siri).
+    if not room.startswith(("mobile-", "glasses-", "siri-")) and _is_conversation_closer(text):
+        try:
+            r.set(f"jarvis:voice:end_turn:{room}", "1", ex=30)
+            print(f"[LLM] Conversation closer detected ('{text[:30]}') — ending turn.")
+        except Exception:
+            pass
 
     # Proactive dispatches (e.g. the morning brief) always land in the phone feed.
     _fanout_to_active_surfaces(client, response, source_room=room,

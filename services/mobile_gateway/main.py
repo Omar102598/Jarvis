@@ -983,6 +983,11 @@ class HealthSnapshotRequest(BaseModel):
     body_mass_lbs: Optional[float] = None
     workouts_today: Optional[int] = None
     workout_minutes_today: Optional[float] = None
+    # Set true when the app detects the user just woke (HealthKit sleep analysis
+    # 'awake' transition, or first unlock after sleep). Authoritative wake signal
+    # for the morning brief — Sentry fires the brief at once instead of waiting
+    # for sustained camera presence.
+    just_woke: Optional[bool] = None
     source: str = "ios_healthkit"
 
 
@@ -1092,6 +1097,11 @@ async def health_snapshot(req: HealthSnapshotRequest, x_api_key: str = Header(de
         else:
             _redis.lpush("user:health:history", json.dumps(snapshot))
         _redis.ltrim("user:health:history", 0, 29)   # ~30 distinct days
+
+        # Authoritative wake signal → Sentry fires the morning brief immediately
+        # (expires end of day so it can't linger). Keyed off the snapshot request.
+        if req.just_woke:
+            _redis.set("user:awake:today", now.isoformat(), ex=18 * 3600)
 
         # Fuse into a single readiness score for the day (sets Apollo/Kai/brief tone).
         try:
