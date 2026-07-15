@@ -33,6 +33,7 @@ from .visual_memory import log_sighting, recall_visual
 from .capture import quick_capture
 from .packages import get_packages
 from .actions import get_recent_actions, undo_last_action
+from .firecrawl import scrape_page
 from .notes import manage_notes
 from .notifications import send_notification
 from .petkit import (

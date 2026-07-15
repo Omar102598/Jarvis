@@ -61,6 +61,7 @@ from tools.visual_memory import log_sighting, recall_visual
 from tools.capture import quick_capture
 from tools.packages import get_packages
 from tools.actions import get_recent_actions, undo_last_action
+from tools.firecrawl import scrape_page
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
@@ -219,7 +220,7 @@ _core_tools = [
     feed_pet, get_feeder_status, get_feeding_schedule, toggle_feeding_plan,
     get_fountain_status, list_petkit_devices,
     # Information
-    web_search, fetch_url, get_camera_snapshot, get_weather, get_calendar_events,
+    web_search, fetch_url, scrape_page, get_camera_snapshot, get_weather, get_calendar_events,
     # Ring cameras (via ring-mqtt bridge)
     check_ring_camera, list_ring_cameras, ring_privacy,
     ring_live_view, who_came_by, get_packages,

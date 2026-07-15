@@ -112,6 +112,9 @@ services:
       # local Ollama. LOCAL_LLM_MODEL picks the model. Unset = cloud tiers only.
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
       - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-llama3.1}
+      # Firecrawl brain tool (scrape_page) — clean scrape/extract of JS/anti-bot pages.
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+      - FIRECRAWL_URL=${FIRECRAWL_URL:-https://api.firecrawl.dev}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
