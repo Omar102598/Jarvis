@@ -72,6 +72,19 @@ def _on_cooldown(r, name: str) -> bool:
         return False
 
 
+def _suppressed(r, name: str) -> bool:
+    """True if the user keeps dismissing this rule's insights (feedback learning):
+    ≥4 dismissals and a dismiss rate over 70% → go quiet about it."""
+    try:
+        fb = r.hgetall(f"synapse:feedback:synapse:{name}") or {}
+        dismiss = int(fb.get("dismiss", 0) or 0)
+        act = int(fb.get("act", 0) or 0)
+    except Exception:
+        return False
+    total = dismiss + act
+    return dismiss >= 4 and total and (dismiss / total) > 0.70
+
+
 def _arm_cooldown(r, name: str, seconds: int) -> None:
     try:
         r.set(f"synapse:rule:cooldown:{name}", "1", ex=max(60, seconds))
@@ -88,7 +101,7 @@ def evaluate_all(r) -> list[Insight]:
     """
     fired: list[Insight] = []
     for rl in _REGISTRY:
-        if not rl.enabled or _on_cooldown(r, rl.name):
+        if not rl.enabled or _on_cooldown(r, rl.name) or _suppressed(r, rl.name):
             continue
         try:
             insight = rl.fn(r)

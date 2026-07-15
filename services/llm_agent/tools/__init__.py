@@ -23,7 +23,7 @@ from .mac import (
     mac_system_info,
     mac_type,
 )
-from .memory import forget, recall, remember
+from .memory import forget, recall, remember, consolidate_memory
 from .chronicle import recall_journal
 from .finance_insights import get_spending_insights
 from .tasks import manage_tasks
@@ -36,6 +36,8 @@ from .actions import get_recent_actions, undo_last_action
 from .firecrawl import scrape_page
 from .people import manage_people
 from .routines import detect_routines
+from .travel import plan_trip, get_trips
+from .calls import make_call
 from .notes import manage_notes
 from .notifications import send_notification
 from .petkit import (

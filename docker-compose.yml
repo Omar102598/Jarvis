@@ -115,6 +115,10 @@ services:
       # Firecrawl brain tool (scrape_page) — clean scrape/extract of JS/anti-bot pages.
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
       - FIRECRAWL_URL=${FIRECRAWL_URL:-https://api.firecrawl.dev}
+      # Outbound calls (make_call) — Twilio; unset = tool reports it's not set up.
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-}
+      - TWILIO_FROM_NUMBER=${TWILIO_FROM_NUMBER:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}

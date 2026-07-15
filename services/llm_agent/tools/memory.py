@@ -224,3 +224,39 @@ def forget(topic: str) -> str:
         if removed
         else f"Nothing remembered about '{topic}'."
     )
+
+
+@tool
+def consolidate_memory() -> str:
+    """Tidy long-term memory: merge duplicate remembered facts so recall stays sharp.
+
+    Use occasionally (or when asked to "clean up your memory"). Keeps the oldest
+    copy of each duplicated fact and removes the rest from both stores.
+    """
+    raw = _r.hgetall(_MEM_KEY)
+    if not raw:
+        return "Nothing remembered yet — nothing to consolidate."
+    # Group fact_ids by normalized text; keep the earliest, drop later dupes.
+    by_norm: dict[str, list[tuple[float, str]]] = {}
+    for fid, payload in raw.items():
+        try:
+            f = json.loads(payload)
+            norm = " ".join(str(f.get("text", "")).lower().split())
+            by_norm.setdefault(norm, []).append((float(f.get("ts", 0) or 0), fid))
+        except Exception:
+            continue
+    dup_ids = []
+    for _, entries in by_norm.items():
+        if len(entries) > 1:
+            entries.sort()                 # oldest first
+            dup_ids.extend(fid for _, fid in entries[1:])
+    if not dup_ids:
+        return f"Memory is already tidy — no duplicates among {len(raw)} facts."
+    _r.hdel(_MEM_KEY, *dup_ids)
+    col = _get_collection()
+    if col is not None:
+        try:
+            col.delete(ids=dup_ids)
+        except Exception as e:
+            print(f"[Memory] consolidate Chroma delete error: {e}")
+    return f"Consolidated memory — merged {len(dup_ids)} duplicate fact(s); {len(by_norm)} unique remain."

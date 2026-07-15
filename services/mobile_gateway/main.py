@@ -1126,6 +1126,31 @@ async def health_snapshot(req: HealthSnapshotRequest, x_api_key: str = Header(de
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 
+class NotifyFeedbackRequest(BaseModel):
+    key: str            # the notification's dedup_key (e.g. "synapse:protein_gap")
+    action: str         # "dismiss" | "act"
+
+
+@app.post("/notify/feedback", summary="[iOS app] Notification acted-on/dismissed → learn")
+async def notify_feedback(req: NotifyFeedbackRequest, x_api_key: str = Header(default="")):
+    """Record whether the user acted on or dismissed a proactive notification.
+
+    Synapse reads these counts and suppresses rules the user keeps dismissing, so
+    the proactive layer gets quieter about things you don't care about.
+    """
+    _check_api_key(x_api_key)
+    key = (req.key or "").strip()
+    act = (req.action or "").strip().lower()
+    if not key or act not in ("dismiss", "act"):
+        raise HTTPException(400, "key and action (dismiss|act) required")
+    try:
+        _redis.hincrby(f"synapse:feedback:{key}", act, 1)
+        _redis.expire(f"synapse:feedback:{key}", 60 * 60 * 24 * 60)
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+    return {"ok": True}
+
+
 @app.post("/webhook/{source}", summary="Inbound webhook → JARVIS notification bus")
 async def inbound_webhook(source: str, request: Request, secret: str = "",
                           x_webhook_secret: str = Header(default="")):

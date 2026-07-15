@@ -51,7 +51,7 @@ from tools.vision import get_camera_snapshot
 from tools.calendar import get_calendar_events, set_reminder
 from tools.weather import get_weather
 from tools.notifications import send_notification
-from tools.memory import forget, recall, remember
+from tools.memory import forget, recall, remember, consolidate_memory
 from tools.chronicle import recall_journal
 from tools.finance_insights import get_spending_insights
 from tools.tasks import manage_tasks
@@ -64,6 +64,8 @@ from tools.actions import get_recent_actions, undo_last_action
 from tools.firecrawl import scrape_page
 from tools.people import manage_people
 from tools.routines import detect_routines
+from tools.travel import plan_trip, get_trips
+from tools.calls import make_call
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
@@ -227,7 +229,7 @@ _core_tools = [
     check_ring_camera, list_ring_cameras, ring_privacy,
     ring_live_view, who_came_by, get_packages,
     # Memory
-    remember, recall, forget, recall_journal,
+    remember, recall, forget, recall_journal, consolidate_memory,
     # Files & system
     read_file, write_file, list_files, run_shell, run_python,
     # Communication
@@ -240,6 +242,8 @@ _core_tools = [
     spotify_control, spotify_desktop, github_tool, manage_notes,
     # Relationship memory (CRM-lite) + routine detection from history
     manage_people, detect_routines,
+    # Travel (Miles) + outbound calls
+    plan_trip, get_trips, make_call,
     # Task loop (GTD: inbox / next-actions / projects) + action journal/undo
     manage_tasks, get_recent_actions, undo_last_action,
     # macOS laptop control
