@@ -365,6 +365,22 @@ agents:
     params: {}
 
   # ---------------------------------------------------------------------------
+  # Weekly Review — Chronicle's Sunday "week in review".
+  # Reads the week's journal entries + trend signals (sleep, training, spending,
+  # subscriptions) and delivers a warm 4-7 sentence review with one suggestion
+  # for next week, as its own card. Runs Sunday 6:00 PM CDT (23:00 UTC).
+  # ---------------------------------------------------------------------------
+  - name: weekly_review
+    display_name: "Weekly Review"
+    description: >
+      Chronicle's Sunday review — what your week held, notable trends, a
+      highlight, and one suggestion for next week. Built from the daily journal.
+    enabled: true
+    schedule: "0 23 * * 0"   # Sunday 6:00 PM CDT (23:00 UTC)
+    params:
+      action: "weekly_review"
+
+  # ---------------------------------------------------------------------------
   # Sentry — Ring camera watch (EVENT-driven, not scheduled)
   #
   # Dispatched automatically by the runner's ring/# MQTT handler whenever a

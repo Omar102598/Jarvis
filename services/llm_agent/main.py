@@ -820,6 +820,9 @@ _FANOUT_AGENT_BLOCKLIST = {
     # status — the actual briefing reaches surfaces via the brain's proactive
     # response, so don't also push the status as a card.
     "morning_brief",
+    # chronicle's nightly report is an internal "journaled X" status; the weekly
+    # review delivers its own card directly. Neither should fan out as a card.
+    "chronicle", "weekly_review",
     # finance runs every 30 min to refresh the widget — don't push each run.
     # Its daily report is read on demand via the get_financial_report tool.
     "finance",

@@ -249,6 +249,45 @@ def _dining_spend_vs_groceries(r) -> Insight | None:
     )
 
 
+@rule("protein_gap")
+def _protein_gap(r) -> Insight | None:
+    """Afternoon/evening nudge if the day's logged protein is well short of target.
+    Join: Sage nutrition × profile targets."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    try:
+        now = datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago")))
+    except Exception:
+        now = datetime.now()
+    if now.hour < 15 or now.hour > 20:   # only when there's still time to eat, day winding down
+        return None
+    day = now.strftime("%Y-%m-%d")
+    try:
+        totals = r.hgetall(f"nutrition:totals:{day}") or {}
+    except Exception:
+        totals = {}
+    if not totals:
+        return None   # nothing logged today — can't assess
+    p = _profile(r)
+    weight = float(p.get("weight_lbs", 0) or 0)
+    ppl = float(p.get("protein_goal_g_per_lb", 1.0) or 1.0)
+    target = weight * ppl
+    if target <= 0:
+        return None
+    consumed = float(totals.get("protein_g", 0) or 0)
+    gap = target - consumed
+    if gap < 30:
+        return None
+    return Insight(
+        title="🥩 Protein gap",
+        text=(f"You're at {round(consumed)}g protein vs your ~{round(target)}g target "
+              f"— about {round(gap)}g short with the day winding down. A protein-forward "
+              "dinner or a shake would close it."),
+        cooldown_s=18 * 3600,
+    )
+
+
 @rule("supplement_reminder")
 def _supplement_reminder(r) -> Insight | None:
     """A daily supplement/medication nudge at the configured hour.

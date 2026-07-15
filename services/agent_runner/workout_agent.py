@@ -78,6 +78,7 @@ class WorkoutAgent(BaseAgent):
     def _gather_context(self) -> dict:
         profile = _load_json(self.r, "user:profile", {})
         health = _load_json(self.r, "user:health:latest", {})
+        readiness = _load_json(self.r, "user:readiness:today", {})
 
         split = profile.get("workout_split") or _DEFAULT_SPLIT
         goal = profile.get("goal", "cutting")
@@ -108,6 +109,10 @@ class WorkoutAgent(BaseAgent):
             },
             "split": split,
             "recovery": {
+                # Fused readiness score (0-100) — the headline recovery signal;
+                # scale today's training volume/intensity to it.
+                "readiness_score": readiness.get("score"),
+                "readiness_band": readiness.get("band"),
                 "sleep_hours": health.get("sleep_hours"),
                 "hrv_ms": health.get("hrv_ms") or health.get("hrv"),
                 "resting_hr": health.get("resting_hr") or health.get("resting_heart_rate"),
@@ -123,7 +128,8 @@ class WorkoutAgent(BaseAgent):
         user_msg = (
             f"User profile: {json.dumps(ctx['profile'])}\n"
             f"Lifting split (weekday order): {ctx['split']}\n"
-            f"Recovery (HealthKit): {json.dumps(ctx['recovery'])}\n"
+            f"Recovery (readiness score is the headline signal — scale volume to it): "
+            f"{json.dumps(ctx['recovery'])}\n"
             f"Booked classes this week (from Kai/ClassPass): "
             f"{ctx['booked_classes'] or 'none booked yet'}\n"
             f"Kai's top class suggestions: {ctx['class_suggestions'] or 'none'}\n"

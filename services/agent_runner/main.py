@@ -62,6 +62,7 @@ AGENT_CLASSES = {
     "sentry": SentryAgent,
     "morning_brief": AmbientAgent,   # dedicated daily-briefing schedule
     "chronicle": ChronicleAgent,     # nightly daily-memory journal
+    "weekly_review": ChronicleAgent, # Sunday "week in review" (action=weekly_review)
     "spend_guardian": SpendGuardianAgent,   # subscriptions + unusual-charge watch
 }
 
