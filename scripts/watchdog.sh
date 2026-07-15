@@ -48,6 +48,26 @@ if [[ "$audio_dead" == "1" ]]; then
   healed+=("native audio")
 fi
 
+# --- 1.5 Docker disk pressure ------------------------------------------------
+# Today's outage: the Docker VM disk filled from repeated builds → Redis AOF
+# writes failed → agent_runner crash-looped. Prune BEFORE that happens.
+reclaim_gb=$(docker system df --format '{{.Reclaimable}}' 2>/dev/null \
+             | grep -oE '[0-9.]+GB' | grep -oE '[0-9.]+' | awk '{s+=$1} END{printf "%d", s}')
+if [[ -n "$reclaim_gb" && "$reclaim_gb" -ge "${DISK_PRUNE_THRESHOLD_GB:-20}" ]]; then
+  log "docker reclaimable ${reclaim_gb}GB ≥ ${DISK_PRUNE_THRESHOLD_GB:-20}GB — pruning images + build cache"
+  docker image prune -af >/dev/null 2>&1
+  docker builder prune -af >/dev/null 2>&1
+  healed+=("docker disk (~${reclaim_gb}GB)")
+fi
+# Emergency: if Redis can't even write (AOF full), prune hard right now.
+if ! docker exec jarvis-redis redis-cli set __wd_disk ok >/dev/null 2>&1; then
+  log "Redis write failed (possible disk-full) — emergency prune"
+  docker image prune -af >/dev/null 2>&1
+  docker builder prune -af >/dev/null 2>&1
+  healed+=("emergency disk prune")
+fi
+docker exec jarvis-redis redis-cli del __wd_disk >/dev/null 2>&1
+
 # --- 2. Redis / MQTT reachability --------------------------------------------
 if ! docker exec jarvis-redis redis-cli ping 2>/dev/null | grep -q PONG; then
   log "Redis not responding — restarting container"

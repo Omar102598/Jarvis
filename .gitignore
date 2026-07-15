@@ -65,3 +65,5 @@ data/ring-mqtt/
 
 # Home Assistant config (secrets, db, tokens)
 data/homeassistant/
+data/mcp-chrome-extension/
+backups/
