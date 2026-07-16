@@ -172,8 +172,9 @@ async def apple_tv(action: str, name: str = "", app: str = "", command: str = ""
                 st = (fresh or {}).get("state")
                 if st and st not in ("off", "unavailable"):
                     return f"{friendly} is awake ({st})."
-                return (f"Sent the wake to {friendly}, but it still reports "
-                        f"{st or 'unknown'} — it may need a tap on its physical remote.")
+                return (f"FAILED — {friendly} did not wake (still {st or 'unknown'}). "
+                        "It likely needs one tap on its physical remote. Do NOT "
+                        "claim it turned on.")
             if action == "off":
                 ok = await _call(session, "remote", "turn_off", {"entity_id": remote_id})
                 if not ok:
@@ -189,8 +190,12 @@ async def apple_tv(action: str, name: str = "", app: str = "", command: str = ""
                 # old fire-and-forget ordering launched into a sleeping device).
                 fresh = await _wake_and_wait(session, eid, remote_id)
                 if not fresh or fresh.get("state") in ("off", "unavailable", None):
-                    return (f"{friendly} didn't wake up — try tapping its remote "
-                            "once, then ask me again.")
+                    # "FAILED" prefix: small-tier models paraphrased a soft failure
+                    # message as success ("Done, sir" over a sleeping TV).
+                    return (f"FAILED — nothing was opened. {friendly} did not wake "
+                            "up (it may be in deep sleep). Tell the user to tap its "
+                            "physical remote once, then ask again. Do NOT claim the "
+                            "app was opened.")
                 sources = fresh["attributes"].get("source_list") or []
                 choice = next((s for s in sources if s.lower() == app.lower().strip()),
                               None) or next((s for s in sources
@@ -201,7 +206,8 @@ async def apple_tv(action: str, name: str = "", app: str = "", command: str = ""
                 ok = await _call(session, "media_player", "select_source",
                                  {"entity_id": eid, "source": choice or app.strip()})
                 if not ok:
-                    return f"Couldn't open {app} on {friendly}."
+                    return (f"FAILED — could not open {app} on {friendly}. "
+                            "Do NOT claim it was opened.")
                 # Confirm the switch (state can lag — refresh and check briefly).
                 import asyncio as _asyncio
                 for _ in range(3):
