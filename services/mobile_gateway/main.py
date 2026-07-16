@@ -566,9 +566,16 @@ async def ask_audio(request: Request, x_api_key: str = Header(default="")):
     content_type = request.headers.get("content-type", "")
     audio_bytes = b""
     filename = "audio.m4a"
+    # Room mic-satellites (Pi Zero + ReSpeaker) use this same endpoint but
+    # identify their physical room via header/form so replies route as that
+    # room's voice surface instead of "mobile".
+    source = request.headers.get("x-jarvis-room", "").strip() or "mobile"
 
     if "multipart/form-data" in content_type:
         form = await request.form()
+        room_field = form.get("room")
+        if room_field and not hasattr(room_field, "read"):
+            source = str(room_field).strip() or source
         audio_field = form.get("audio")
         if audio_field is None:
             for v in form.values():
@@ -603,8 +610,8 @@ async def ask_audio(request: Request, x_api_key: str = Header(default="")):
     if not text:
         raise HTTPException(status_code=422, detail="No speech detected in audio")
 
-    print(f"[Gateway] /ask/audio transcribed: '{text}'")
-    _, wav_bytes = await _run_pipeline_audio(text, source="mobile")
+    print(f"[Gateway] /ask/audio transcribed ({source}): '{text}'")
+    _, wav_bytes = await _run_pipeline_audio(text, source=source)
     return Response(content=wav_bytes, media_type="audio/wav")
 
 

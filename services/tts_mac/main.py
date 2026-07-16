@@ -194,7 +194,7 @@ def on_message(client, userdata, msg):
         # rooms are phone/HUD/Siri surfaces — the mobile_gateway (or Siri
         # itself) handles their audio; the Mac echoing them aloud was a
         # wildcard-subscription leak.
-        if room.startswith(("mobile-", "glasses-", "siri-")):
+        if room.startswith(("mobile-", "glasses-", "siri-", "satellite-")):
             return
         if raw:
             clean = _strip_markdown(raw)

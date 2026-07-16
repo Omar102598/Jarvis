@@ -293,10 +293,33 @@ tool_node  = None
 agent      = None
 
 
+def _strip_thinking_blocks(msg):
+    """Drop thinking/redacted_thinking blocks from an AIMessage's content.
+
+    Sonnet-5 emits thinking blocks by default. When the graph is streamed
+    (stream_mode="messages"), langchain-anthropic's chunk aggregation can mangle
+    them (block present but its 'thinking' text missing) — and when the tool
+    loop replays that message, the API 400s with
+    "messages.N.content.0.thinking.thinking: Field required", forcing every
+    sonnet reply into the slow non-streaming fallback. We never request
+    extended thinking explicitly, so replaying without the blocks is valid —
+    strip them before the message enters graph state. (Still on latest
+    langchain-anthropic 1.4.8, which hasn't fixed the aggregation.)
+    """
+    content = getattr(msg, "content", None)
+    if isinstance(content, list):
+        cleaned = [b for b in content
+                   if not (isinstance(b, dict)
+                           and b.get("type") in ("thinking", "redacted_thinking"))]
+        if len(cleaned) != len(content):
+            msg = msg.model_copy(update={"content": cleaned})
+    return msg
+
+
 def _call_model(llm_ref, state):
     """Agent node: closed over the llm instance it was built with."""
     response = llm_ref.invoke(state["messages"])
-    return {"messages": [response]}
+    return {"messages": [_strip_thinking_blocks(response)]}
 
 
 def _rebuild_graph() -> None:
@@ -489,7 +512,8 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
                 continue
             content = [
                 item for item in content
-                if not (isinstance(item, dict) and item.get("type") == "image")
+                if not (isinstance(item, dict) and item.get("type") in
+                        ("image", "thinking", "redacted_thinking"))
             ]
             if not content:
                 continue
@@ -640,7 +664,7 @@ def _fanout_to_active_surfaces(
     in the app's feed when opened. Without this, a 6 AM brief spoken to an empty
     room (app not connected) vanishes with no trace — exactly the bug seen.
     """
-    source_is_mobile = source_room.startswith(("mobile-", "glasses-", "siri-"))
+    source_is_mobile = source_room.startswith(("mobile-", "glasses-", "siri-", "satellite-"))
     try:
         pushed_iphone = False
         active = r.smembers("jarvis:active_surfaces")
@@ -840,7 +864,7 @@ def _handle_request(client, data):
     # Conversation-end reasoning: if the user's turn was a closer, still let the
     # reply play, but tell the STT to STOP listening instead of re-opening the
     # follow-up mic. Skipped for non-voice surfaces (mobile/glasses/siri).
-    if not room.startswith(("mobile-", "glasses-", "siri-")) and _is_conversation_closer(text):
+    if not room.startswith(("mobile-", "glasses-", "siri-", "satellite-")) and _is_conversation_closer(text):
         try:
             r.set(f"jarvis:voice:end_turn:{room}", "1", ex=30)
             print(f"[LLM] Conversation closer detected ('{text[:30]}') — ending turn.")

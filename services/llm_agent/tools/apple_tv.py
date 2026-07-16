@@ -78,6 +78,44 @@ async def _call(session, domain: str, service: str, payload: dict) -> bool:
         return resp.status == 200
 
 
+async def _get_state(session, entity_id: str) -> dict | None:
+    async with session.get(f"{HA_URL}/api/states/{entity_id}",
+                           headers=_headers()) as resp:
+        if resp.status != 200:
+            return None
+        return await resp.json()
+
+
+async def _refresh(session, entity_id: str) -> None:
+    """Ask HA to refresh the entity — push updates from the Apple TV can lag
+    (state showed the previous app minutes after a launch), so poll on demand."""
+    await _call(session, "homeassistant", "update_entity", {"entity_id": entity_id})
+
+
+async def _wake_and_wait(session, eid: str, remote_id: str, max_wait: float = 15.0) -> dict | None:
+    """Wake the Apple TV and poll until it reports non-off (fresh state dict).
+
+    While asleep the media_player exposes NO source_list and select_source
+    no-ops, so launching an app must wait for the wake to actually land.
+    """
+    import asyncio as _asyncio
+    tv = await _get_state(session, eid)
+    if tv and tv.get("state") not in ("off", "unavailable", "standby", None):
+        return tv
+    # Fire every wake path we have — different tvOS versions honour different ones.
+    await _call(session, "remote", "turn_on", {"entity_id": remote_id})
+    await _call(session, "media_player", "turn_on", {"entity_id": eid})
+    waited = 0.0
+    while waited < max_wait:
+        await _asyncio.sleep(2.0)
+        waited += 2.0
+        await _refresh(session, eid)
+        tv = await _get_state(session, eid)
+        if tv and tv.get("state") not in ("off", "unavailable", "standby", None):
+            return tv
+    return tv
+
+
 @tool
 async def apple_tv(action: str, name: str = "", app: str = "", command: str = "") -> str:
     """Control an Apple TV: power, launch apps, play/pause, navigate, now-playing.
@@ -129,30 +167,52 @@ async def apple_tv(action: str, name: str = "", app: str = "", command: str = ""
             # → remote.living_room) — used for power + navigation.
             remote_id = "remote." + eid.split(".", 1)[1]
 
-            if action in ("on", "off"):
-                svc = "turn_on" if action == "on" else "turn_off"
-                ok = await _call(session, "remote", svc, {"entity_id": remote_id})
-                if not ok:  # fall back to the media_player service
-                    ok = await _call(session, "media_player", svc, {"entity_id": eid})
-                return (f"{friendly} turned {action}." if ok
-                        else f"Couldn't turn {action} {friendly}.")
+            if action == "on":
+                fresh = await _wake_and_wait(session, eid, remote_id)
+                st = (fresh or {}).get("state")
+                if st and st not in ("off", "unavailable"):
+                    return f"{friendly} is awake ({st})."
+                return (f"Sent the wake to {friendly}, but it still reports "
+                        f"{st or 'unknown'} — it may need a tap on its physical remote.")
+            if action == "off":
+                ok = await _call(session, "remote", "turn_off", {"entity_id": remote_id})
+                if not ok:
+                    ok = await _call(session, "media_player", "turn_off", {"entity_id": eid})
+                return (f"{friendly} turned off." if ok
+                        else f"Couldn't turn off {friendly}.")
 
             if action == "open":
                 if not app.strip():
                     return "Which app should I open?"
-                sources = tv["attributes"].get("source_list") or []
+                # Wake first and WAIT until it's actually awake — while asleep
+                # the app list is empty and select_source silently no-ops (the
+                # old fire-and-forget ordering launched into a sleeping device).
+                fresh = await _wake_and_wait(session, eid, remote_id)
+                if not fresh or fresh.get("state") in ("off", "unavailable", None):
+                    return (f"{friendly} didn't wake up — try tapping its remote "
+                            "once, then ask me again.")
+                sources = fresh["attributes"].get("source_list") or []
                 choice = next((s for s in sources if s.lower() == app.lower().strip()),
                               None) or next((s for s in sources
                                              if app.lower().strip() in s.lower()), None)
                 if sources and not choice:
                     return (f"'{app}' isn't in {friendly}'s app list. "
                             f"Apps: {', '.join(sources[:20])}")
-                # Wake it first so the launch isn't swallowed by sleep.
-                await _call(session, "remote", "turn_on", {"entity_id": remote_id})
                 ok = await _call(session, "media_player", "select_source",
                                  {"entity_id": eid, "source": choice or app.strip()})
-                return (f"Opening {choice or app} on {friendly}." if ok
-                        else f"Couldn't open {app} on {friendly}.")
+                if not ok:
+                    return f"Couldn't open {app} on {friendly}."
+                # Confirm the switch (state can lag — refresh and check briefly).
+                import asyncio as _asyncio
+                for _ in range(3):
+                    await _asyncio.sleep(2.0)
+                    await _refresh(session, eid)
+                    now = await _get_state(session, eid)
+                    app_now = (now or {}).get("attributes", {}).get("app_name") or ""
+                    if choice and app_now.lower() == choice.lower():
+                        return f"{choice} is open on {friendly}."
+                return (f"Opening {choice or app} on {friendly} — sent. (The TV may "
+                        "take a moment to reflect it.)")
 
             if action == "play_pause":
                 ok = await _call(session, "media_player", "media_play_pause",
@@ -161,8 +221,14 @@ async def apple_tv(action: str, name: str = "", app: str = "", command: str = ""
                         else f"Couldn't control {friendly}.")
 
             if action == "status":
-                a = tv["attributes"]
-                bits = [f"{friendly}: {tv.get('state', 'unknown')}"]
+                # Push updates from the ATV can lag (stale app_name observed) —
+                # force a refresh before reading.
+                await _refresh(session, eid)
+                import asyncio as _asyncio
+                await _asyncio.sleep(1.0)
+                fresh = await _get_state(session, eid) or tv
+                a = fresh["attributes"]
+                bits = [f"{friendly}: {fresh.get('state', 'unknown')}"]
                 if a.get("app_name"):
                     bits.append(f"app {a['app_name']}")
                 if a.get("media_title"):
@@ -170,6 +236,8 @@ async def apple_tv(action: str, name: str = "", app: str = "", command: str = ""
                     if a.get("media_series_title"):
                         title = f"{a['media_series_title']} — {title}"
                     bits.append(f"playing “{title}”")
+                if fresh.get("state") in ("paused", "idle") and a.get("app_name"):
+                    bits.append("(note: this can reflect the last active playback)")
                 return ", ".join(bits) + "."
 
             if action == "remote":

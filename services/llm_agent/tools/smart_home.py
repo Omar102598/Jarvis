@@ -50,6 +50,25 @@ async def control_device(entity_id: str, action: str, params: dict = None) -> st
                             f"entities: {', '.join(names) or 'none'}. "
                             "Use one of these exact ids.")
 
+        # SEGMENT TRAP: Govee lamps expose light.<lamp>_segment_N per zone.
+        # Turning segments on while the MASTER light.<lamp> is off leaves the
+        # lamp physically DARK even though every segment reports "on" — Jarvis
+        # said "Done, sir" over unlit lamps. Any segment turn_on must force the
+        # master on first.
+        import re as _re
+        seg_match = _re.match(r"^(light\..+?)_segment_\d+$", entity_id)
+        if seg_match and action == "turn_on":
+            master = seg_match.group(1)
+            async with session.get(f"{HA_URL}/api/states/{master}",
+                                   headers=_headers()) as mchk:
+                master_state = (await mchk.json()).get("state") if mchk.status == 200 else None
+            if master_state == "off":
+                async with session.post(f"{HA_URL}/api/services/light/turn_on",
+                                        headers=_headers(),
+                                        json={"entity_id": master}) as _:
+                    pass
+                await asyncio.sleep(1.0)
+
         # Govee (and some cloud lights) won't power on AND apply an effect/
         # color in one call. When turning on WITH a vibe (effect/rgb/color/
         # brightness), power on plain first, then apply the vibe.
