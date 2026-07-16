@@ -404,3 +404,13 @@ volumes:
   mosquitto_data:
   redis_data:
   chroma_data:
+
+# The apartment LAN is 172.20.0.0/16 — Docker's auto-assigned bridge for this
+# project COLLIDED with it (also 172.20.0.0/16), so containers routed traffic
+# for real LAN devices (Apple TVs, Govee, future Sonos) into the bridge and
+# could never reach them. Pin the project network to a subnet that can't clash.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.87.0.0/24
