@@ -86,7 +86,10 @@ async def _synth_elevenlabs(text: str, out_path: str) -> bool:
     """Write ElevenLabs mp3 to out_path. False → caller falls back to edge-tts."""
     global _el_down_until
     import time as _time
-    if not ELEVENLABS_API_KEY or _time.time() < _el_down_until:
+    if not ELEVENLABS_API_KEY:
+        return False   # unconfigured — edge-tts is the intended voice
+    if _time.time() < _el_down_until:
+        print("[TTS] ElevenLabs in cooldown — using Ryan")
         return False
     try:
         import aiohttp
@@ -109,6 +112,7 @@ async def _synth_elevenlabs(text: str, out_path: str) -> bool:
                 data = await r.read()
         with open(out_path, "wb") as f:
             f.write(data)
+        print("[TTS] via ElevenLabs (Daniel)")
         return True
     except Exception as e:
         print(f"[TTS] ElevenLabs failed ({e}) — falling back")
