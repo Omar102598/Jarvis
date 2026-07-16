@@ -155,9 +155,17 @@ def on_speech(client, userdata, msg):
 
 def main():
     mqtt_client = mqtt.Client()
-    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
-    mqtt_client.subscribe("jarvis/audio/mic/+/speech")
+
+    # Subscribe in on_connect so a mosquitto restart re-subscribes automatically
+    # (subscribing once in main left the bridge connected but deaf after a
+    # broker bounce — transcripts never reached the brain).
+    def on_connect(client, userdata, flags, rc):
+        client.subscribe("jarvis/audio/mic/+/speech")
+        print(f"[Verify] MQTT connected (rc={rc}), subscription active.")
+
+    mqtt_client.on_connect = on_connect
     mqtt_client.message_callback_add("jarvis/audio/mic/+/speech", on_speech)
+    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
 
     print(f"[Verify] Ready (mode={VERIFY_MODE}, threshold={THRESHOLD})")
     mqtt_client.loop_forever()

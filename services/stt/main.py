@@ -301,11 +301,20 @@ def on_wake_word(client, userdata, msg):
 
 def main():
     mqtt_client = mqtt.Client()
-    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
-    mqtt_client.subscribe("jarvis/audio/mic/+/wake_word")
+
+    # Subscribe in on_connect (NOT once in main): paho only restores
+    # subscriptions on reconnect when they're made here. Subscribing in main
+    # meant a mosquitto restart left this service connected but DEAF — wake
+    # words fired, but STT never heard the events (voice "stopped working").
+    def on_connect(client, userdata, flags, rc):
+        client.subscribe("jarvis/audio/mic/+/wake_word")
+        client.subscribe("jarvis/tts/+/done")
+        print(f"[STT] MQTT connected (rc={rc}), subscriptions active.")
+
+    mqtt_client.on_connect = on_connect
     mqtt_client.message_callback_add("jarvis/audio/mic/+/wake_word", on_wake_word)
-    mqtt_client.subscribe("jarvis/tts/+/done")
     mqtt_client.message_callback_add("jarvis/tts/+/done", on_tts_done)
+    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
 
     print("[STT] Waiting for wake word events...")
     mqtt_client.loop_forever()
