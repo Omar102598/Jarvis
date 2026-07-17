@@ -25,6 +25,23 @@ REFRESH_TOKEN = os.environ.get("SPOTIFY_REFRESH_TOKEN", "")
 _API = "https://api.spotify.com/v1"
 
 
+def _set_media_flag(playing: bool) -> None:
+    """Track that music is playing (jarvis:media:playing) so the STT skips the
+    open-mic follow-up window — otherwise the mic hears the speakers, Whisper
+    transcribes lyrics as commands, and Jarvis talks to the music in a loop.
+    Wake word still works during playback. Never raises."""
+    try:
+        import redis as _redis_mod
+        r = _redis_mod.Redis(host=os.environ.get("REDIS_HOST", "redis"),
+                             decode_responses=True)
+        if playing:
+            r.set("jarvis:media:playing", "spotify", ex=3 * 3600)
+        else:
+            r.delete("jarvis:media:playing")
+    except Exception:
+        pass
+
+
 async def _access_token(session: aiohttp.ClientSession) -> Optional[str]:
     auth = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
     async with session.post(
@@ -128,6 +145,7 @@ async def spotify_control(action: str, query: str = "", device: str = "") -> str
                     json={"device_ids": [target["id"]], "play": True},
                 ) as resp:
                     if resp.status in (200, 204):
+                        _set_media_flag(True)
                         return f"Moved playback to {target['name']}."
                     return f"Couldn't transfer playback ({resp.status})."
 
@@ -149,11 +167,14 @@ async def spotify_control(action: str, query: str = "", device: str = "") -> str
                 async with session.put(f"{_API}/me/player/play", headers=headers,
                                        params=dev_params) as resp:
                     where = f" on {target['name']}" if target else ""
-                    return (f"Resumed playback{where}." if resp.status in (200, 204)
-                            else f"Couldn't resume ({resp.status}) — is a device active?")
+                    if resp.status in (200, 204):
+                        _set_media_flag(True)
+                        return f"Resumed playback{where}."
+                    return f"Couldn't resume ({resp.status}) — is a device active?"
             if action == "pause":
                 await session.put(f"{_API}/me/player/pause", headers=headers,
                                   params=dev_params)
+                _set_media_flag(False)
                 return "Paused."
             if action == "next":
                 await session.post(f"{_API}/me/player/next", headers=headers,
@@ -187,6 +208,7 @@ async def spotify_control(action: str, query: str = "", device: str = "") -> str
                     params=dev_params, json=body,
                 ) as resp:
                     if resp.status in (200, 204):
+                        _set_media_flag(True)
                         where = f" on {target['name']}" if target else ""
                         if want_playlist:
                             return f"Playing the playlist {item['name']}{where}."

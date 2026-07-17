@@ -182,6 +182,12 @@ def _classify_tier(text: str) -> str:
     if n > 30 or any(t in lower for t in _OPUS_TRIGGERS):
         return "opus"
 
+    # Apple TV / TV control → sonnet, never haiku: haiku hallucinated "Done,
+    # sir — Netflix is open" with ZERO tool calls (verified via the tool-event
+    # feed). The multi-step wake→launch→verify flow needs the bigger tier.
+    if "apple tv" in lower or "appletv" in lower or re.search(r"\btv\b", lower):
+        return "sonnet"
+
     # Short command-style queries → Haiku
     if n <= 14 and any(lower.startswith(t) or t in lower for t in _HAIKU_TRIGGERS):
         return "haiku"
@@ -827,17 +833,30 @@ def _handle_request(client, data):
     except Exception as e:
         err_str = str(e)
         print(f"[LLM] Error: {err_str}")
-        # Only wipe history for genuine history-corruption errors (dangling
-        # tool_use/tool_result pairs). A bare "400" match once deleted the
-        # user's whole conversation over an unrelated temperature-param error.
-        if "tool_use_id" in err_str or "tool_result" in err_str:
+        # Transient Anthropic overload (529) — retry once after a short pause
+        # instead of apologizing ("turn on my apple tv" died to a momentary 529).
+        if "529" in err_str or "overloaded" in err_str.lower():
             try:
-                r.delete(f"conversation:{USER_ID}")
-                print(f"[LLM] Cleared corrupted history for user {USER_ID}")
-            except Exception:
-                pass
-        response = "I'm sorry, I encountered an error processing that request."
-        _sentence_queue.append(response)
+                time.sleep(3)
+                print("[LLM] 529/overloaded — retrying once")
+                response = asyncio.run(
+                    _process_async(text, room, tier=tier, on_sentence=on_sentence))
+                err_str = ""
+            except Exception as e2:
+                err_str = str(e2)
+                print(f"[LLM] retry failed: {err_str}")
+        if err_str:
+            # Only wipe history for genuine history-corruption errors (dangling
+            # tool_use/tool_result pairs). A bare "400" match once deleted the
+            # user's whole conversation over an unrelated temperature-param error.
+            if "tool_use_id" in err_str or "tool_result" in err_str:
+                try:
+                    r.delete(f"conversation:{USER_ID}")
+                    print(f"[LLM] Cleared corrupted history for user {USER_ID}")
+                except Exception:
+                    pass
+            response = "I'm sorry, I encountered an error processing that request."
+            _sentence_queue.append(response)
     finally:
         _stop_thinking.set()
 

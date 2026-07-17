@@ -249,6 +249,18 @@ def on_tts_done(client, userdata, msg):
                 return
         except Exception:
             pass
+        # Media guard: while music/TV is playing (flag set by the spotify /
+        # apple_tv tools), an open follow-up mic hears the SPEAKERS — Whisper
+        # transcribes lyrics/dialogue as commands and Jarvis loops talking to
+        # the music. Skip the window; the wake word still works during playback.
+        try:
+            src = _r.get("jarvis:media:playing")
+            if src:
+                print(f"[STT] Media playing ({src}) — follow-up window skipped "
+                      "(wake word still active).")
+                return
+        except Exception:
+            pass
 
     # Brief pause so the mic doesn't pick up audio reverb from the speaker
     time.sleep(0.6)

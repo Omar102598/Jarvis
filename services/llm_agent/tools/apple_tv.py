@@ -24,6 +24,19 @@ HA_TOKEN = os.environ.get("HA_TOKEN")
 _REMOTE_COMMANDS = {"up", "down", "left", "right", "select", "menu", "home",
                     "play", "pause", "skip_forward", "skip_backward"}
 
+def _set_media_flag() -> None:
+    """Mark media playing (jarvis:media:playing) — the STT skips the open-mic
+    follow-up window while the TV is going, so Jarvis doesn't transcribe TV
+    audio as commands. Wake word still works. Never raises."""
+    try:
+        import redis as _redis_mod
+        r = _redis_mod.Redis(host=os.environ.get("REDIS_HOST", "redis"),
+                             decode_responses=True)
+        r.set("jarvis:media:playing", "apple_tv", ex=4 * 3600)
+    except Exception:
+        pass
+
+
 _PAIR_HELP = (
     "No Apple TVs are paired in Home Assistant yet. One-time setup: open HA "
     "(port 8123) → Settings → Devices & Services → Add Integration → 'Apple TV' "
@@ -171,6 +184,7 @@ async def apple_tv(action: str, name: str = "", app: str = "", command: str = ""
                 fresh = await _wake_and_wait(session, eid, remote_id)
                 st = (fresh or {}).get("state")
                 if st and st not in ("off", "unavailable"):
+                    _set_media_flag()
                     return f"{friendly} is awake ({st})."
                 return (f"FAILED — {friendly} did not wake (still {st or 'unknown'}). "
                         "It likely needs one tap on its physical remote. Do NOT "
@@ -185,40 +199,46 @@ async def apple_tv(action: str, name: str = "", app: str = "", command: str = ""
             if action == "open":
                 if not app.strip():
                     return "Which app should I open?"
-                # Wake first and WAIT until it's actually awake — while asleep
-                # the app list is empty and select_source silently no-ops (the
-                # old fire-and-forget ordering launched into a sleeping device).
-                fresh = await _wake_and_wait(session, eid, remote_id)
-                if not fresh or fresh.get("state") in ("off", "unavailable", None):
-                    # "FAILED" prefix: small-tier models paraphrased a soft failure
-                    # message as success ("Done, sir" over a sleeping TV).
-                    return (f"FAILED — nothing was opened. {friendly} did not wake "
-                            "up (it may be in deep sleep). Tell the user to tap its "
-                            "physical remote once, then ask again. Do NOT claim the "
-                            "app was opened.")
-                sources = fresh["attributes"].get("source_list") or []
+                import asyncio as _asyncio
+                # Wake it (remote + media_player paths) and give it a beat. We do
+                # NOT gate the launch on the entity's reported state — HA's power
+                # state lags the real device badly (an awake ATV read "off" past
+                # the old 15s window, so Netflix never got the launch command).
+                fresh = await _wake_and_wait(session, eid, remote_id, max_wait=8.0)
+                sources = ((fresh or {}).get("attributes") or {}).get("source_list") or []
+                # The app list populates several seconds AFTER wake — poll for it.
+                # Launching without it fell through to the raw lowercase name
+                # ("netflix"), which select_source's exact match silently ignores.
+                for _ in range(5):
+                    if sources:
+                        break
+                    await _asyncio.sleep(2.5)
+                    await _refresh(session, eid)
+                    fresh = await _get_state(session, eid)
+                    sources = ((fresh or {}).get("attributes") or {}).get("source_list") or []
                 choice = next((s for s in sources if s.lower() == app.lower().strip()),
                               None) or next((s for s in sources
                                              if app.lower().strip() in s.lower()), None)
                 if sources and not choice:
                     return (f"'{app}' isn't in {friendly}'s app list. "
                             f"Apps: {', '.join(sources[:20])}")
+                # Last-resort raw name: title-case so exact-match has a chance.
+                target_app = choice or app.strip().title()
                 ok = await _call(session, "media_player", "select_source",
-                                 {"entity_id": eid, "source": choice or app.strip()})
+                                 {"entity_id": eid, "source": target_app})
                 if not ok:
-                    return (f"FAILED — could not open {app} on {friendly}. "
+                    return (f"FAILED — could not open {target_app} on {friendly}. "
                             "Do NOT claim it was opened.")
-                # Confirm the switch (state can lag — refresh and check briefly).
-                import asyncio as _asyncio
-                for _ in range(3):
-                    await _asyncio.sleep(2.0)
-                    await _refresh(session, eid)
-                    now = await _get_state(session, eid)
-                    app_now = (now or {}).get("attributes", {}).get("app_name") or ""
-                    if choice and app_now.lower() == choice.lower():
-                        return f"{choice} is open on {friendly}."
-                return (f"Opening {choice or app} on {friendly} — sent. (The TV may "
-                        "take a moment to reflect it.)")
+                _set_media_flag()   # TV audio incoming — mute the follow-up mic
+                # NOTE: this Apple TV only reports app_name during ACTIVE playback,
+                # so an app sitting at its menu reads app='none' — absence of
+                # confirmation is NOT failure (user-verified: Netflix visibly opened
+                # while the entity said none). Send once, report confidently.
+                if choice:
+                    return f"{target_app} launched on {friendly} — it's on the screen."
+                return (f"Sent the {target_app} launch to {friendly}. (App list wasn't "
+                        "available to validate the name — if the screen doesn't show "
+                        f"it, the app may be called something other than '{target_app}'.)")
 
             if action == "play_pause":
                 ok = await _call(session, "media_player", "media_play_pause",
