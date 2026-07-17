@@ -188,6 +188,13 @@ def _classify_tier(text: str) -> str:
     if "apple tv" in lower or "appletv" in lower or re.search(r"\btv\b", lower):
         return "sonnet"
 
+    # "All the lights"-style commands need enumeration across many entities —
+    # multi-step tool use haiku fumbles (a "turn off all the lights" left the
+    # bedroom lamp burning with no turn_off tool calls on record).
+    if ("light" in lower or "lamp" in lower) and \
+            ("all" in words or "every" in lower or "everything" in lower):
+        return "sonnet"
+
     # Short command-style queries → Haiku
     if n <= 14 and any(lower.startswith(t) or t in lower for t in _HAIKU_TRIGGERS):
         return "haiku"

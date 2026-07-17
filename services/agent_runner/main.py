@@ -337,8 +337,14 @@ def _run_departure_scene(profile: dict) -> None:
         return
     ha_url = os.environ.get("HA_URL", "")
     ha_token = os.environ.get("HA_TOKEN", "")
-    entities = profile.get("arrival_lights",
-                           ["light.living_room_left", "light.living_room_right"])
+    # Departure turns off EVERY managed lamp — not just the arrival pair. The
+    # bedroom lamp stayed burning after a departure because it was never on
+    # this list. Override with profile departure_lights if set.
+    entities = profile.get("departure_lights") or (
+        profile.get("arrival_lights",
+                    ["light.living_room_left", "light.living_room_right"])
+        + ["light.bedroom_lamp"]
+    )
     if not (ha_url and ha_token):
         return
     try:
