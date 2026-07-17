@@ -172,6 +172,46 @@ class SentryAgent(BaseAgent):
                     else:
                         print(f"[Sentry] person in wake window but not sustained yet "
                               f"({len(sightings)} sighting(s)) — holding brief")
+                        # DEFERRED CONFIRM: with 2+ sightings, don't demand a THIRD
+                        # motion — a user who settles in (sits at their desk) stops
+                        # generating motion and the brief never fired (held at "2
+                        # sightings, 122s span" all morning). Schedule a one-shot
+                        # confirm at first_sighting+gap: if still unbriefed then,
+                        # the sustained window has elapsed → fire.
+                        if len(sightings) >= 2 and self.r.set(
+                                f"jarvis:wake:confirm_scheduled:{date}", "1",
+                                nx=True, ex=4 * 3600):
+                            import threading as _threading
+                            delay = max(10.0, gap - span + 5.0)
+                            r_ref = self.r
+
+                            def _confirm_wake(d=date, rr=r_ref):
+                                try:
+                                    from zoneinfo import ZoneInfo as _ZI
+                                    lt2 = datetime.now(_ZI(os.environ.get(
+                                        "USER_TZ", "America/Chicago")))
+                                    ws2, we2 = (int(x) for x in os.environ.get(
+                                        "WAKE_WINDOW", "5-10").split("-"))
+                                    if not (ws2 <= lt2.hour < we2):
+                                        return
+                                    if rr.get(f"jarvis:briefed:{d}"):
+                                        return
+                                    import paho.mqtt.publish as _pub
+                                    _pub.single(
+                                        "jarvis/agents/morning_brief/trigger",
+                                        json.dumps({"params": {
+                                            "action": "morning_brief",
+                                            "room": "office"}}),
+                                        hostname=MQTT_HOST, port=MQTT_PORT,
+                                    )
+                                    print("[Sentry] deferred wake confirm → briefing")
+                                except Exception as e2:
+                                    print(f"[Sentry] deferred confirm failed: {e2}")
+
+                            t = _threading.Timer(delay, _confirm_wake)
+                            t.daemon = True
+                            t.start()
+                            print(f"[Sentry] wake confirm scheduled in {int(delay)}s")
             except Exception as exc:
                 print(f"[Sentry] wake-brief dispatch failed: {exc}")
 
