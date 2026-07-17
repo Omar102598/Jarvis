@@ -62,9 +62,11 @@ class AmbientAgent(BaseAgent):
             if not self.r.set(f"jarvis:briefed:{today}", "1", nx=True, ex=86400):
                 return "Morning briefing already delivered today — skipping."
             prompt = (
-                "Good morning briefing, please. FIRST: check my profile for a "
-                "'morning_scene_shortcut' field — if set, run that Mac shortcut "
-                "(mac_run_shortcut) to bring the lights up before you speak. "
+                "Good morning briefing, please. FIRST bring the lights up before "
+                "you speak: turn on light.living_room_left AND light.living_room_right "
+                "(control_device, params color_temp_kelvin 4500, brightness_pct 70 — "
+                "bright morning white). Additionally run my profile's "
+                "'morning_scene_shortcut' Mac shortcut if that field is set. "
                 "Then compose the briefing from live data: "
                 "0) my recovery — call get_readiness and let TODAY'S SCORE SET "
                 "THE TONE of the whole brief (primed = energetic/push; low = "
