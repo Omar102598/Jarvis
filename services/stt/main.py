@@ -43,9 +43,12 @@ except Exception:
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 1600  # 100ms at 16kHz
 SILENCE_THRESHOLD = int(os.environ.get("STT_SILENCE_THRESHOLD", "150"))  # RMS; lower = more sensitive
-SILENCE_DURATION = float(os.environ.get("STT_SILENCE_DURATION", "1.2"))  # seconds of silence to stop
-INITIAL_GRACE = float(os.environ.get("STT_INITIAL_GRACE", "1.5"))  # seconds before silence detection starts
-MAX_RECORD_SECONDS = 15
+SILENCE_DURATION = float(os.environ.get("STT_SILENCE_DURATION", "0.7"))  # seconds of silence to stop
+INITIAL_GRACE = float(os.environ.get("STT_INITIAL_GRACE", "0.6"))  # seconds before silence detection starts
+# Hard ceiling on one utterance. Reached ONLY when silence is never detected
+# (ambient noise above SILENCE_THRESHOLD), in which case it is pure added
+# latency on every turn — so keep it tight and watch the "hit cap" warning.
+MAX_RECORD_SECONDS = float(os.environ.get("STT_MAX_RECORD_SECONDS", "10"))
 # Seconds after TTS finishes to keep an open mic for follow-ups (0 = disabled)
 FOLLOWUP_WINDOW = float(os.environ.get("STT_FOLLOWUP_WINDOW", "25.0"))
 
@@ -173,6 +176,11 @@ def capture_command_audio() -> io.BytesIO:
         input=True, frames_per_buffer=CHUNK_SIZE,
     )
 
+    import time as _time
+    _t0 = _time.time()
+    _rms_floor = None
+    _stopped_on_silence = False
+
     frames = []
     silent_chunks = 0
     chunks_per_second = SAMPLE_RATE // CHUNK_SIZE
@@ -189,12 +197,15 @@ def capture_command_audio() -> io.BytesIO:
             audio_data = np.frombuffer(data, dtype=np.int16)
             rms = np.sqrt(np.mean(audio_data.astype(np.float32) ** 2))
 
+            _rms_floor = rms if _rms_floor is None else min(_rms_floor, rms)
+
             if rms < SILENCE_THRESHOLD:
                 silent_chunks += 1
             else:
                 silent_chunks = 0
 
             if silent_chunks > int(SILENCE_DURATION * chunks_per_second):
+                _stopped_on_silence = True
                 break
 
         chunk_index += 1
@@ -202,6 +213,16 @@ def capture_command_audio() -> io.BytesIO:
     stream.stop_stream()
     stream.close()
     audio.terminate()
+
+    _elapsed = _time.time() - _t0
+    if _stopped_on_silence:
+        print(f"[STT] Recorded {_elapsed:.1f}s (stopped on silence; "
+              f"quietest RMS {_rms_floor or 0:.0f} vs threshold {SILENCE_THRESHOLD})")
+    else:
+        print(f"[STT] Recorded {_elapsed:.1f}s — HIT THE {MAX_RECORD_SECONDS}s CAP: "
+              f"silence never detected (quietest RMS {_rms_floor or 0:.0f} never fell "
+              f"below threshold {SILENCE_THRESHOLD}). Raise STT_SILENCE_THRESHOLD "
+              f"above the room's noise floor to stop paying this on every turn.")
 
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
