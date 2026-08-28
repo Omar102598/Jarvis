@@ -42,8 +42,8 @@ final class JarvisClient {
 
     // MARK: Text query → QueryResponse
 
-    func askText(_ text: String) async throws -> QueryResponse {
-        let body = TextQueryRequest(text: text)
+    func askText(_ text: String, speak: Bool = true) async throws -> QueryResponse {
+        let body = TextQueryRequest(text: text, speak: speak)
         return try await post(path: "/ask/query", body: body)
     }
 

@@ -154,10 +154,11 @@ final class ChatViewModel: ObservableObject {
         defer { isProcessing = false }
 
         do {
-            let response = try await JarvisClient.shared.askText(text)
+            // Typed in, so reply in text only — no synthesis requested, nothing
+            // to play. Holding the mic button (sendVoice) still speaks.
+            let response = try await JarvisClient.shared.askText(text, speak: false)
             let displayText = response.display.body.isEmpty ? response.text : response.display.body
             finishLoading(loadingId, text: displayText)
-            playAudio(base64: response.audioB64)
             await glassesManager?.send(response.display.hudState)
         } catch {
             finishLoading(loadingId, text: "Error: \(error.localizedDescription)")
@@ -200,9 +201,9 @@ final class ChatViewModel: ObservableObject {
         defer { isProcessing = false }
 
         do {
+            // Camera capture means eyes already on the screen — show, don't speak.
             let response = try await JarvisClient.shared.askImage(imageData, text: prompt)
             finishLoading(loadingId, text: response.text)
-            playAudio(base64: response.audioB64)
             await glassesManager?.send(response.display.hudState)
         } catch {
             finishLoading(loadingId, text: "Error: \(error.localizedDescription)")

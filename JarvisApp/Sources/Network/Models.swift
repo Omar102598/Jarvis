@@ -5,6 +5,9 @@ import Foundation
 struct TextQueryRequest: Encodable {
     let text: String
     let source: String = "glasses"
+    /// Modality matching: typed messages get a typed reply, so the server skips
+    /// synthesis (saves TTS spend and latency). Voice turns keep speaking.
+    var speak: Bool = true
 }
 
 struct ImageQueryRequest: Encodable {
