@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 struct ChatView: View {
     @EnvironmentObject var glassesManager: GlassesManager
@@ -7,6 +8,8 @@ struct ChatView: View {
     @State private var isRecording = false
     @State private var micPulse: CGFloat = 1.0
     @State private var showTimeline = false
+    @State private var mediaItem: PhotosPickerItem?
+    @State private var showMediaPicker = false
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
@@ -173,18 +176,41 @@ struct ChatView: View {
         VStack(spacing: 0) {
             Rectangle().fill(Color.jBorder).frame(height: 1)
             HStack(spacing: 12) {
+                // Glasses when they're connected; otherwise the phone's own
+                // library. Previously this was hard-disabled without glasses,
+                // which made image/video analysis unreachable on the phone.
                 Button {
-                    Task {
-                        if let photoData = try? await glassesManager.capturePhoto() {
-                            await chatViewModel.sendImage(photoData)
+                    if glassesManager.isConnected {
+                        Task {
+                            if let photoData = try? await glassesManager.capturePhoto() {
+                                await chatViewModel.sendImage(photoData)
+                            }
                         }
+                    } else {
+                        showMediaPicker = true
                     }
                 } label: {
-                    Image(systemName: "camera")
+                    Image(systemName: glassesManager.isConnected ? "camera" : "photo.on.rectangle")
                         .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(glassesManager.isConnected ? .jBlueDim : .jBorder)
+                        .foregroundColor(.jBlueDim)
                 }
-                .disabled(!glassesManager.isConnected || chatViewModel.isProcessing)
+                .disabled(chatViewModel.isProcessing)
+                .photosPicker(isPresented: $showMediaPicker, selection: $mediaItem,
+                              matching: .any(of: [.videos, .images]))
+                .onChange(of: mediaItem) { _, item in
+                    guard let item else { return }
+                    Task {
+                        defer { mediaItem = nil }
+                        guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+                        // A video's frames get sampled server-side (or handed to
+                        // Gemini); an image goes down the existing image path.
+                        if item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }) {
+                            await chatViewModel.sendVideo(data)
+                        } else {
+                            await chatViewModel.sendImage(data)
+                        }
+                    }
+                }
 
                 ZStack(alignment: .leading) {
                     if inputText.isEmpty {

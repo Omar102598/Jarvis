@@ -11,3 +11,5 @@ edge-tts>=7.0
 httpx[http2]>=0.27
 PyJWT>=2.8
 cryptography>=42.0
+# Vertex AI auth when off-GCE (metadata server is used on the VM)
+google-auth>=2.30

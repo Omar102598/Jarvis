@@ -756,44 +756,142 @@ class VideoQueryRequest(BaseModel):
     video_b64: str
     text: str = "What is happening in this video?"
     source: str = "glasses"
+    # Recording a clip means eyes are on the screen — default to text.
+    speak: bool = False
+
+
+# Vertex tokens live ~1h; cache so a burst of clips doesn't re-auth each time.
+_GOOGLE_TOKEN: dict = {"token": "", "exp": 0.0}
+
+
+async def _google_access_token() -> str:
+    """OAuth token for Vertex AI, or "" if no Google credentials are reachable.
+
+    Two sources, in order: the GCE metadata server (the gateway runs on the
+    GCP VM, so this needs no key files at all), then Application Default
+    Credentials for off-GCP runs. Never raises — callers treat "" as
+    "Vertex unavailable" and fall back.
+    """
+    if _GOOGLE_TOKEN["token"] and time.time() < _GOOGLE_TOKEN["exp"]:
+        return _GOOGLE_TOKEN["token"]
+
+    import aiohttp
+
+    def _store(token: str, ttl: float) -> str:
+        _GOOGLE_TOKEN.update(token=token, exp=time.time() + max(0.0, ttl - 60))
+        return token
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "http://metadata.google.internal/computeMetadata/v1/instance/"
+                "service-account/token",
+                headers={"Metadata-Flavor": "Google"},
+                timeout=aiohttp.ClientTimeout(total=3),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return _store(data["access_token"],
+                                  float(data.get("expires_in", 3600)))
+    except Exception:
+        pass  # not on GCE (Mac edge, laptop, a friend's box) — try ADC
+
+    try:
+        import google.auth
+        from google.auth.transport.requests import Request as _GoogleRequest
+
+        creds, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        await asyncio.get_running_loop().run_in_executor(
+            None, creds.refresh, _GoogleRequest())
+        expiry = getattr(creds, "expiry", None)
+        ttl = 3600.0
+        if expiry is not None:
+            from datetime import datetime, timezone
+            ref = expiry if expiry.tzinfo else expiry.replace(tzinfo=timezone.utc)
+            ttl = max(0.0, (ref - datetime.now(timezone.utc)).total_seconds())
+        return _store(creds.token or "", ttl)
+    except Exception:
+        return ""
 
 
 async def _analyze_video_gemini(video_b64: str, question: str) -> Optional[str]:
     """True video-native analysis via Gemini (motion, temporal order, audio).
 
     Claude only sees sampled frames; Gemini ingests the actual clip. Used when
-    GOOGLE_API_KEY is set and the clip is small enough for inline upload
-    (~<14MB base64); returns None on any failure so the caller falls back to
-    the frame-sampling path. Model override: GEMINI_VIDEO_MODEL.
+    a Google backend is reachable and the clip is small enough for inline
+    upload (~<14MB base64); returns None on any failure so the caller falls
+    back to the frame-sampling path. Model override: GEMINI_VIDEO_MODEL.
+
+    Backends are tried in order:
+      1. Vertex AI  — billed to the GCP project, so it draws on ordinary GCP
+         credit. Auth is the VM's own service account (no key in .env).
+      2. AI Studio  — GOOGLE_API_KEY. Billed against a *separate* AI Studio
+         prepay balance that GCP credits do NOT fund, so it is the fallback.
     """
-    api_key = os.environ.get("GOOGLE_API_KEY", "").strip()
-    if not api_key or len(video_b64) > 14_000_000:
+    if len(video_b64) > 14_000_000:
         return None
-    model = os.environ.get("GEMINI_VIDEO_MODEL", "gemini-2.5-flash")
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{model}:generateContent?key={api_key}")
+
+    model = os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.6-flash").strip()
     body = {
         "contents": [{
+            "role": "user",
             "parts": [
                 {"inline_data": {"mime_type": "video/mp4", "data": video_b64}},
                 {"text": question},
-            ]
+            ],
         }]
     }
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=body,
-                                    timeout=aiohttp.ClientTimeout(total=90)) as resp:
-                if resp.status != 200:
-                    print(f"[Gateway] Gemini video failed ({resp.status}) — "
-                          "falling back to frame sampling")
-                    return None
-                data = await resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        print(f"[Gateway] Gemini video error ({e}) — falling back to frame sampling")
+
+    attempts: list = []
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    if project:
+        location = os.environ.get("VERTEX_LOCATION", "global").strip() or "global"
+        host = ("aiplatform.googleapis.com" if location == "global"
+                else f"{location}-aiplatform.googleapis.com")
+        attempts.append((
+            "vertex",
+            f"https://{host}/v1/projects/{project}/locations/{location}"
+            f"/publishers/google/models/{model}:generateContent",
+        ))
+    api_key = os.environ.get("GOOGLE_API_KEY", "").strip()
+    if api_key:
+        attempts.append((
+            "aistudio",
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent?key={api_key}",
+        ))
+    if not attempts:
         return None
+
+    import aiohttp
+    for backend, url in attempts:
+        headers = {}
+        if backend == "vertex":
+            token = await _google_access_token()
+            if not token:
+                print("[Gateway] Vertex: no Google credentials — skipping")
+                continue
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                        url, json=body, headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=90)) as resp:
+                    if resp.status != 200:
+                        detail = (await resp.text())[:200].replace("\n", " ")
+                        print(f"[Gateway] Gemini video via {backend} failed "
+                              f"({resp.status}): {detail}")
+                        continue
+                    data = await resp.json()
+            text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            if text:
+                print(f"[Gateway] Gemini video analyzed via {backend} ({model})")
+                return text
+        except Exception as e:
+            print(f"[Gateway] Gemini video error via {backend} ({e})")
+    print("[Gateway] Gemini unavailable — falling back to frame sampling")
+    return None
 
 
 @app.post("/ask/video", summary="[iOS app/glasses] Short video clip + text → JSON with display payload")
@@ -825,7 +923,7 @@ async def ask_video(request: VideoQueryRequest, x_api_key: str = Header(default=
             f"(A video the user just recorded was analyzed; here is what it shows: "
             f"{gemini_desc})\n\nThe user asked: {request.text}"
         )
-        return await _run_pipeline_json(composite)
+        return await _run_pipeline_json(composite, speak=request.speak)
 
     tmpdir = tempfile.mkdtemp(prefix="jarvis_vid_")
     try:

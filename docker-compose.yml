@@ -242,7 +242,11 @@ services:
       # Video-native analysis via Gemini (optional — falls back to
       # frame-sampling + Claude when unset). Free tier: aistudio.google.com
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - GEMINI_VIDEO_MODEL=${GEMINI_VIDEO_MODEL:-gemini-2.5-flash}
+      - GEMINI_VIDEO_MODEL=${GEMINI_VIDEO_MODEL:-gemini-3.6-flash}
+      # Vertex AI path: billed to the GCP project (ordinary GCP credit),
+      # authenticated by the VM's own service account — no key needed.
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
+      - VERTEX_LOCATION=${VERTEX_LOCATION:-global}
       # App voice — chain: ElevenLabs (if key set) → edge-tts → piper.
       # Same env as tts_mac so one .env line changes Mac + app together.
       - TTS_VOICE=${TTS_VOICE:-en-GB-RyanNeural}

@@ -124,7 +124,11 @@ services:
       - MOBILE_GATEWAY_PORT=8080
       - MOBILE_LLM_TIMEOUT=${MOBILE_LLM_TIMEOUT:-45}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - GEMINI_VIDEO_MODEL=${GEMINI_VIDEO_MODEL:-gemini-2.5-flash}
+      - GEMINI_VIDEO_MODEL=${GEMINI_VIDEO_MODEL:-gemini-3.6-flash}
+      # Vertex AI path: billed to the GCP project (ordinary GCP credit),
+      # authenticated by the VM's own service account — no key needed.
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
+      - VERTEX_LOCATION=${VERTEX_LOCATION:-global}
       - TTS_VOICE=${TTS_VOICE:-en-GB-RyanNeural}
       - TTS_RATE=${TTS_RATE:--5%}
       - TTS_PITCH=${TTS_PITCH:--5Hz}

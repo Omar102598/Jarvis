@@ -64,6 +64,18 @@ final class JarvisClient {
         return try await post(path: "/ask/image", body: body)
     }
 
+    // MARK: Video query → QueryResponse
+    //
+    // The backend prefers Gemini for true video understanding (motion, temporal
+    // order, audio) and falls back to sampling 6 frames with ffmpeg for Claude,
+    // so this works whether or not a Gemini key is funded. Keep clips short
+    // (~5-20s): the whole file is base64'd into the request body.
+
+    func askVideo(_ videoData: Data, text: String = "What is happening in this video?") async throws -> QueryResponse {
+        let body = VideoQueryRequest(videoB64: videoData.base64EncodedString(), text: text)
+        return try await post(path: "/ask/video", body: body)
+    }
+
     // MARK: Tool events — for the activity timeline
 
     func fetchToolEvents(limit: Int = 25) async throws -> [ToolEvent] {
