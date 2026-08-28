@@ -174,25 +174,34 @@ servers:
     description: "MCP Kiwi.com (official) — flight search, no key"
 
   # ---------------------------------------------------------------------------
-  # Southwest — fills a gap no aggregator can. Southwest does not distribute
-  # fares to OTAs/GDS, so Kiwi will NEVER show it; that is a deliberate
-  # Southwest policy, not a Kiwi failure. This is browser automation over
-  # southwest.com (Playwright), so treat it as best-effort: if the site changes
-  # or Chromium is missing it loads 0 tools and Miles falls back to Kiwi.
+  # Southwest — DISABLED: the package does not work against southwest.com.
   #
-  # SEARCH ONLY, deliberately. The server also ships checkout, book_with_points,
-  # change_flight and cancel_flight — real money on a real account. Our agreed
-  # travel model is assisted booking: Jarvis files the itinerary and links, you
-  # pay in your own browser. allow_tools enforces that at load time, so the
-  # booking tools never enter the graph rather than relying on the model to
-  # decline them.
+  # The gap it was meant to fill is real: Southwest does not distribute fares
+  # to OTAs/GDS, so Kiwi will NEVER show it. But this package does not fill it.
+  # Tested live after installing the Chrome build it needs, it returns
+  #     {"success": true, "count": 0, "flights": []}
+  # for DAL->MDW and DAL->HOU — both Southwest hub routes flown many times
+  # daily, three weeks out. Verified by calling the MCP server directly over
+  # stdio, so this is the package, not our loader.
   #
-  # search_flights/get_fares need NO credentials, which is why this is safe to
-  # enable as-is. Adding SW_USERNAME/SW_PASSWORD would unlock the account tools
-  # (get_rapid_rewards, check_in) — a separate, deliberate decision.
+  # Reporting SUCCESS with zero results is WHY this is disabled rather than
+  # left enabled and flaky: a failed scrape is indistinguishable from a genuine
+  # "no flights", so Jarvis would state there are no Southwest flights when
+  # there are. With no tool he says he cannot check Southwest directly, which
+  # is true and points at the real next step. A tool that makes the assistant
+  # assert falsehoods is worse than no tool.
+  #
+  # It also needs REAL Google Chrome, not Chromium: it drives `patchright` (a
+  # stealth Playwright fork) with channel "chrome", and otherwise fails with
+  # "Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome".
+  # Re-enabling means baking Chrome (~400MB) into the llm_agent image — not
+  # worth paying for a tool that returns nothing.
+  #
+  # Worth retrying if the package updates; last published 2026-03, so its
+  # selectors have likely rotted (or Southwest is blocking it).
   # ---------------------------------------------------------------------------
   southwest_flights:
-    enabled: true
+    enabled: false
     transport: stdio
     command: npx
     args:
@@ -211,7 +220,7 @@ servers:
       - search_flights
       - get_flight_details
       - get_flight_status
-    description: "Southwest search + flight status — the one airline Kiwi cannot see"
+    description: "Southwest (disabled — returns 0 flights on valid routes)"
 
   # ---------------------------------------------------------------------------
   # American — evaluated and NOT enabled, on purpose.
