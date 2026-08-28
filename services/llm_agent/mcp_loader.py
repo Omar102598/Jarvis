@@ -217,14 +217,61 @@ def load_tools_for_server(name: str, cfg: dict) -> list[BaseTool]:
             sess = _PersistentSession(name, client_cfg)
             with _sessions_lock:
                 _persistent_sessions[name] = sess
-            return sess.wrapped_tools()
+            return _filter_tools(name, cfg, sess.wrapped_tools())
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, _discover_stateless(name, client_cfg))
-            return future.result(timeout=60)
+            return _filter_tools(name, cfg, future.result(timeout=60))
     except Exception as e:
         print(f"[MCP] Could not load server '{name}': {e}")
         return []
+
+
+def _filter_tools(name: str, cfg: dict, tools: list) -> list:
+    """Apply per-server ``allow_tools`` / ``deny_tools`` from mcp_servers.yml.
+
+    Third-party MCP servers often ship far more authority than we want to hand
+    the brain. The airline servers are the motivating case: they expose
+    ``checkout``, ``cancel_trip`` and ``change_flight`` sitting right next to
+    ``search_flights``, and a flight booking is real money on a real account.
+
+    Filtering happens at LOAD time, not call time, so an excluded tool never
+    enters the graph at all — there is no prompt that can reach it, and no
+    reliance on the model choosing to behave. ``allow_tools`` is the safer
+    shape: a server that adds a dangerous tool in a later release stays
+    filtered out by default instead of silently gaining it.
+    """
+    allow = {str(t).strip() for t in (cfg.get("allow_tools") or []) if str(t).strip()}
+    deny = {str(t).strip() for t in (cfg.get("deny_tools") or []) if str(t).strip()}
+    if not allow and not deny:
+        return tools
+
+    def _names(tool) -> set:
+        full = getattr(tool, "name", "") or ""
+        # adapters sometimes namespace as "server__tool" — match either form
+        return {full, full.split("__")[-1]}
+
+    kept = []
+    for tool in tools:
+        names = _names(tool)
+        if allow and not (names & allow):
+            continue
+        if deny and (names & deny):
+            continue
+        kept.append(tool)
+
+    dropped = len(tools) - len(kept)
+    if dropped:
+        print(f"[MCP] '{name}': withheld {dropped} tool(s) by policy")
+
+    # An allowlist that silently matches nothing is indistinguishable from a
+    # broken server, so say so — upstream renames are the usual cause.
+    if allow:
+        matched = set().union(*(_names(t) for t in kept)) if kept else set()
+        missing = allow - matched
+        if missing:
+            print(f"[MCP] '{name}': allow_tools not found upstream: {sorted(missing)}")
+    return kept
 
 
 def load_mcp_tools() -> list[BaseTool]:

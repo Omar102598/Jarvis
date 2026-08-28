@@ -21,6 +21,7 @@
 		6D3A81EEB495E8BCC8E6CEE6 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = 76CEC077EB6AB178FEB46CFA /* MWDATCamera */; };
 		778B3926A24EFF71053F3603 /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E06625565B69F6487B5E4A9 /* HealthKitManager.swift */; };
 		815B7FD2D06021F52551C1CA /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12BF08499D6DED3B05E5AEC0 /* ChatView.swift */; };
+		BAA353FE5C3C4B1EA3CB1A46 /* CameraPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 035BB951A2F14AA9860CE8D9 /* CameraPicker.swift */; };
 		867005A85979C9578868B5C4 /* HUDRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E1D7CE5DA8EE7405878BE41 /* HUDRenderer.swift */; };
 		916FD28AD327E03F2DEFDA3D /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62305609ECC5C1E0BF545BC6 /* Models.swift */; };
 		A6C598CF1AD360258E0EE920 /* JarvisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0CD866B2962AE9EBBBFCC0 /* JarvisApp.swift */; };
@@ -38,6 +39,7 @@
 		05324E07DB759668AAED1FC0 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
 		12B2DA705EF3A7EF2CE84457 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
 		12BF08499D6DED3B05E5AEC0 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		035BB951A2F14AA9860CE8D9 /* CameraPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPicker.swift; sourceTree = "<group>"; };
 		1A0CD866B2962AE9EBBBFCC0 /* JarvisApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisApp.swift; sourceTree = "<group>"; };
 		27E6BAE82F385B773B0F166D /* AskJarvisIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskJarvisIntent.swift; sourceTree = "<group>"; };
 		395FDC318B7947C290651B23 /* VoiceRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRecorder.swift; sourceTree = "<group>"; };
@@ -165,6 +167,7 @@
 			isa = PBXGroup;
 			children = (
 				12BF08499D6DED3B05E5AEC0 /* ChatView.swift */,
+				035BB951A2F14AA9860CE8D9 /* CameraPicker.swift */,
 				00DEA30CBAF36DA03378BC95 /* ChatViewModel.swift */,
 				395FDC318B7947C290651B23 /* VoiceRecorder.swift */,
 			);
@@ -280,6 +283,7 @@
 				2E47D8CDED7CF6798EC70AFC /* AskJarvisIntent.swift in Sources */,
 				F998C62E240F1C0A24670D44 /* CalendarManager.swift in Sources */,
 				815B7FD2D06021F52551C1CA /* ChatView.swift in Sources */,
+				BAA353FE5C3C4B1EA3CB1A46 /* CameraPicker.swift in Sources */,
 				2D899C2282A114DE9CBDE6B5 /* ChatViewModel.swift in Sources */,
 				DEE4A6A0FA414A580939ED2B /* ContentView.swift in Sources */,
 				B21B1DD67E2EF4E0956E77B7 /* GlassesManager.swift in Sources */,
