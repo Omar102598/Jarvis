@@ -69,13 +69,16 @@ def _build_client_config(name: str, cfg: dict) -> dict:
     entry: dict[str, Any] = {"transport": transport}
 
     if transport == "stdio":
-        entry["command"] = cfg["command"]
-        entry["args"] = cfg.get("args", [])
+        entry["command"] = _expand_env(str(cfg["command"]))
+        entry["args"] = [_expand_env(str(a)) for a in cfg.get("args", [])]
         raw_env = cfg.get("env", {})
         if raw_env:
             entry["env"] = {k: _expand_env(str(v)) for k, v in raw_env.items()}
     elif transport in ("streamable_http", "sse"):
-        entry["url"] = cfg["url"]
+        # Expanded so a service URL can differ per deployment: HA lives in the
+        # compose network on an all-in-one host, but across the tailnet once the
+        # core stack moves to a VPS. Hardcoding it silently drops 20 HA tools.
+        entry["url"] = _expand_env(str(cfg["url"]))
         raw_headers = cfg.get("headers", {})
         if raw_headers:
             entry["headers"] = {k: _expand_env(str(v)) for k, v in raw_headers.items()}
