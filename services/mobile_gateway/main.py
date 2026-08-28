@@ -35,7 +35,7 @@ from typing import Optional
 import paho.mqtt.client as mqtt
 import redis as _redis_lib
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from faster_whisper import WhisperModel
 from pydantic import BaseModel
 
@@ -346,6 +346,7 @@ def _on_mqtt_connect(client, userdata, flags, rc):
     print(f"[Gateway] MQTT connected")
     client.subscribe("jarvis/tts/+/speak")
     client.subscribe("jarvis/surfaces/iphone/push")
+    client.subscribe("jarvis/tools/event")
 
 
 def _on_surface_push(client, userdata, msg):
@@ -416,9 +417,50 @@ def _on_mqtt_message(client, userdata, msg):
         print(f"[Gateway] MQTT message error: {exc}")
 
 
+# ---------------------------------------------------------------------------
+# Live tool-call stream (SSE)
+#
+# The brain publishes each tool call/result to jarvis/tools/event. Surfaces
+# subscribe here to render them as they happen instead of polling /tool-events
+# and watching a spinner through a long multi-tool turn.
+#
+# Each SSE listener gets its own bounded Queue. paho delivers on its own thread,
+# so the hand-off goes through the captured event loop.
+# ---------------------------------------------------------------------------
+
+_tool_stream_subscribers: set = set()
+_TOOL_STREAM_QUEUE_MAX = 100
+
+
+def _on_tool_event(client, userdata, msg):
+    try:
+        payload = msg.payload.decode()
+    except Exception:
+        return
+    loop = _event_loop
+    if loop is None:
+        return  # MQTT can deliver before startup finished capturing the loop
+
+    def _dispatch() -> None:
+        for queue in list(_tool_stream_subscribers):
+            try:
+                queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                # One stalled reader must not block the others or grow without
+                # bound. Drop it; the client reconnects and backfills from
+                # /tool-events, which still holds the durable history.
+                _tool_stream_subscribers.discard(queue)
+
+    try:
+        loop.call_soon_threadsafe(_dispatch)
+    except RuntimeError:
+        pass
+
+
 _mqtt_client.on_connect = _on_mqtt_connect
 _mqtt_client.on_message = _on_mqtt_message
 _mqtt_client.message_callback_add("jarvis/surfaces/iphone/push", _on_surface_push)
+_mqtt_client.message_callback_add("jarvis/tools/event", _on_tool_event)
 
 
 def _surface_cleanup() -> None:
@@ -1339,6 +1381,49 @@ async def calendar_next_event(req: NextCalendarEventRequest, x_api_key: str = He
     except Exception as exc:
         raise HTTPException(503, f"Redis unavailable: {exc}")
     return {"ok": True}
+
+
+@app.get("/stream/tools", summary="[iOS app] Live tool-call stream (SSE)")
+async def stream_tools(request: Request, x_api_key: str = Header(default="")):
+    """Server-sent events: one JSON tool event per message, as it happens.
+
+    Events carry ``call_id`` (pairs a "calling" with its "done") and ``turn_id``
+    (groups a turn's calls under the message that caused them), so a client can
+    render them inline rather than as a flat log.
+
+    This is a live tail, not history — a client that reconnects should backfill
+    from /tool-events, which keeps the durable copy.
+    """
+    _check_api_key(x_api_key)
+    queue: asyncio.Queue = asyncio.Queue(maxsize=_TOOL_STREAM_QUEUE_MAX)
+    _tool_stream_subscribers.add(queue)
+
+    async def _events():
+        try:
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    # Idle comment frame: keeps proxies and iOS from tearing
+                    # down a quiet connection.
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"data: {payload}\n\n"
+        finally:
+            _tool_stream_subscribers.discard(queue)
+
+    return StreamingResponse(
+        _events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",   # don't let a proxy buffer the stream
+        },
+    )
 
 
 @app.get("/tool-events", summary="Recent tool call events for iOS timeline")

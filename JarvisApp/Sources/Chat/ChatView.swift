@@ -37,7 +37,9 @@ struct ChatView: View {
         .onAppear {
             chatViewModel.glassesManager = glassesManager
             chatViewModel.startToolPolling()
+            chatViewModel.startToolStream()
         }
+        .onDisappear { chatViewModel.stopToolStream() }
         .onReceive(NotificationCenter.default.publisher(for: .jarvisActivateWake)) { _ in
             Task { await chatViewModel.sendVoice() }
         }
@@ -507,18 +509,7 @@ struct MessageBubble: View {
         HStack {
             if message.role == .user { Spacer(minLength: 60) }
             Group {
-                if message.isLoading {
-                    ProgressView()
-                        .tint(.jBlue)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(Color.jCard)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(Color.jBlue.opacity(0.3), lineWidth: 1)
-                        )
-                        .cornerRadius(12)
-                } else if message.role == .user {
+                if message.role == .user {
                     Text(message.text)
                         .font(.system(size: 14))
                         .foregroundColor(.black)
@@ -527,28 +518,150 @@ struct MessageBubble: View {
                         .background(Color.jBlue)
                         .cornerRadius(12)
                 } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(message.text)
-                            .font(.system(size: 14))
-                            .foregroundColor(.jText)
-                        if let media = message.mediaURL, let url = URL(string: media) {
-                            MediaCard(url: url,
-                                      isVideo: media.contains(".m3u8"),
-                                      cachedData: message.imageData)
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Color.jCard)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.jBlue.opacity(0.35), lineWidth: 1)
-                    )
-                    .cornerRadius(12)
+                    jarvisBubble
                 }
             }
             if message.role == .jarvis { Spacer(minLength: 60) }
         }
+    }
+
+    /// Tool calls render ABOVE the answer, the way Claude and ChatGPT show
+    /// their work — and they appear DURING the turn, so a long multi-tool
+    /// request shows what it is doing instead of a bare spinner.
+    private var jarvisBubble: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !message.toolCalls.isEmpty {
+                ToolCallList(calls: message.toolCalls)
+            }
+
+            if message.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView().tint(.jBlue).scaleEffect(0.8)
+                    // Once tools are running, the spinner alone is ambiguous —
+                    // name what is happening.
+                    if !message.toolCalls.isEmpty {
+                        Text("working…")
+                            .font(.system(size: 11))
+                            .foregroundColor(.jText.opacity(0.55))
+                    }
+                }
+            } else {
+                if !message.text.isEmpty {
+                    Text(message.text)
+                        .font(.system(size: 14))
+                        .foregroundColor(.jText)
+                        .textSelection(.enabled)
+                }
+                if let media = message.mediaURL, let url = URL(string: media) {
+                    MediaCard(url: url,
+                              isVideo: media.contains(".m3u8"),
+                              cachedData: message.imageData)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.jCard)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.jBlue.opacity(0.35), lineWidth: 1)
+        )
+        .cornerRadius(12)
+    }
+}
+
+// MARK: - Inline tool calls (Claude/ChatGPT style)
+
+/// One row per tool call, tap to expand its input and result.
+///
+/// A row is keyed by the model's tool-call id, so a call resolves in place
+/// from running to finished instead of appearing twice.
+struct ToolCallList: View {
+    let calls: [ToolEvent]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(calls) { call in
+                ToolCallRow(call: call)
+            }
+        }
+    }
+}
+
+private struct ToolCallRow: View {
+    let call: ToolEvent
+    @State private var expanded = false
+
+    private var displayName: String {
+        call.tool.replacingOccurrences(of: "_", with: " ")
+    }
+
+    private var hasDetail: Bool {
+        !call.argsPreview.isEmpty || !call.resultPreview.isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    if call.isFinished {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.jGreen)
+                    } else {
+                        ProgressView()
+                            .scaleEffect(0.55)
+                            .tint(.jGold)
+                            .frame(width: 12, height: 12)
+                    }
+                    Text(displayName)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(.jText.opacity(0.8))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if hasDetail {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.jBlueDim)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasDetail)
+
+            if expanded {
+                if !call.argsPreview.isEmpty {
+                    detail("input", call.argsPreview)
+                }
+                if !call.resultPreview.isEmpty {
+                    detail("result", call.resultPreview)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.jBg.opacity(0.6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.jBorder, lineWidth: 1)
+        )
+        .cornerRadius(8)
+    }
+
+    private func detail(_ label: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(.jBlueDim)
+            Text(text)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.jText.opacity(0.75))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
