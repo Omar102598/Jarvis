@@ -997,19 +997,30 @@ def on_tts_done(client, userdata, msg):
 #   - grocery: pushes its own richer report (with cart links) to surfaces directly
 #   - classpass: pushes its own favorite-opened / auto-booked alerts directly
 #   - ambient: fans its own alerts out directly
-_FANOUT_AGENT_BLOCKLIST = {
-    "newsletter", "job_monitor", "web_monitor", "price_monitor", "grocery",
-    "classpass", "ambient",
-    # morning_brief's report is just an internal "dispatched to the brain"
-    # status — the actual briefing reaches surfaces via the brain's proactive
-    # response, so don't also push the status as a card.
-    "morning_brief",
-    # chronicle's nightly report is an internal "journaled X" status; the weekly
-    # review delivers its own card directly. Neither should fan out as a card.
-    "chronicle", "weekly_review",
-    # finance runs every 30 min to refresh the widget — don't push each run.
-    # Its daily report is read on demand via the get_financial_report tool.
-    "finance",
+# Which agents may push their run report into the CHAT feed.
+#
+# This was a blocklist, which was the wrong default: every new agent started
+# out spamming chat until someone noticed and added it here. It also meant
+# agents that already notify the user themselves pushed TWICE for real events
+# and once for non-events — Sentry filled the feed with "Living Room: motion
+# assessed as not notable … No alert.", which is a log line, not a message.
+#
+# Chat is for things addressed to the user. Everything else is still recorded:
+# store_report() keeps every report, and the app's Agents tab reads them all
+# through /agents/feed. Nothing is lost by staying off this list — it only
+# controls whether a run interrupts you.
+#
+# On this list = the agent has no self-notify path, so fanout IS its delivery.
+# Off it = the agent calls route_notification/_notify for what actually matters
+# (Sentry alerts, Miles price drops, Vega regressions, Forge failures), and its
+# routine result is a log.
+#
+# Forge is the subtle one: its only route_notification is the golden-task
+# FAILURE alert, so a successful run reaches the user through fanout alone.
+# Dropping it here would silently swallow every successful coding result.
+_FANOUT_AGENT_ALLOWLIST = {
+    "email", "research", "task", "workout", "habits", "atlas",
+    "developer",
 }
 
 
@@ -1023,7 +1034,7 @@ def on_agent_report(client, userdata, msg):
         data   = json.loads(msg.payload)
         name   = data.get("agent", "agent")
         report = (data.get("report") or "").strip()
-        if not report or name in _FANOUT_AGENT_BLOCKLIST:
+        if not report or name not in _FANOUT_AGENT_ALLOWLIST:
             return
         summary = report if len(report) <= 240 else report[:237] + "…"
         _fanout_to_active_surfaces(client, summary, title=name.replace("_", " ").title(),

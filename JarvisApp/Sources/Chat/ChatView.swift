@@ -10,6 +10,8 @@ struct ChatView: View {
     @State private var showTimeline = false
     @State private var mediaItem: PhotosPickerItem?
     @State private var showMediaPicker = false
+    @State private var showSourceChoice = false
+    @State private var showCamera = false
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
@@ -187,7 +189,9 @@ struct ChatView: View {
                             }
                         }
                     } else {
-                        showMediaPicker = true
+                        // Without glasses, ask rather than assume: shooting a
+                        // clip now and picking an old one are different intents.
+                        showSourceChoice = true
                     }
                 } label: {
                     Image(systemName: glassesManager.isConnected ? "camera" : "photo.on.rectangle")
@@ -197,6 +201,25 @@ struct ChatView: View {
                 .disabled(chatViewModel.isProcessing)
                 .photosPicker(isPresented: $showMediaPicker, selection: $mediaItem,
                               matching: .any(of: [.videos, .images]))
+                .confirmationDialog("Add media", isPresented: $showSourceChoice,
+                                    titleVisibility: .visible) {
+                    if CameraPicker.isAvailable {
+                        Button("Take Photo or Video") { showCamera = true }
+                    }
+                    Button("Choose from Library") { showMediaPicker = true }
+                    Button("Cancel", role: .cancel) {}
+                }
+                .fullScreenCover(isPresented: $showCamera) {
+                    CameraPicker { capture in
+                        Task {
+                            switch capture {
+                            case .image(let data): await chatViewModel.sendImage(data)
+                            case .video(let data): await chatViewModel.sendVideo(data)
+                            }
+                        }
+                    }
+                    .ignoresSafeArea()
+                }
                 .onChange(of: mediaItem) { _, item in
                     guard let item else { return }
                     Task {

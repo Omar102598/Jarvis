@@ -57,7 +57,7 @@
 	<key>NSCalendarsUsageDescription</key>
 	<string>Jarvis reads your calendar to remind you before upcoming events.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Jarvis uses the glasses camera to answer visual questions.</string>
+	<string>Jarvis uses the camera to answer questions about what you photograph or record.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>Jarvis reads your contacts so it can reach the right people when you ask.</string>
 	<key>NSHealthShareUsageDescription</key>
