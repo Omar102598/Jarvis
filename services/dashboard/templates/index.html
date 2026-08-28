@@ -1266,6 +1266,7 @@ setInterval(() => {
 //  STATE MACHINE
 // ══════════════════════════════════════════════════════════
 let _convCount    = 0;
+let _convSig = null;
 let _currentState = 'ready';
 
 const STATE_COLORS = {
@@ -1302,7 +1303,14 @@ function setState(state, thinkingWord) {
 //  REAL-TIME SSE STREAM  (conv + tools + voice state)
 // ══════════════════════════════════════════════════════════
 function renderConversation(msgs) {
-  if (msgs.length === _convCount) return;
+  // Guard on CONTENT, not length. conversation:{user} is read as a -30,-1
+  // window of a capped list, so once it fills, msgs.length is permanently 30
+  // and a length check suppresses every subsequent render — the feed then only
+  // updates on a full page reload. Same bug the SSE backend already fixed.
+  const sig = msgs.length + '|' + (msgs.length ? (msgs[msgs.length-1].role + ':' +
+              String(msgs[msgs.length-1].content).slice(0, 200)) : '');
+  if (sig === _convSig) return;
+  _convSig = sig;
   _convCount = msgs.length;
 
   document.getElementById('hb-msgs').textContent = msgs.length;
