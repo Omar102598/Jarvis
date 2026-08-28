@@ -11,18 +11,16 @@
 #   push to main   — path-filtered: ONLY services whose files changed rebuild
 #   manual         — Actions tab → "Run workflow" (optionally force all / pick arches)
 #
-# COST NOTE (private repo, free plan = 2,000 CI min/month):
-#   arm64 is built under QEMU emulation, which is slow for the ML-heavy images
-#   (vision, mobile_gateway, stt). A first full both-arch run can burn several
-#   hundred minutes. Until you actually have an ARM host, run with
-#   platforms = linux/amd64 (covers the UGREEN NAS's N100 and any x86 VPS).
+# ARCHITECTURES: the repo is public, so CI minutes are free and arm64 is
+#   viable. amd64 remains the default (x86 VPS / NAS); pick the multi-arch
+#   option when targeting a Pi or an ARM VPS. arm64 still builds under QEMU
+#   here, so expect it to be slow — just no longer expensive.
 #
 # IMPORTANT — make the packages PUBLIC so pulls need no auth:
 #   After the first successful run, go to
 #   github.com/users/<you>/packages → each jarvis-* package → Package settings
-#   → Change visibility → Public.
-#   The repo stays private; only the built images become pullable. Without this,
-#   every new install needs a GitHub token just to `docker compose pull`.
+#   → Change visibility → Public. Package visibility is separate from repo
+#   visibility, so this step is still required.
 # =============================================================================
 
 name: Build images
@@ -96,6 +94,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The ML-heavy images (mobile_gateway, vision, stt) need more room than a
+      # stock runner leaves free. Reclaims ~15GB in a few seconds.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h / | tail -1
+
       # GHCR requires a lowercase namespace; GitHub usernames may be mixed-case.
       - name: Compute image name
         id: img
@@ -126,7 +132,7 @@ jobs:
           # Layer cache keyed per service — a rebuild that only changes app code
           # reuses the (expensive) pip/apt layers.
           cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.service }},ignore-error=true
           provenance: false
 
   summary:
