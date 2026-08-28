@@ -786,12 +786,40 @@ async def ask_image(request: ImageQueryRequest, x_api_key: str = Header(default=
     if not request.image_b64:
         raise HTTPException(status_code=400, detail="image_b64 must not be empty")
 
-    # Wrap image as a data URI so the LLM agent's vision tool can receive it
-    data_uri = f"data:image/jpeg;base64,{request.image_b64}"
+    # Wrap image as a data URI so the LLM agent's vision tool can receive it.
+    # Sniff the real format — the API rejects a mislabelled image outright.
+    data_uri = f"data:{_image_media_type(request.image_b64)};base64,{request.image_b64}"
     composite_text = f"[GLASSES_CAMERA_IMAGE: {data_uri}]\n{request.text}"
 
     print(f"[Gateway] /ask/image: prompt='{request.text}', image_len={len(request.image_b64)}")
     return await _run_pipeline_json(composite_text)
+
+
+def _image_media_type(b64: str, default: str = "image/jpeg") -> str:
+    """Identify an image's real format from its leading bytes.
+
+    This used to be hardcoded to image/jpeg, which is fine for the glasses and
+    for ffmpeg-sampled video frames but wrong for anything the user picks out
+    of their photo library — screenshots are PNG. Anthropic validates the
+    declared media type against the actual bytes and rejects a mismatch with
+    "the image appears to be a image/png image", which surfaced to the user as
+    a generic "I encountered an error processing that request."
+
+    Only the first few bytes are decoded, so this stays cheap on a large photo.
+    """
+    try:
+        head = base64.b64decode(b64[:32], validate=False)
+    except Exception:
+        return default
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"GIF87a") or head.startswith(b"GIF89a"):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return default
 
 
 class VideoQueryRequest(BaseModel):
