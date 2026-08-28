@@ -409,9 +409,26 @@ def _audit_tool_call(tool: str, args_preview: str) -> None:
         pass
 
 
-def _push_tool_event(tool: str, args_preview: str, status: str, result_preview: str) -> None:
+def _push_tool_event(tool: str, args_preview: str, status: str, result_preview: str,
+                     *, call_id: str = "", turn_id: str = "") -> None:
+    """Record one tool-call lifecycle event and publish it live.
+
+    ``call_id`` is the model's own tool-call id, which pairs the "calling" event
+    with the "done" event that answers it. Previously each event got a fresh
+    random id, so a call and its result were unrelated rows and no client could
+    match them up — the id was available at emission and thrown away.
+
+    ``turn_id`` ties the event to the request that caused it, so a surface can
+    render tool calls inline under the message that triggered them instead of
+    as one flat global list shared by every room and device.
+
+    Redis keeps the history (for late joiners and reload); MQTT carries it live
+    to anything watching now.
+    """
     event = {
         "id": str(uuid.uuid4())[:8],
+        "call_id": call_id,
+        "turn_id": turn_id,
         "tool": tool,
         "args_preview": args_preview,
         "status": status,
@@ -423,6 +440,13 @@ def _push_tool_event(tool: str, args_preview: str, status: str, result_preview: 
         r.ltrim("jarvis:tool_events", 0, 99)
     except Exception:
         pass
+    try:
+        import paho.mqtt.publish as _mqtt_pub
+        _mqtt_pub.single("jarvis/tools/event", json.dumps(event),
+                         hostname=os.environ.get("MQTT_HOST", "localhost"),
+                         port=int(os.environ.get("MQTT_PORT", "1883")))
+    except Exception:
+        pass  # live view is best-effort; Redis already has the durable copy
     if status == "calling":
         _audit_tool_call(tool, args_preview)
 
@@ -577,6 +601,9 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     Always returns the full accumulated response for history storage.
     """
     ACTIVE_ROOM["room"] = room
+    # One id per request, stamped on every tool event this turn emits so a
+    # surface can group them under the message that caused them.
+    turn_id = uuid.uuid4().hex[:12]
 
     with _graph_lock:
         current_agent = _agents.get(tier, _agents.get("sonnet"))
@@ -642,7 +669,10 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
             if node == "tools":
                 if hasattr(chunk, "name") and chunk.name:
                     result = str(chunk.content)[:200] if chunk.content else ""
-                    _push_tool_event(chunk.name, "", "done", result)
+                    # ToolMessage.tool_call_id is the other half of the pair
+                    _push_tool_event(chunk.name, "", "done", result,
+                                     call_id=getattr(chunk, "tool_call_id", "") or "",
+                                     turn_id=turn_id)
                 continue
 
             if node != "agent":
@@ -656,7 +686,8 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
                         _emitted_tc_ids.add(tc_id)
                         args = tc.get("args", {})
                         args_preview = json.dumps(args, ensure_ascii=False)[:120] if args else ""
-                        _push_tool_event(tc.get("name", "unknown"), args_preview, "calling", "")
+                        _push_tool_event(tc.get("name", "unknown"), args_preview,
+                                         "calling", "", call_id=tc_id, turn_id=turn_id)
 
             if not hasattr(chunk, "content") or not chunk.content:
                 continue

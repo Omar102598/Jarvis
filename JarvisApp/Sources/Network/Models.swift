@@ -141,6 +141,9 @@ struct ChatMessage: Identifiable, Equatable {
     /// Server-side push id (gateway /pushes feed) — dedupes the merge between
     /// live WebSocket cards and the persisted feed fetched on foreground.
     var pushID: String? = nil
+    /// Tool calls made while producing this reply, in call order. Rendered
+    /// inline under the message the way Claude/ChatGPT show their work.
+    var toolCalls: [ToolEvent] = []
 }
 
 // MARK: - Persisted push (gateway /pushes — cards missed while suspended)
@@ -161,19 +164,45 @@ struct PushItem: Decodable {
 
 // MARK: - Tool event model
 
-struct ToolEvent: Identifiable, Decodable {
+struct ToolEvent: Identifiable, Decodable, Equatable {
     let id: String
     let tool: String
     let argsPreview: String
     let status: String
     let resultPreview: String
     let timestamp: String
+    /// The model's own tool-call id. Pairs a "calling" event with the "done"
+    /// event that answers it, so the UI shows ONE row that resolves rather than
+    /// two unrelated rows. Empty on events from before this existed.
+    let callID: String
+    /// Groups every tool call from a single request, so calls render under the
+    /// message that caused them instead of in one flat global list.
+    let turnID: String
 
     enum CodingKeys: String, CodingKey {
         case id, tool, status, timestamp
         case argsPreview   = "args_preview"
         case resultPreview = "result_preview"
+        case callID        = "call_id"
+        case turnID        = "turn_id"
     }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id            = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        tool          = try c.decodeIfPresent(String.self, forKey: .tool) ?? "unknown"
+        argsPreview   = try c.decodeIfPresent(String.self, forKey: .argsPreview) ?? ""
+        status        = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        resultPreview = try c.decodeIfPresent(String.self, forKey: .resultPreview) ?? ""
+        timestamp     = try c.decodeIfPresent(String.self, forKey: .timestamp) ?? ""
+        // Older persisted events predate correlation — decode them rather than
+        // failing the whole batch, and let them fall back to flat display.
+        callID        = try c.decodeIfPresent(String.self, forKey: .callID) ?? ""
+        turnID        = try c.decodeIfPresent(String.self, forKey: .turnID) ?? ""
+    }
+
+    /// True once the call has returned — drives the spinner/checkmark.
+    var isFinished: Bool { status == "done" }
 }
 
 struct ToolEventsResponse: Decodable {
