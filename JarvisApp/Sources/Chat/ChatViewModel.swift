@@ -16,6 +16,7 @@ final class ChatViewModel: ObservableObject {
     private var audioDelegate: AudioDelegate?
     private let socket = JarvisSocket()
     private var toolPollingTask: Task<Void, Never>?
+    private var toolStreamTask: Task<Void, Never>?
 
     weak var glassesManager: GlassesManager?
 
@@ -34,6 +35,55 @@ final class ChatViewModel: ObservableObject {
                 let interval: UInt64 = self.isProcessing ? 2_500_000_000 : 20_000_000_000
                 try? await Task.sleep(nanoseconds: interval)
             }
+        }
+    }
+
+    // MARK: Live tool-call stream
+
+    /// Attach tool calls to the reply they belong to, as they happen.
+    ///
+    /// Polling still backfills the global timeline panel; this is what makes a
+    /// long multi-tool turn show its work inline instead of a spinner.
+    func startToolStream() {
+        toolStreamTask?.cancel()
+        toolStreamTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    for try await event in JarvisClient.shared.toolEventStream() {
+                        guard let self else { return }
+                        self.applyToolEvent(event)
+                    }
+                } catch {
+                    // Fall through to the reconnect delay below.
+                }
+                guard !Task.isCancelled else { return }
+                // The stream ended or failed. Pause before reconnecting so a
+                // server restart doesn't become a tight retry loop.
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+        }
+    }
+
+    func stopToolStream() {
+        toolStreamTask?.cancel()
+        toolStreamTask = nil
+    }
+
+    private func applyToolEvent(_ event: ToolEvent) {
+        // Attach to the reply being produced right now. Falling back to the
+        // most recent Jarvis message means a "done" that lands just after the
+        // text arrives still shows up, rather than being dropped.
+        guard let idx = messages.lastIndex(where: { $0.role == .jarvis && $0.isLoading })
+                ?? messages.lastIndex(where: { $0.role == .jarvis })
+        else { return }
+
+        // Same call_id means this is the SAME call resolving from "calling" to
+        // "done" — replace the row rather than appending a duplicate.
+        if !event.callID.isEmpty,
+           let existing = messages[idx].toolCalls.firstIndex(where: { $0.callID == event.callID }) {
+            messages[idx].toolCalls[existing] = event
+        } else {
+            messages[idx].toolCalls.append(event)
         }
     }
 

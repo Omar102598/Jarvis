@@ -84,6 +84,50 @@ final class JarvisClient {
         return response.events
     }
 
+    // MARK: Live tool-call stream (SSE)
+
+    /// Tool calls as they happen, so a long multi-tool turn shows progress
+    /// instead of a spinner.
+    ///
+    /// This is a live tail with no backlog — `/tool-events` still holds the
+    /// durable history, so a reconnect backfills from there rather than
+    /// replaying the stream.
+    func toolEventStream() -> AsyncThrowingStream<ToolEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var request = try baseRequest(path: "/stream/tools")
+                    // A long-lived stream must not trip the default timeout;
+                    // the server sends comment frames to keep it warm.
+                    request.timeoutInterval = .infinity
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse else {
+                        throw JarvisError.invalidResponse
+                    }
+                    guard http.statusCode == 200 else {
+                        throw JarvisError.httpError(http.statusCode, "tool stream")
+                    }
+                    let decoder = JSONDecoder()
+                    for try await line in bytes.lines {
+                        // SSE frames: "data: {json}". Lines starting with ":"
+                        // are keepalive comments and are meant to be ignored.
+                        guard line.hasPrefix("data:") else { continue }
+                        let payload = line.dropFirst(5)
+                            .trimmingCharacters(in: .whitespaces)
+                        guard let data = payload.data(using: .utf8),
+                              let event = try? decoder.decode(ToolEvent.self, from: data)
+                        else { continue }
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     // MARK: Siri intent — plain text response only (no audio synthesis)
 
     private struct SiriResponse: Codable { let text: String }
