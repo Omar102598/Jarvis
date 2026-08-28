@@ -227,3 +227,73 @@ dashboard cost widget only showed brain spend, which is why brain looked like
   `brain $0.84` vs agents' $0.01 — the brain was ~98% of spend and invisible
   until today.
 - Echo: first real run happens tonight 04:45 UTC (needs nothing manual).
+
+---
+
+## 13. Gemini video via Vertex AI (2026-08-28) — ✅ verified live
+
+**Problem:** `/ask/video`'s Gemini path had never worked. The AI Studio key
+returned *"prepayment credits are depleted"* no matter what was topped up.
+
+**Root cause:** AI Studio bills a **separate prepay balance that GCP billing
+credit does not fund**. Proved it wasn't the key or the top-up by minting a
+fresh key on the billing-enabled project — it failed identically.
+
+**Fix:** route through Vertex AI, which serves the same models but bills the
+GCP project, so the $300 trial credit covers it. `_analyze_video_gemini` now
+tries backends in order and falls through on any failure, so ffmpeg
+frame-sampling remains the floor:
+
+1. **Vertex** — GCE metadata-server auth on the VM, ADC off-GCP
+2. **AI Studio** — `GOOGLE_API_KEY`, unchanged
+3. **Frame sampling** — unchanged fallback
+
+`GEMINI_VIDEO_MODEL` default moved to `gemini-3.6-flash` (`gemini-2.5-flash`
+is retired for new users).
+
+### Infra
+- VM service account had **no IAM roles at all**; granted exactly
+  `roles/aiplatform.user` (deliberately not Editor).
+- `jarvis-core` was created with **legacy default scopes** (no
+  `cloud-platform`), so its metadata token got a 403 from Vertex. Required a
+  stop → `set-service-account --scopes=cloud-platform` → start (~90s down).
+  All 10 containers auto-recovered.
+- `GOOGLE_CLOUD_PROJECT` / `VERTEX_LOCATION` / `GEMINI_VIDEO_MODEL` added to
+  `.env`, `.env.example`, and both compose files.
+
+### 🐛 Bugs found and fixed during this work
+- **Metadata URL was `instance/service-account/token`.** Real path is
+  `instance/service-accounts/default/token` — plural, identity segment
+  required. It does not fail loudly: it falls through to DNS and returns a
+  *public Google 404 page*, which reads like a routing/Tailscale problem
+  rather than a typo. Diagnostic: curl `instance/id` — a genuine reply carries
+  `Server: Metadata Server for VM`.
+- **`import aiohttp` sat outside the try block** in `_google_access_token`, so
+  on a host without aiohttp the helper raised instead of falling through to
+  ADC — the fallback could never run in exactly the off-GCP case it exists for.
+- **PR #13's merge silently dropped the commit fixing both**, leaving `develop`
+  briefly carrying the broken path. Caught by diffing merged *content* rather
+  than trusting the commit graph (`--is-ancestor` said "no" and it was a real
+  omission, not a squash). Fixed in PR #14.
+
+### Verification log
+- Functions extracted and run **inside the running gateway container**:
+  metadata token in 0.24s, cache hit on second call.
+- Live `/ask/video` through the deployed API: a red→green→blue clip returned
+  **"Red, Green, Blue"** in 4.7s, with the gateway logging
+  `Gemini video analyzed via vertex (gemini-3.6-flash)` — confirming the
+  Vertex path, not the fallback (frame sampling could have answered the same,
+  so the log line is the real proof).
+- `speak:false` now suppresses `audio_b64` — the typed-in/typed-out modality
+  fix went live in the same deploy.
+
+### Also this session
+- `GITHUB_TOKEN` was **absent** from `.env` entirely (not stale — never set),
+  so the GitHub MCP had been loading 0 tools. Set on Mac + VM, `gh` CLI
+  re-authenticated. GitHub MCP now loads **44 tools**; brain graph went
+  **213 → 257 tools** (121 core + 6 plugins + 130 MCP). Verified end-to-end by
+  asking Jarvis to list open PRs — he correctly named #14.
+
+### Still open
+- iOS app needs a rebuild/reinstall in Xcode to pick up the camera +
+  PhotosPicker video path; server side is done.
