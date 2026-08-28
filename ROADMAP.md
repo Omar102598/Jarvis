@@ -365,6 +365,59 @@ package-tracking (rides on Hermes once email creds land)
 - Awaiting real-world events to observe: greeting/package/scene paths fire on
   the next genuine person/package event (all code-deployed; vision verdict
   drives them).
+- `[x]` **Sentry presence-aware + push feed (2026-07-13):** fixed the three
+  reported failures. (1) App cards: pushes were WS-only (lost unless app
+  foregrounded) — gateway now persists every push (surface:pushes, 50-deep)
+  + `GET /pushes`; app merges the feed on launch/foreground (pushID dedupe);
+  Sentry pins each assessed frame to `ring:snapshot:event:{id}` (48h) served
+  by `GET /ring/snapshot/event/{id}.jpg` so old cards show the RIGHT moment
+  (per-camera cache gets overwritten). (2) False "someone in living room"/
+  "welcome home": Sentry now reads the geofence presence key — prompt gets
+  HOME/AWAY + indoor/outdoor camera + pets context (resident home + indoor
+  person = expected/not notable; away + indoor person = intruder alert;
+  cats/dog never notable alone); indoor cameras NEVER announce arrivals;
+  resident greeting only when presence≠home, sharing the geofence's
+  30-min debounce key so the two paths can't double-greet; geofence 'left'
+  no longer clears the debounce (GPS flap re-greeted). (3) Lamps on midday
+  arrival: `_run_arrival_scene` now honors arrival_scene_hours (18-07
+  default) and the greeting only claims lights when the scene ran.
+  VERIFIED live: simulated Living Room motion while home → "Person seated
+  on couch; resident at home" → not notable, no alert, no announce.
+  Profile tunables: pets_description, indoor_cameras, arrival_scene_hours,
+  arrival_lights, resident_description.
+- `[~]` **Face recognition (2026-07-13):** dormant `services/vision`
+  (InsightFace buffalo_l, built Month 1, never started) revived as the
+  Ring face-ID sidecar: subscribes ring snapshot MQTT → identifies against
+  enrolled embeddings (Redis face:{name}) → `ring:camera:{device}:face_id`;
+  Sentry polls that key and injects a deterministic "Face recognition:
+  omar (enrolled household member)" line into the vision prompt — TRUSTed
+  over visual guessing. Honors privacy mode. Fixes applied to the old
+  service: onnxruntime-gpu → CPU (no arm64 wheel — build was impossible),
+  YOLO/ultralytics removed (legacy CAMERAS mode only, ~2GB torch), compose
+  env names matched to code, profile gate removed, model cache persisted.
+  Enrollment over MQTT (jarvis/vision/enroll + enroll_finalize).
+  **Activate: run `scripts/enroll_face_ring.sh` while standing 3-6ft in
+  front of the Living Room camera** (grabs fresh RTSP frames, averages
+  embeddings; re-run any time to replace). Degrades gracefully — Sentry
+  says "face recognition unavailable" if the service is down/unenrolled.
+- `[x]` **Selfie enrollment (2026-07-13, same day):** the PRIMARY enrollment
+  path — reusable for users with no home cameras, and phone selfies give
+  better embeddings than security-cam frames anyway. iOS Settings → FACE
+  RECOGNITION → name + PhotosPicker (3-5 selfies, resized to 1280px) →
+  gateway `POST /face/enroll` {name, images[], finalize} → MQTT
+  `jarvis/vision/enroll_image` → vision embeds each → finalize averages →
+  face:{name}. Re-enroll replaces (gateway clears the sample buffer).
+  E2E VERIFIED with a real portrait: 1/1 usable → enrolled:true.
+  Ring scan remains the bonus path (can top up the same identity with
+  camera-distribution frames). KNOWN LIMIT: enroll messages are QoS-0 —
+  a vision MQTT reconnect can drop them; app shows FAILED, retry works.
+- `[x]` **Arrival greeting timing (2026-07-13):** the 120m geofence fires
+  while still walking up — lights stay on geofence (apartment ready on
+  entry) but the SPOKEN greeting is now HELD (jarvis:arrival:pending,
+  10-min TTL) until the first camera motion confirms entry, with a
+  timer fallback (ARRIVAL_GREET_FALLBACK_S, default 150s) so camera-less
+  arrivals still get greeted. Atomic delete = motion and timer can't
+  both speak. 'left' clears the pending greeting.
 
 ### PetKit + Home Assistant  🔜 Next up (decided 2026-07-05)
 - `[x]` `tools/petkit.py` built (Forge): feed_pet, feeder/fountain status,
@@ -391,6 +444,82 @@ package-tracking (rides on Hermes once email creds land)
   existing price_monitor pattern, approval-gated bookings like grocery.
   Design session with Omar before building.
 
+### Food delivery MCPs  ✅ Built (2026-07-12) — awaiting one-time OAuth
+- `[x]` `uber_eats` + `doordash` in mcp_servers.yml — OFFICIAL hosted servers
+        (mcp.ubereats.com / openapi.doordash.com), bridged via `npx mcp-remote`
+        with token cache at /data/mcp_auth (headless OAuth reuse)
+- `[ ]` **Activate: run `scripts/authorize_food_mcps.sh` on the Mac** (browser
+        sign-in to both accounts), then `docker compose restart llm_agent`
+- Ordering is approval-gated (tool descriptions require user confirmation)
+
+### Integration candidates — researched 2026-07-12
+Cross-checked against everything above; ordered by value ÷ friction.
+The mcp-remote OAuth bridge (food MCPs) is the reusable pattern for any
+hosted OAuth server; mcp_loader's `headers:` support covers token servers.
+
+**Tier 1 — ✅ ALL IMPLEMENTED 2026-07-12** (plus GitHub MCP enabled):
+- `[x]` **Home Assistant official MCP Server** — `mcp_server` integration
+        enabled in HA via its config-flow API (Assist API exposed); registry
+        entry `home_assistant` (sse + HA_TOKEN header). Live same-session.
+- `[~]` **Google Workspace official hosted MCPs** — `gmail` (scope
+        gmail.modify; sending stays on SMTP) + `google_calendar` (full write)
+        registered via the mcp-remote bridge; Drive/People noted, off.
+        **Activate: create a Desktop-app OAuth client in GCP (enable Gmail/
+        Calendar APIs + gmailmcp/calendarmcp MCP services), then run
+        `scripts/authorize_google_mcps.sh <client_id> <client_secret>`**
+- `[~]` **Package tracking** — `package_tracking` entry (mcp-server-17track,
+        2900+ carriers). **Activate: API_TOKEN_17TRACK in .env** (17track.net
+        → Settings → API key; free 100/mo). Compose passthrough wired.
+- `[~]` **Restaurant reservations** — `resy` entry (resy-mcp npm: search +
+        real booking, email/password auth, approval-gated).
+        **Activate: RESY_EMAIL + RESY_PASSWORD in .env.** `opentable` entry
+        registered but OFF (needs the fetchproxy browser extension on the
+        Mac; booking is link-only on OpenTable anyway). NOTE: both automate
+        your own account against anti-bot ToS — personal use only, same
+        category as the ClassPass/Fresh automation.
+- `[~]` **GitHub hosted MCP** — flipped `enabled: true`.
+        **Activate: GITHUB_TOKEN (PAT) in .env** — not present today. Retire
+        custom github_tool.py once proven.
+
+**Tier 2 — valuable, needs a decision or has friction:**
+- `[ ]` **Instacart official MCP** (docs.instacart.com developer platform) —
+        recipe pages + shopping-list fulfillment. Candidate SECOND grocery
+        backend for Remy (Amazon Fresh separate-cart bug still open) —
+        decide whether Remy should dual-source.
+- `[ ]` **WhatsApp MCP** (long-standing candidate) — no official server;
+        self-hosted bridge required (OpenBSP has first-class MCP; or
+        lharries/whatsapp-mcp via whatsmeow). Worth it only if WhatsApp is
+        a daily channel — otherwise iMessage coverage is enough.
+- `[x]` **GitHub hosted MCP** — enabled 2026-07-12 (see Tier 1 above);
+        awaiting GITHUB_TOKEN in .env.
+- `[ ]` **Events/tickets** — no credible Ticketmaster/StubHub MCP yet;
+        Playwright/browser path in the meantime. WATCH.
+- `[ ]` **Browser MCPs (assessed 2026-07-12)** — reality check: MCP tools
+        load into the BRAIN only; Scout/Remy/Kai scrape via mac_bridge
+        /browser/* (Mac-side Playwright, stealth patches, saved sessions)
+        and Ada is Tavily-only, so no browser MCP touches them directly.
+        The one real gap was the BRAIN's signed-in browsing (container
+        playwright = fresh sessions) — CLOSED 2026-07-12: **mcp-chrome
+        wired** (`chrome` registry entry → host.docker.internal:12306/mcp;
+        mcp-chrome-bridge installed + native host registered).
+        **Activate: load data/mcp-chrome-extension/ via chrome://extensions
+        (Developer mode → Load unpacked) → extension icon → Connect.**
+        Skips gracefully until then. **ego-lite** (citrolabs) =
+        parallel human+agent browser that migrates Chrome logins — would fix
+        Remy hogging the visible browser, but young (v1.2, ~500 stars),
+        skill/JS interface not MCP, and it would hold ALL logins. WATCH.
+        chrome-devtools-mcp (official) = dev/debug tool for Forge, not a
+        scraping upgrade (automation-flagged Chrome, sign-ins get blocked).
+- `[ ]` **Uber rides MCP** — only thin community wrappers today; official
+        Uber Eats MCP suggests a rides server may follow. WATCH — slots
+        into the Travel Agent (concierge) persona when real.
+
+**Assessed and skipped (already covered):** Spotify MCP (custom tools),
+Plaid (BankSync plugin), Notion/Todoist (Apple Reminders + notes tools —
+revisit only if Omar adopts those apps), wearable MCPs Oura/Whoop
+(HealthKit pipeline covers; sleep gap is a device-side issue, not data
+access), flights/hotels (Kiwi + Jinko + Airbnb + Expedia already in).
+
 ### Glasses vision → kitchen inventory  🔒 Planned (needs Meta glasses purchase)
 - `[ ]` "Look at my fridge/pantry" — glasses photo(s) → existing `/ask/image`
         path → vision model extracts inventory → merge into a
@@ -400,6 +529,66 @@ package-tracking (rides on Hermes once email creds land)
         `mac_fresh_add` / resolver path
 - Groundwork already in place: image pipeline (`/ask/image`), usual-order
   store, resolver + cart-add machinery. Build when the glasses arrive.
+
+---
+
+## Next Direction build-out (2026-07-17) — see docs/BUILD_TRACKER.md
+
+Decisions from the 2026-07-16 analysis session (agreed with Omar): Bet 2
+(Proactivity 2.0) + Bet 3 (unified memory) now; glasses bet deferred until
+purchase; dedicated session still owed for voice-latency + tool allowlists.
+
+- `[x]` **Approval Inbox** — one queue for every agent action needing a yes/no.
+        Redis `jarvis:approvals:pending`; single executor in agent_runner
+        (`jarvis/approvals/resolve` MQTT); surfaces: dashboard card with
+        Approve/Deny buttons, gateway `GET /approvals` + `POST resolve` (iOS
+        UI queued), brain tool `manage_approvals` ("approve that").
+- `[x]` **Echo — habit miner** (`habits`, nightly 04:45 UTC): mines 14 days of
+        jarvis:events into rhythm histograms → ≤2 suggestions/night filed as
+        approvals; 90-day dedupe; approved routines → habits:routines:approved
+        (auto-wiring into ambient triggers = follow-up Forge task).
+- `[x]` **Chief-of-staff weekly review** — Chronicle's Sunday review now also
+        reads GTD tasks, Apollo's plan, pending approvals, Echo's findings;
+        delivers up to 3 grounded recommendations.
+- `[x]` **Memory reflection** — Chronicle nightly extracts durable facts
+        (high bar, [] is normal) → `memory:reflect:queue` → brain drain thread
+        stores via `store_fact()` with Chroma near-dup check (<0.15 skipped).
+        Episodic days now compound into semantic memory.
+- `[x]` **Brain-side cost metering** (`usage_meter.py` in `_call_model`) — the
+        cost widget finally includes the biggest spender; daily budget alert
+        at DAILY_LLM_BUDGET_USD (default $15), mirrored in agent_runner.
+- `[x]` **Vega — QA regression agent** (`qa`, nightly 09:00 UTC): golden
+        conversations from config/qa_tasks.yml through the LIVE brain; alerts
+        urgent ONLY on pass→fail vs the previous run.
+- `[x]` **Sensitive-tool audit trail** — money/comms/shell/purchase tool calls
+        mirrored to `jarvis/audit/tool` → synapse's durable stream (domain
+        "audit"): replayable "what did Jarvis send/spend/execute".
+- `[~]` **APNs server side** (`mobile_gateway/apns.py`, `POST /apns/register`,
+        hooked into every surface push) — inert until the Apple Developer
+        Program .p8 lands (Omar joins after the Schwab sign-on bonus). iOS
+        registration Swift + approvals UI = next session.
+- `[~]` **Month 3 prep** — `docker-compose.core.yml` (VPS) +
+        `docker-compose.edge.yml` (Mac) + `docs/HETZNER_SETUP.md` runbook
+        written; Omar is buying the Hetzner box. host.docker.internal env
+        sweep started (agent_runner/main.py fixed; rest listed in runbook §6).
+
+Round 2 (2026-07-18):
+- `[x]` **Forge verification gate** — every CLI-mode Forge run on the Jarvis
+        repo ends with an enforced golden_tasks run + diffstat in the report;
+        red harness → urgent notification. (Forge already ran on headless
+        Claude Code CLI — the gate was the missing piece, not an SDK rebuild.)
+- `[x]` **Atlas — unified health** (`atlas`, Monday 8:30 AM + on-demand):
+        deterministic week-over-week trends across HealthKit + Apollo + Sage +
+        readiness → one synthesis + one recommendation. Brain tool
+        `get_health_overview`; dashboard Health widget (stat tiles).
+        Follow-up candidate: bloodwork-PDF ingestion.
+- `[x]` **Memory hierarchy complete** — reflection drain also runs weekly
+        `consolidate_memory` (exact-dup merge across the whole store).
+- `[ ]` **Travel agent ("Miles")** — design proposal at
+        `docs/TRAVEL_AGENT_DESIGN.md` with 4 decision points for Omar;
+        build is one Forge-sized session after he reacts.
+- Dedicated-session queue (needs Omar present): voice-latency tier
+  (local Moonshine STT / Kokoro TTS, barge-in), per-agent tool allowlists.
 
 ---
 

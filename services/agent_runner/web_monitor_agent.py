@@ -51,6 +51,50 @@ TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 MAC_BRIDGE_URL = os.environ.get("MAC_BRIDGE_URL", "http://host.docker.internal:7777")
 MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+# Firecrawl (optional) — a managed scrape+structured-extract API for URL watches.
+# When FIRECRAWL_API_KEY is set, URL watches scrape + extract via Firecrawl's
+# schema extraction (structured data back, no fragile LLM-JSON parsing, better
+# anti-bot/JS handling). Unset → falls back to the local scraper + LLM path.
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "").strip()
+FIRECRAWL_URL = os.environ.get("FIRECRAWL_URL", "https://api.firecrawl.dev").rstrip("/")
+
+
+def _repair_json(s: str):
+    """Best-effort JSON parse that survives truncation (the main cause of Scout's
+    'Expecting delimiter' errors when a big page overflows max_tokens): parse as-is,
+    else trim to the last complete object and balance open brackets."""
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    cut = s.rfind("}")
+    if cut < 0:
+        return None
+    frag = s[: cut + 1]
+    # Balance any brackets left open by the truncation (ignoring those in strings).
+    close = {"{": "}", "[": "]"}
+    stack, in_str, esc = [], False, False
+    for ch in frag:
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch in "{[":
+            stack.append(close[ch])
+        elif ch in "}]" and stack:
+            stack.pop()
+    frag += "".join(reversed(stack))
+    try:
+        return json.loads(frag)
+    except Exception:
+        return None
 
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -121,11 +165,20 @@ class WebMonitorAgent(BaseAgent):
 
     async def run(self) -> str:
         queries: list[str] = self.params.get("queries", [])
-        watches: list[dict] = self.params.get("watch_urls", [])
+        watches: list[dict] = list(self.params.get("watch_urls", []))
+        # DYNAMIC watches added at runtime via the manage_watches tool (stored in
+        # Redis scout:watches) are merged with the static agents.yml ones, so you
+        # can say "watch this URL for X" without editing config or restarting.
+        try:
+            dynamic = json.loads(self.r.get("scout:watches") or "[]")
+            if isinstance(dynamic, list):
+                watches += [w for w in dynamic if isinstance(w, dict) and w.get("url")]
+        except Exception:
+            pass
         if not queries and not watches:
             return (
-                "Web monitor agent: nothing configured. Add params.queries "
-                "and/or params.watch_urls in config/agents.yml."
+                "Web monitor agent: nothing configured. Add a watch via "
+                "\"watch this URL for …\" (manage_watches) or params in config/agents.yml."
             )
 
         sections: list[str] = []
@@ -192,38 +245,58 @@ class WebMonitorAgent(BaseAgent):
                     if str(u.get("id", "")).strip().lower() not in prev_ids
                 }
             else:
-                text = await self._fetch_page(session, url)
-                if not text or len(text) < 200 or _BLOCK_RE.search(text):
-                    record(f"• {name}: page fetch failed or bot-blocked — will retry next run")
-                    continue
+                # Prefer Firecrawl (managed scrape + schema extraction) when
+                # configured; fall back to the local scraper + LLM path otherwise.
+                fc = await self._firecrawl_extract(session, url, goal, prev_units_raw)
+                if fc is not None:
+                    units = fc["units"]
+                    note = fc.get("note", "")
+                    page_hash = hashlib.md5(
+                        json.dumps(units, sort_keys=True).encode()).hexdigest()
+                    if self.r.get(hash_key) == page_hash and prev_units_raw is not None:
+                        record(f"• {name}: unchanged ({len(units)} {noun}(s) available)")
+                        continue
+                    if not units and note:
+                        record(f"• {name}: no availability data [{note}] — will retry next run")
+                        continue
+                    for u in units:
+                        blob = json.dumps(u).lower()
+                        if any(kw.lower() in blob for kw in keywords) or u.get("floor") in (1, "1"):
+                            u["priority"] = True
+                    new_ids = {str(i).strip().lower() for i in fc.get("new_unit_ids", [])}
+                else:
+                    text = await self._fetch_page(session, url)
+                    if not text or len(text) < 200 or _BLOCK_RE.search(text):
+                        record(f"• {name}: page fetch failed or bot-blocked — will retry next run")
+                        continue
 
-                normalized = " ".join(text.split())
-                page_hash = hashlib.md5(normalized.encode()).hexdigest()
-                if self.r.get(hash_key) == page_hash and prev_units_raw is not None:
-                    count = len(json.loads(prev_units_raw))
-                    record(f"• {name}: unchanged ({count} {noun}(s) available)")
-                    continue
+                    normalized = " ".join(text.split())
+                    page_hash = hashlib.md5(normalized.encode()).hexdigest()
+                    if self.r.get(hash_key) == page_hash and prev_units_raw is not None:
+                        count = len(json.loads(prev_units_raw))
+                        record(f"• {name}: unchanged ({count} {noun}(s) available)")
+                        continue
 
-                extracted = await self._extract_units(
-                    name, url, goal, keywords, prev_units_raw, normalized[:11000]
-                )
-                if extracted is None:
-                    record(f"• {name}: page changed but extraction failed — will retry next run")
-                    continue
+                    extracted = await self._extract_units(
+                        name, url, goal, keywords, prev_units_raw, normalized[:11000]
+                    )
+                    if extracted is None:
+                        record(f"• {name}: page changed but extraction failed — will retry next run")
+                        continue
 
-                units = extracted.get("units", [])
-                note = extracted.get("note", "")
-                if not units and note:
-                    # Rendered fine but no availability data (blocked widget,
-                    # error page) — do NOT store this as a baseline.
-                    record(f"• {name}: no availability data [{note}] — will retry next run")
-                    continue
-                # Belt-and-braces priority check on top of the LLM's flag
-                for u in units:
-                    blob = json.dumps(u).lower()
-                    if any(kw.lower() in blob for kw in keywords) or u.get("floor") in (1, "1"):
-                        u["priority"] = True
-                new_ids = {str(i).strip().lower() for i in extracted.get("new_unit_ids", [])}
+                    units = extracted.get("units", [])
+                    note = extracted.get("note", "")
+                    if not units and note:
+                        # Rendered fine but no availability data (blocked widget,
+                        # error page) — do NOT store this as a baseline.
+                        record(f"• {name}: no availability data [{note}] — will retry next run")
+                        continue
+                    # Belt-and-braces priority check on top of the LLM's flag
+                    for u in units:
+                        blob = json.dumps(u).lower()
+                        if any(kw.lower() in blob for kw in keywords) or u.get("floor") in (1, "1"):
+                            u["priority"] = True
+                    new_ids = {str(i).strip().lower() for i in extracted.get("new_unit_ids", [])}
 
             self.r.set(units_key, json.dumps(units))
             self.r.set(hash_key, page_hash)
@@ -420,6 +493,91 @@ class WebMonitorAgent(BaseAgent):
             print(f"[Scout] {read_path} failed for {url}: {exc}")
             return ""
 
+    async def _firecrawl_extract(self, session, url, goal, prev_raw) -> dict | None:
+        """Scrape + STRUCTURED-extract a watch URL via Firecrawl (schema extraction).
+
+        Returns {units, new_unit_ids, note} or None. None means "not configured or
+        failed" → the caller falls back to the local scraper + LLM path. Because
+        Firecrawl returns typed data against a schema, there's no fragile JSON to
+        parse (fixes the 'Expecting delimiter' errors), and its managed renderer
+        clears JS/anti-bot pages the local scraper gets parked on.
+        """
+        if not FIRECRAWL_API_KEY:
+            return None
+        schema = {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string",
+                                   "description": "unit number / listing id / SKU"},
+                            "plan": {"type": "string", "description": "plan/label/name"},
+                            "floor": {"type": "string"},
+                            "price": {"type": "string"},
+                            "available": {"type": "string",
+                                          "description": "availability date/status"},
+                        },
+                        "required": ["id"],
+                    },
+                },
+                "note": {"type": "string",
+                         "description": "short note if no availability / error page"},
+            },
+            "required": ["items"],
+        }
+        prompt = (
+            f"Extract EVERY currently available {goal} listed on this page. For each, "
+            "capture id (unit number / listing id), plan/label, floor, price, and "
+            "availability date. If the page shows no availability, or is an error / "
+            "bot-challenge page, return items: [] with a short note explaining."
+        )
+        body = {
+            "url": url,
+            "formats": ["json"],
+            "onlyMainContent": True,
+            "jsonOptions": {"schema": schema, "prompt": prompt},
+        }
+        try:
+            async with session.post(
+                f"{FIRECRAWL_URL}/v1/scrape",
+                headers={"Authorization": f"Bearer {FIRECRAWL_API_KEY}",
+                         "Content-Type": "application/json"},
+                json=body,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                if resp.status != 200:
+                    txt = (await resp.text())[:160]
+                    print(f"[Scout] firecrawl {resp.status} for {url}: {txt}")
+                    return None
+                payload = await resp.json()
+        except Exception as exc:
+            print(f"[Scout] firecrawl error for {url}: {exc}")
+            return None
+
+        if not payload.get("success", True):
+            return None
+        j = ((payload.get("data") or {}).get("json")) or {}
+        items = j.get("items")
+        if not isinstance(items, list):
+            return None
+        for it in items:
+            if isinstance(it, dict):
+                it.setdefault("plan", it.get("label", ""))
+                it.setdefault("available", it.get("detail", ""))
+        # Diff against the previous snapshot ourselves (reliable — same as the
+        # SightMap path — rather than trusting a model to compute the delta).
+        try:
+            prev_ids = {str(u.get("id", "")).strip().lower()
+                        for u in json.loads(prev_raw or "[]")}
+        except Exception:
+            prev_ids = set()
+        new_ids = [str(it.get("id", "")).strip() for it in items
+                   if str(it.get("id", "")).strip().lower() not in prev_ids]
+        return {"units": items, "new_unit_ids": new_ids, "note": j.get("note", "")}
+
     async def _extract_units(self, name, url, goal, keywords, prev_raw, text) -> dict | None:
         previous = prev_raw if prev_raw else "NONE (first scan)"
         try:
@@ -429,13 +587,16 @@ class WebMonitorAgent(BaseAgent):
                     name=name, url=url, goal=goal, keywords=", ".join(keywords),
                     previous=previous, text=text,
                 ),
-                max_tokens=1400,
+                # Raised from 1400: a page with many units overflowed and produced
+                # truncated/invalid JSON ("Expecting ',' delimiter"). More headroom
+                # + _repair_json (truncation-tolerant) fixes that class of failure.
+                max_tokens=4000,
                 temperature=0.0,
             )
             start, end = reply.find("{"), reply.rfind("}") + 1
             if start < 0:
                 return None
-            data = json.loads(reply[start:end])
+            data = _repair_json(reply[start:end])
             if not isinstance(data, dict):
                 return None
             # Normalize the generic item shape → the internal keys the rest of

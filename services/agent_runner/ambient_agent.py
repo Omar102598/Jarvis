@@ -62,22 +62,28 @@ class AmbientAgent(BaseAgent):
             if not self.r.set(f"jarvis:briefed:{today}", "1", nx=True, ex=86400):
                 return "Morning briefing already delivered today — skipping."
             prompt = (
-                "Good morning briefing, please. FIRST: check my profile for a "
-                "'morning_scene_shortcut' field — if set, run that Mac shortcut "
-                "(mac_run_shortcut) to bring the lights up before you speak. "
+                "Good morning briefing, please. FIRST bring the lights up before "
+                "you speak: turn on light.living_room_left AND light.living_room_right "
+                "(control_device, params color_temp_kelvin 4500, brightness_pct 70 — "
+                "bright morning white). Additionally run my profile's "
+                "'morning_scene_shortcut' Mac shortcut if that field is set. "
                 "Then compose the briefing from live data: "
+                "0) my recovery — call get_readiness and let TODAY'S SCORE SET "
+                "THE TONE of the whole brief (primed = energetic/push; low = "
+                "gentle, suggest easing up); mention the number briefly; "
                 "1) today's weather (get_weather); 2) my calendar today; "
                 "3) commute — driving time from my profile's home_address to my "
                 "profile's work_address (read BOTH from get_user_profile; skip "
                 "this section gracefully if either is unset) via your maps "
                 "tools, and when I should leave; "
-                "4) today's workout from Apollo's plan (get_todays_workout); "
+                "4) today's workout from Apollo's plan (get_todays_workout), "
+                "adjusted for the readiness score; "
                 "5) anything notable the cameras caught overnight (who_came_by, "
                 "last 10 hours) and one headline from Walter's newsletter if "
                 "available. Speak it warmly in 5-6 sentences — this is my "
                 "wake-up greeting."
             )
-            self._publish(prompt, room, is_llm_request=True)
+            self._publish(prompt, room, is_llm_request=True, proactive=True)
             return "Morning briefing dispatched to the brain."
         calendar_lookahead_min = int(params.get("calendar_lookahead_min", 30))
         morning_hour = int(params.get("morning_hour", 8))
@@ -160,7 +166,7 @@ class AmbientAgent(BaseAgent):
             "any upcoming calendar events today, current weather, and one key item "
             "from the daily newsletter if available. Keep it under 4 sentences."
         )
-        self._publish(prompt, room, is_llm_request=True)
+        self._publish(prompt, room, is_llm_request=True, proactive=True)
         self._mark_fired(trigger_id)
         return ["morning_briefing"]
 
@@ -398,36 +404,44 @@ class AmbientAgent(BaseAgent):
         self.r.set(key, str(datetime.now().timestamp()))
 
     def _publish(
-        self, text: str, room: str, is_llm_request: bool = False, title: str = "Jarvis"
+        self, text: str, room: str, is_llm_request: bool = False, title: str = "Jarvis",
+        proactive: bool = False,
     ) -> None:
         """Publish a message — either direct TTS or routed through the LLM.
 
         Direct (already-composed) alerts are also fanned out to active iPhone /
         glasses surfaces so they appear on the HUD, not only spoken in the room.
-        """
-        try:
-            client = mqtt.Client()
-            client.connect(MQTT_HOST, MQTT_PORT, keepalive=10)
 
+        ``proactive`` marks unprompted content (the morning brief) so the brain
+        ALWAYS persists it to the phone feed — otherwise it's only spoken in the
+        room and is lost if the app wasn't open (why a 6 AM brief went unseen).
+        """
+        # Use publish.single (blocking connect+publish+flush+disconnect). The
+        # previous connect()/publish()/disconnect() WITHOUT a network loop queued
+        # the message but disconnected before paho transmitted it — so morning
+        # briefs and other ambient alerts were silently dropped on a race.
+        import paho.mqtt.publish as mqtt_publish
+        try:
             if is_llm_request:
                 # Route through the LLM agent so Jarvis composes the full response
                 # (the LLM agent fans the result out to surfaces itself).
-                client.publish(
+                mqtt_publish.single(
                     "jarvis/llm/request",
-                    json.dumps({"text": text, "room": room}),
+                    json.dumps({"text": text, "room": room, "proactive": proactive}),
+                    hostname=MQTT_HOST, port=MQTT_PORT,
                 )
             else:
                 # Speak directly (no LLM needed — message is already composed)
-                client.publish(
+                mqtt_publish.single(
                     f"jarvis/tts/{room}/speak",
                     json.dumps({"text": text, "room": room, "is_final": True}),
+                    hostname=MQTT_HOST, port=MQTT_PORT,
                 )
                 # Fan out the same alert to iPhone / glasses HUD surfaces
-                client.publish(
+                mqtt_publish.single(
                     "jarvis/surfaces/iphone/push",
                     json.dumps({"text": text, "title": title}),
+                    hostname=MQTT_HOST, port=MQTT_PORT,
                 )
-
-            client.disconnect()
         except Exception as e:
             print(f"[AmbientAgent] MQTT publish error: {e}")

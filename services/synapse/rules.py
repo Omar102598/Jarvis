@@ -72,6 +72,19 @@ def _on_cooldown(r, name: str) -> bool:
         return False
 
 
+def _suppressed(r, name: str) -> bool:
+    """True if the user keeps dismissing this rule's insights (feedback learning):
+    ≥4 dismissals and a dismiss rate over 70% → go quiet about it."""
+    try:
+        fb = r.hgetall(f"synapse:feedback:synapse:{name}") or {}
+        dismiss = int(fb.get("dismiss", 0) or 0)
+        act = int(fb.get("act", 0) or 0)
+    except Exception:
+        return False
+    total = dismiss + act
+    return dismiss >= 4 and total and (dismiss / total) > 0.70
+
+
 def _arm_cooldown(r, name: str, seconds: int) -> None:
     try:
         r.set(f"synapse:rule:cooldown:{name}", "1", ex=max(60, seconds))
@@ -88,7 +101,7 @@ def evaluate_all(r) -> list[Insight]:
     """
     fired: list[Insight] = []
     for rl in _REGISTRY:
-        if not rl.enabled or _on_cooldown(r, rl.name):
+        if not rl.enabled or _on_cooldown(r, rl.name) or _suppressed(r, rl.name):
             continue
         try:
             insight = rl.fn(r)
@@ -246,6 +259,121 @@ def _dining_spend_vs_groceries(r) -> Insight | None:
               "days. Want Remy to build a meal-prep grocery list to cut that down? "
               "Say \"Remy, plan meal prep\"."),
         cooldown_s=6 * 24 * 3600,   # weekly at most
+    )
+
+
+@rule("birthdays_and_reconnect")
+def _birthdays_and_reconnect(r) -> Insight | None:
+    """Upcoming birthdays + gentle "reach out" nudges. Join: people memory × time."""
+    from datetime import datetime, timezone
+
+    try:
+        people = r.hgetall(f"people:{USER_ID}") or {}
+    except Exception:
+        return None
+    if not people:
+        return None
+    now = datetime.now(timezone.utc)
+    today_md = now.strftime("%m-%d")
+    bdays, stale = [], []
+    for _, val in people.items():
+        try:
+            p = json.loads(val)
+        except Exception:
+            continue
+        bd = str(p.get("birthday", ""))
+        md = bd[-5:] if len(bd) >= 5 else ""
+        if md and md == today_md:
+            bdays.append(p.get("name", "someone"))
+        # Reconnect: a known relationship not contacted in 45+ days.
+        lc = p.get("last_contact")
+        if p.get("relationship") and lc:
+            try:
+                days = (now - datetime.fromisoformat(lc.replace("Z", "+00:00"))).days
+                if days >= 45:
+                    stale.append((days, p.get("name", "someone")))
+            except Exception:
+                pass
+    parts = []
+    if bdays:
+        parts.append("🎂 Birthday today: " + ", ".join(bdays) + ".")
+    if stale:
+        stale.sort(reverse=True)
+        who = stale[0][1]
+        parts.append(f"You haven't been in touch with {who} in a while — worth a hello?")
+    if not parts:
+        return None
+    return Insight(title="👋 People", text=" ".join(parts), cooldown_s=20 * 3600)
+
+
+@rule("protein_gap")
+def _protein_gap(r) -> Insight | None:
+    """Afternoon/evening nudge if the day's logged protein is well short of target.
+    Join: Sage nutrition × profile targets."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    try:
+        now = datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago")))
+    except Exception:
+        now = datetime.now()
+    if now.hour < 15 or now.hour > 20:   # only when there's still time to eat, day winding down
+        return None
+    day = now.strftime("%Y-%m-%d")
+    try:
+        totals = r.hgetall(f"nutrition:totals:{day}") or {}
+    except Exception:
+        totals = {}
+    if not totals:
+        return None   # nothing logged today — can't assess
+    p = _profile(r)
+    weight = float(p.get("weight_lbs", 0) or 0)
+    ppl = float(p.get("protein_goal_g_per_lb", 1.0) or 1.0)
+    target = weight * ppl
+    if target <= 0:
+        return None
+    consumed = float(totals.get("protein_g", 0) or 0)
+    gap = target - consumed
+    if gap < 30:
+        return None
+    return Insight(
+        title="🥩 Protein gap",
+        text=(f"You're at {round(consumed)}g protein vs your ~{round(target)}g target "
+              f"— about {round(gap)}g short with the day winding down. A protein-forward "
+              "dinner or a shake would close it."),
+        cooldown_s=18 * 3600,
+    )
+
+
+@rule("supplement_reminder")
+def _supplement_reminder(r) -> Insight | None:
+    """A daily supplement/medication nudge at the configured hour.
+    Set via profile: supplements ("creatine, vitamin d") + supplement_hour (0-23)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    p = _profile(r)
+    supps = p.get("supplements")
+    if not supps:
+        return None
+    try:
+        hour = int(p.get("supplement_hour", 8))
+    except Exception:
+        hour = 8
+    try:
+        now = datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago")))
+    except Exception:
+        now = datetime.now()
+    if now.hour != hour:
+        return None
+    names = supps if isinstance(supps, list) else [s.strip() for s in str(supps).split(",")]
+    names = [n for n in names if n]
+    if not names:
+        return None
+    return Insight(
+        title="💊 Supplements",
+        text="Time for your supplements: " + ", ".join(names) + ".",
+        cooldown_s=20 * 3600,   # once per day
     )
 
 

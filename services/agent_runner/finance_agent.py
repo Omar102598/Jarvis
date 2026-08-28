@@ -102,10 +102,19 @@ class _BankSync:
     async def initialize(self) -> bool:
         if not self.key:
             return False
-        init = await self._rpc("initialize", {
-            "protocolVersion": "2025-06-18", "capabilities": {},
-            "clientInfo": {"name": "jarvis-finance-widget", "version": "1.0"},
-        })
+        # Retry the handshake — a single transient blip at 8:00 AM made the
+        # once-daily Spend Guardian report "handshake failed" for a full day.
+        init = {}
+        for attempt in range(3):
+            init = await self._rpc("initialize", {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "jarvis-finance-widget", "version": "1.0"},
+            })
+            if not init.get("error"):
+                break
+            if attempt < 2:
+                import asyncio as _asyncio
+                await _asyncio.sleep(5 * (attempt + 1))
         if init.get("error"):
             return False
         try:

@@ -23,11 +23,24 @@ from .mac import (
     mac_system_info,
     mac_type,
 )
-from .memory import forget, recall, remember
+from .memory import forget, recall, remember, consolidate_memory
 from .chronicle import recall_journal
 from .finance_insights import get_spending_insights
 from .tasks import manage_tasks
 from .health import get_readiness
+from .nutrition import log_meal, get_nutrition_today
+from .visual_memory import log_sighting, recall_visual
+from .capture import quick_capture
+from .packages import get_packages
+from .actions import get_recent_actions, undo_last_action
+from .firecrawl import scrape_page
+from .people import manage_people
+from .routines import detect_routines
+from .travel import plan_trip, get_trips
+from .calls import make_call
+from .watches import manage_watches
+from .presence import arrive_home, leave_home
+from .apple_tv import apple_tv
 from .notes import manage_notes
 from .notifications import send_notification
 from .petkit import (

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  JARVIS watchdog LaunchAgent — runs scripts/watchdog.sh every 5 minutes to
+  self-heal dead native-audio procs, unreachable Redis/MQTT, and down containers
+  (the failure class that cost a morning briefing).
+
+  Install:
+    cp scripts/com.jarvis.watchdog.plist ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/com.jarvis.watchdog.plist 2>/dev/null
+    launchctl load  ~/Library/LaunchAgents/com.jarvis.watchdog.plist
+  Check:   launchctl list | grep jarvis
+  Logs:    logs/watchdog.log  and  logs/watchdog.launchd.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/omar/Documents/GitHub/Jarvis/scripts/watchdog.sh</string>
+    </array>
+
+    <!-- launchd runs with a minimal PATH; the script shells out to `docker`. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/omar/Documents/GitHub/Jarvis</string>
+
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/omar/Documents/GitHub/Jarvis/logs/watchdog.launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/omar/Documents/GitHub/Jarvis/logs/watchdog.launchd.log</string>
+</dict>
+</plist>

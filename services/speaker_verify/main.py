@@ -25,11 +25,14 @@ import redis
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 THRESHOLD = float(os.environ.get("VERIFY_THRESHOLD", "0.25"))
 VERIFY_MODE = os.environ.get("VERIFY_MODE", "log").lower()
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models/speaker_model")
 
-r = redis.Redis(host=REDIS_HOST)
+# Was defaulting to 6379 (port ignored) → "connection refused" spam and broken
+# verification, since Redis is exposed on 6380 for native services.
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
 
 _classifier = None
 
@@ -152,9 +155,17 @@ def on_speech(client, userdata, msg):
 
 def main():
     mqtt_client = mqtt.Client()
-    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
-    mqtt_client.subscribe("jarvis/audio/mic/+/speech")
+
+    # Subscribe in on_connect so a mosquitto restart re-subscribes automatically
+    # (subscribing once in main left the bridge connected but deaf after a
+    # broker bounce — transcripts never reached the brain).
+    def on_connect(client, userdata, flags, rc):
+        client.subscribe("jarvis/audio/mic/+/speech")
+        print(f"[Verify] MQTT connected (rc={rc}), subscription active.")
+
+    mqtt_client.on_connect = on_connect
     mqtt_client.message_callback_add("jarvis/audio/mic/+/speech", on_speech)
+    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
 
     print(f"[Verify] Ready (mode={VERIFY_MODE}, threshold={THRESHOLD})")
     mqtt_client.loop_forever()

@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 import redis
 from langchain_core.tools import tool
 
+from .actions import record_action
+
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 USER_ID = os.environ.get("JARVIS_USER_ID", "default")
 _r = redis.Redis(host=REDIS_HOST, decode_responses=True)
@@ -100,6 +102,8 @@ def manage_tasks(action: str, text: str = "", task_id: str = "",
             "done_at": "",
         }
         _save(t)
+        record_action("task", f"added task “{t['text']}”",
+                      undo={"op": "del_task", "id": t["id"]})
         return f"Added to your list: {t['text']}" + (f" [{t['project']}]" if t["project"] else "")
 
     if action == "list":
@@ -127,9 +131,12 @@ def manage_tasks(action: str, text: str = "", task_id: str = "",
             _save(t)
             return f"Marked as a next-action: {t['text']}"
         if action == "done":
+            prev = t.get("status", "inbox")
             t["status"] = "done"
             t["done_at"] = datetime.now(timezone.utc).isoformat()
             _save(t)
+            record_action("task", f"completed “{t['text']}”",
+                          undo={"op": "reopen_task", "id": t["id"], "prev_status": prev})
             return f"Done: {t['text']} ✓"
         _r.hdel(_KEY, t["id"])
         return f"Removed: {t['text']}"

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  JARVIS nightly backup LaunchAgent — snapshots Redis + Chroma at 3:20 AM.
+  Install:
+    cp scripts/com.jarvis.backup.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.jarvis.backup.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.backup</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/omar/Documents/GitHub/Jarvis/scripts/backup.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/omar/Documents/GitHub/Jarvis</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>3</integer>
+        <key>Minute</key><integer>20</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/omar/Documents/GitHub/Jarvis/logs/backup.launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/omar/Documents/GitHub/Jarvis/logs/backup.launchd.log</string>
+</dict>
+</plist>

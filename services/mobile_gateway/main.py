@@ -384,6 +384,16 @@ def _on_surface_push(client, userdata, msg):
         payload = DisplayPayload(ptype, title, text[:200], media_url, text)
         if _event_loop is not None:
             asyncio.run_coroutine_threadsafe(_push_display_payload(payload), _event_loop)
+        # Real push via APNs (no-op until the Apple Developer .p8 is configured).
+        # We're on the MQTT callback thread here, so the sync sender is fine.
+        try:
+            import apns
+            extra = {"media_url": media_url} if media_url else None
+            n = apns.send_alert(_redis, title, text, payload_extra=extra)
+            if n:
+                print(f"[Gateway] APNs delivered to {n} device(s)")
+        except Exception as exc:
+            print(f"[Gateway] APNs error: {exc}")
     except Exception as exc:
         print(f"[Gateway] Surface push error: {exc}")
 
@@ -566,9 +576,16 @@ async def ask_audio(request: Request, x_api_key: str = Header(default="")):
     content_type = request.headers.get("content-type", "")
     audio_bytes = b""
     filename = "audio.m4a"
+    # Room mic-satellites (Pi Zero + ReSpeaker) use this same endpoint but
+    # identify their physical room via header/form so replies route as that
+    # room's voice surface instead of "mobile".
+    source = request.headers.get("x-jarvis-room", "").strip() or "mobile"
 
     if "multipart/form-data" in content_type:
         form = await request.form()
+        room_field = form.get("room")
+        if room_field and not hasattr(room_field, "read"):
+            source = str(room_field).strip() or source
         audio_field = form.get("audio")
         if audio_field is None:
             for v in form.values():
@@ -603,8 +620,8 @@ async def ask_audio(request: Request, x_api_key: str = Header(default="")):
     if not text:
         raise HTTPException(status_code=422, detail="No speech detected in audio")
 
-    print(f"[Gateway] /ask/audio transcribed: '{text}'")
-    _, wav_bytes = await _run_pipeline_audio(text, source="mobile")
+    print(f"[Gateway] /ask/audio transcribed ({source}): '{text}'")
+    _, wav_bytes = await _run_pipeline_audio(text, source=source)
     return Response(content=wav_bytes, media_type="audio/wav")
 
 
@@ -983,6 +1000,11 @@ class HealthSnapshotRequest(BaseModel):
     body_mass_lbs: Optional[float] = None
     workouts_today: Optional[int] = None
     workout_minutes_today: Optional[float] = None
+    # Set true when the app detects the user just woke (HealthKit sleep analysis
+    # 'awake' transition, or first unlock after sleep). Authoritative wake signal
+    # for the morning brief — Sentry fires the brief at once instead of waiting
+    # for sustained camera presence.
+    just_woke: Optional[bool] = None
     source: str = "ios_healthkit"
 
 
@@ -1093,6 +1115,11 @@ async def health_snapshot(req: HealthSnapshotRequest, x_api_key: str = Header(de
             _redis.lpush("user:health:history", json.dumps(snapshot))
         _redis.ltrim("user:health:history", 0, 29)   # ~30 distinct days
 
+        # Authoritative wake signal → Sentry fires the morning brief immediately
+        # (expires end of day so it can't linger). Keyed off the snapshot request.
+        if req.just_woke:
+            _redis.set("user:awake:today", now.isoformat(), ex=18 * 3600)
+
         # Fuse into a single readiness score for the day (sets Apollo/Kai/brief tone).
         try:
             hist = [json.loads(h) for h in _redis.lrange("user:health:history", 0, 14)]
@@ -1114,6 +1141,67 @@ async def health_snapshot(req: HealthSnapshotRequest, x_api_key: str = Header(de
         raise HTTPException(503, f"Redis unavailable: {exc}")
 
     return {"ok": True, "stored": list(snapshot.keys())}
+
+
+# ---------------------------------------------------------------------------
+# Generic webhook ingress — let external services (IFTTT, GitHub, Stripe,
+# calendar/webhook providers, home automations) push events onto the JARVIS bus.
+# Routed through jarvis/notify so Synapse's router decides urgent-vs-digest.
+# Auth: WEBHOOK_SECRET (separate from the app's MOBILE_API_KEY) via ?secret= or
+# the X-Webhook-Secret header. Leave WEBHOOK_SECRET empty to disable this route.
+# ---------------------------------------------------------------------------
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+
+
+class NotifyFeedbackRequest(BaseModel):
+    key: str            # the notification's dedup_key (e.g. "synapse:protein_gap")
+    action: str         # "dismiss" | "act"
+
+
+@app.post("/notify/feedback", summary="[iOS app] Notification acted-on/dismissed → learn")
+async def notify_feedback(req: NotifyFeedbackRequest, x_api_key: str = Header(default="")):
+    """Record whether the user acted on or dismissed a proactive notification.
+
+    Synapse reads these counts and suppresses rules the user keeps dismissing, so
+    the proactive layer gets quieter about things you don't care about.
+    """
+    _check_api_key(x_api_key)
+    key = (req.key or "").strip()
+    act = (req.action or "").strip().lower()
+    if not key or act not in ("dismiss", "act"):
+        raise HTTPException(400, "key and action (dismiss|act) required")
+    try:
+        _redis.hincrby(f"synapse:feedback:{key}", act, 1)
+        _redis.expire(f"synapse:feedback:{key}", 60 * 60 * 24 * 60)
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+    return {"ok": True}
+
+
+@app.post("/webhook/{source}", summary="Inbound webhook → JARVIS notification bus")
+async def inbound_webhook(source: str, request: Request, secret: str = "",
+                          x_webhook_secret: str = Header(default="")):
+    if not WEBHOOK_SECRET:
+        raise HTTPException(404, "Webhook ingress disabled (set WEBHOOK_SECRET).")
+    if secret != WEBHOOK_SECRET and x_webhook_secret != WEBHOOK_SECRET:
+        raise HTTPException(401, "Invalid webhook secret.")
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {"value": body}
+    except Exception:
+        body = {"raw": (await request.body()).decode("utf-8", "ignore")[:500]}
+
+    title = str(body.get("title") or f"🔔 {source}")[:80]
+    text = str(body.get("text") or body.get("message") or json.dumps(body))[:500]
+    urgency = str(body.get("urgency") or "normal").lower()
+    try:
+        _mqtt_client.publish("jarvis/notify", json.dumps({
+            "title": title, "text": text, "urgency": urgency, "source": source,
+        }))
+    except Exception as exc:
+        raise HTTPException(503, f"Bus publish failed: {exc}")
+    return {"ok": True, "routed": source, "urgency": urgency}
 
 
 # ---------------------------------------------------------------------------
@@ -1514,6 +1602,82 @@ async def get_pushes(x_api_key: str = Header(default=""), limit: int = 20):
         except Exception:
             continue
     return {"pushes": pushes}
+
+
+# ---------------------------------------------------------------------------
+# APNs device registration (inert until APNS_* env is configured — see apns.py)
+# ---------------------------------------------------------------------------
+
+@app.post("/apns/register", summary="[iOS app] Register an APNs device token")
+async def apns_register(request: Request, x_api_key: str = Header(default="")):
+    _check_api_key(x_api_key)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    token = str(body.get("token", "")).strip()
+    if not token or len(token) < 32:
+        raise HTTPException(400, "missing device token")
+    _redis.sadd("apns:tokens", token)
+    import apns
+    return {"ok": True, "apns_configured": apns.configured(),
+            "registered_devices": _redis.scard("apns:tokens")}
+
+
+# ---------------------------------------------------------------------------
+# Approval Inbox — list pending approvals; publish decisions to the bus.
+# The agent_runner is the single executor (jarvis/approvals/resolve listener);
+# this endpoint only requests the resolution, then the app polls status.
+# ---------------------------------------------------------------------------
+
+@app.get("/approvals", summary="[iOS/Mac app + dashboard] Pending approvals")
+async def get_approvals(x_api_key: str = Header(default=""), history: int = 0):
+    _check_api_key(x_api_key)
+    try:
+        pending = []
+        now = datetime.now(timezone.utc).timestamp()
+        for raw in (_redis.hgetall("jarvis:approvals:pending") or {}).values():
+            try:
+                rec = json.loads(raw)
+                if float(rec.get("expires", 0)) >= now:
+                    pending.append(rec)
+            except Exception:
+                continue
+        pending.sort(key=lambda rec: rec.get("created", ""))
+        out = {"pending": pending}
+        if history:
+            out["resolved"] = [json.loads(x) for x in
+                               _redis.lrange("jarvis:approvals:log", 0,
+                                             min(history, 50) - 1)]
+        return out
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+
+
+@app.post("/approvals/{approval_id}/resolve",
+          summary="[iOS/Mac app + dashboard] Approve or deny a pending approval")
+async def resolve_approval(approval_id: str, request: Request,
+                           x_api_key: str = Header(default="")):
+    _check_api_key(x_api_key)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    decision = str(body.get("decision", "")).lower()
+    if decision not in ("approve", "approved", "deny", "denied"):
+        raise HTTPException(400, "decision must be 'approve' or 'deny'")
+    if not _redis.hexists("jarvis:approvals:pending", approval_id):
+        status = _redis.get(f"jarvis:approvals:status:{approval_id}") or "unknown"
+        return {"ok": False, "status": status,
+                "detail": "not pending (already resolved or expired)"}
+    _mqtt_client.publish("jarvis/approvals/resolve", json.dumps({
+        "id": approval_id, "decision": decision,
+        "by": body.get("by", "app"),
+    }))
+    return {"ok": True, "status": "resolving",
+            "detail": "decision published; poll GET /approvals or the status key"}
 
 
 # ---------------------------------------------------------------------------

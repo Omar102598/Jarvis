@@ -1,0 +1,36 @@
+# Vega's nightly QA suite — golden conversations run against the LIVE brain.
+# Each case: the response must contain ANY of expect_any (case-insensitive)
+# and NONE of forbid. Keep prompts cheap and checks robust to phrasing.
+# Edit freely; the agent falls back to a builtin suite if this file is missing.
+
+cases:
+  - name: time
+    prompt: "what time is it"
+    expect_any: ["am", "pm", ":", "o'clock", "morning", "afternoon", "evening", "night", "utc"]
+    forbid: ["error", "i encountered", "not one of my"]
+
+  - name: math
+    prompt: "what is seventeen plus twenty-five"
+    expect_any: ["42", "forty-two", "forty two"]
+    forbid: ["error"]
+
+  - name: identity
+    prompt: "who are you"
+    expect_any: ["jarvis", "assistant"]
+    forbid: ["error", "i encountered"]
+
+  - name: weather_tool
+    prompt: "what's the weather right now"
+    expect_any: ["°", "degrees", "temperature", "cloud", "sun", "rain", "clear", "wind", "humid"]
+    forbid: ["i encountered an error", "traceback"]
+
+  - name: memory_recall
+    prompt: "what do you remember about me"
+    expect_any: ["remember", "you", "•"]
+    forbid: ["traceback", "i encountered an error"]
+
+  - name: lights_intent
+    # Doesn't actually toggle anything at 4 AM — asks for state, not a change.
+    prompt: "are any lights on right now"
+    expect_any: ["light", "lamp", "on", "off"]
+    forbid: ["traceback", "i encountered an error"]

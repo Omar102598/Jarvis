@@ -145,6 +145,40 @@ final class JarvisClient {
         return response.messages
     }
 
+    private struct FaceEnrollResponse: Decodable {
+        let name: String
+        let samples: Int
+        let of: Int
+        let enrolled: Bool
+    }
+
+    /// Teach Jarvis a face from selfies — the vision service extracts an
+    /// embedding per usable image and averages them into the identity Sentry's
+    /// camera recognition compares against. Re-enrolling a name replaces it.
+    func enrollFace(name: String, imagesB64: [String]) async throws
+        -> (samples: Int, of: Int, enrolled: Bool) {
+        var request = baseRequest(path: "/face/enroll")
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "name": name, "images": imagesB64, "finalize": true,
+        ])
+        request.timeoutInterval = 90   // embedding on CPU takes seconds/image
+        let response: FaceEnrollResponse = try await execute(request)
+        return (response.samples, response.of, response.enrolled)
+    }
+
+    private struct PushesResponse: Decodable { let pushes: [PushItem] }
+
+    /// Proactive pushes persisted server-side (Sentry cards etc.) — the
+    /// WebSocket only reaches a foregrounded app, so anything sent while
+    /// suspended is recovered from this feed on launch/foreground.
+    func fetchPushes(limit: Int = 20) async throws -> [PushItem] {
+        let request = baseRequest(path: "/pushes?limit=\(limit)")
+        let response: PushesResponse = try await execute(request)
+        return response.pushes
+    }
+
     // MARK: HealthKit snapshot — push fitness metrics to the backend
 
     @discardableResult

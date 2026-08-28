@@ -72,6 +72,49 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
+# Core store (shared by the remember tool and the reflection drain)
+# ---------------------------------------------------------------------------
+
+def store_fact(fact: str, source: str = "user", dedupe: bool = False) -> bool:
+    """Write one fact to both stores. Returns False if empty or (with
+    ``dedupe``) a near-duplicate of something already remembered.
+
+    ``dedupe`` is used by the nightly reflection drain — Chronicle can distill
+    the same life fact on consecutive days, and reflection must not silt up
+    memory. A user explicitly saying "remember X" always stores.
+    """
+    fact = fact.strip()
+    if not fact:
+        return False
+
+    col = _get_collection()
+    if dedupe and col is not None:
+        try:
+            existing = col.query(query_texts=[fact], n_results=1,
+                                 include=["distances"])
+            distances = (existing.get("distances") or [[]])[0]
+            if distances and distances[0] < 0.15:
+                return False
+        except Exception:
+            pass
+
+    fact_id = uuid.uuid4().hex[:12]
+    ts = time.time()
+    if col is not None:
+        try:
+            col.add(
+                documents=[fact],
+                ids=[fact_id],
+                metadatas=[{"ts": ts, "user": USER_ID, "source": source}],
+            )
+        except Exception as e:
+            print(f"[Memory] Chroma write error: {e}")
+    _r.hset(_MEM_KEY, fact_id, json.dumps({"text": fact, "ts": ts,
+                                           "source": source}))
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
@@ -86,29 +129,9 @@ def remember(fact: str) -> str:
     Args:
         fact: The fact to remember, phrased as a standalone statement.
     """
-    fact = fact.strip()
-    if not fact:
+    if not store_fact(fact, source="user"):
         return "Nothing to remember — the fact was empty."
-
-    fact_id = uuid.uuid4().hex[:12]
-    ts = time.time()
-
-    # --- Chroma (primary) ---
-    col = _get_collection()
-    if col is not None:
-        try:
-            col.add(
-                documents=[fact],
-                ids=[fact_id],
-                metadatas=[{"ts": ts, "user": USER_ID}],
-            )
-        except Exception as e:
-            print(f"[Memory] Chroma write error: {e}")
-
-    # --- Redis (backup / fallback) ---
-    _r.hset(_MEM_KEY, fact_id, json.dumps({"text": fact, "ts": ts}))
-
-    return f'Noted. I\'ll remember that: "{fact}"'
+    return f'Noted. I\'ll remember that: "{fact.strip()}"'
 
 
 @tool
@@ -224,3 +247,39 @@ def forget(topic: str) -> str:
         if removed
         else f"Nothing remembered about '{topic}'."
     )
+
+
+@tool
+def consolidate_memory() -> str:
+    """Tidy long-term memory: merge duplicate remembered facts so recall stays sharp.
+
+    Use occasionally (or when asked to "clean up your memory"). Keeps the oldest
+    copy of each duplicated fact and removes the rest from both stores.
+    """
+    raw = _r.hgetall(_MEM_KEY)
+    if not raw:
+        return "Nothing remembered yet — nothing to consolidate."
+    # Group fact_ids by normalized text; keep the earliest, drop later dupes.
+    by_norm: dict[str, list[tuple[float, str]]] = {}
+    for fid, payload in raw.items():
+        try:
+            f = json.loads(payload)
+            norm = " ".join(str(f.get("text", "")).lower().split())
+            by_norm.setdefault(norm, []).append((float(f.get("ts", 0) or 0), fid))
+        except Exception:
+            continue
+    dup_ids = []
+    for _, entries in by_norm.items():
+        if len(entries) > 1:
+            entries.sort()                 # oldest first
+            dup_ids.extend(fid for _, fid in entries[1:])
+    if not dup_ids:
+        return f"Memory is already tidy — no duplicates among {len(raw)} facts."
+    _r.hdel(_MEM_KEY, *dup_ids)
+    col = _get_collection()
+    if col is not None:
+        try:
+            col.delete(ids=dup_ids)
+        except Exception as e:
+            print(f"[Memory] consolidate Chroma delete error: {e}")
+    return f"Consolidated memory — merged {len(dup_ids)} duplicate fact(s); {len(by_norm)} unique remain."

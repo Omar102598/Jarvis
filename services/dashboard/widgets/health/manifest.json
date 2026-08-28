@@ -1,0 +1,5 @@
+{
+  "name": "health",
+  "title": "Health (7-day)",
+  "refresh_secs": 600
+}

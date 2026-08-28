@@ -240,6 +240,49 @@ async def trigger_agent(name: str):
     return {"status": "triggered", "agent": name}
 
 
+@app.get("/api/approvals")
+async def api_approvals():
+    """Pending Approval Inbox entries (oldest first) + recent resolutions."""
+    pending = []
+    now = datetime.now(timezone.utc).timestamp()
+    try:
+        for raw in (_redis.hgetall("jarvis:approvals:pending") or {}).values():
+            try:
+                rec = json.loads(raw)
+                if float(rec.get("expires", 0)) >= now:
+                    pending.append(rec)
+            except Exception:
+                continue
+        pending.sort(key=lambda rec: rec.get("created", ""))
+        resolved = []
+        for raw in _redis.lrange("jarvis:approvals:log", 0, 9):
+            try:
+                resolved.append(json.loads(raw))
+            except Exception:
+                continue
+        return {"pending": pending, "resolved": resolved}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Redis unavailable: {exc}")
+
+
+@app.post("/api/approvals/{approval_id}/resolve")
+async def api_resolve_approval(approval_id: str, request: Request):
+    """Publish a decision to the bus; the agent_runner executes it once."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    decision = str(body.get("decision", "")).lower()
+    if decision not in ("approve", "deny"):
+        raise HTTPException(status_code=400, detail="decision must be approve|deny")
+    if not _redis.hexists("jarvis:approvals:pending", approval_id):
+        return {"ok": False, "detail": "not pending (already resolved or expired)"}
+    _mqtt.publish("jarvis/approvals/resolve", json.dumps({
+        "id": approval_id, "decision": decision, "by": "dashboard",
+    }))
+    return {"ok": True}
+
+
 @app.get("/api/voice-state")
 async def get_voice_state(room: str = "office"):
     """Return the current voice pipeline state and current thinking word (if any)."""

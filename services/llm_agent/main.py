@@ -51,11 +51,26 @@ from tools.vision import get_camera_snapshot
 from tools.calendar import get_calendar_events, set_reminder
 from tools.weather import get_weather
 from tools.notifications import send_notification
-from tools.memory import forget, recall, remember
+from tools.memory import forget, recall, remember, consolidate_memory
 from tools.chronicle import recall_journal
 from tools.finance_insights import get_spending_insights
 from tools.tasks import manage_tasks
 from tools.health import get_readiness
+from tools.nutrition import log_meal, get_nutrition_today
+from tools.visual_memory import log_sighting, recall_visual
+from tools.capture import quick_capture
+from tools.packages import get_packages
+from tools.actions import get_recent_actions, undo_last_action
+from tools.firecrawl import scrape_page
+from tools.people import manage_people
+from tools.routines import detect_routines
+from tools.travel import plan_trip, get_trips, propose_booking
+from tools.calls import make_call
+from tools.watches import manage_watches
+from tools.presence import arrive_home, leave_home
+from tools.approvals import manage_approvals
+from tools.atlas import get_health_overview
+from tools.apple_tv import apple_tv
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
@@ -115,6 +130,7 @@ from tools.classpass import (
     trigger_classpass_scan,
 )
 from mcp_loader import load_mcp_tools
+import usage_meter
 
 MQTT_HOST  = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT  = int(os.environ.get("MQTT_PORT", "1883"))
@@ -169,6 +185,19 @@ def _classify_tier(text: str) -> str:
     if n > 30 or any(t in lower for t in _OPUS_TRIGGERS):
         return "opus"
 
+    # Apple TV / TV control → sonnet, never haiku: haiku hallucinated "Done,
+    # sir — Netflix is open" with ZERO tool calls (verified via the tool-event
+    # feed). The multi-step wake→launch→verify flow needs the bigger tier.
+    if "apple tv" in lower or "appletv" in lower or re.search(r"\btv\b", lower):
+        return "sonnet"
+
+    # "All the lights"-style commands need enumeration across many entities —
+    # multi-step tool use haiku fumbles (a "turn off all the lights" left the
+    # bedroom lamp burning with no turn_off tool calls on record).
+    if ("light" in lower or "lamp" in lower) and \
+            ("all" in words or "every" in lower or "everything" in lower):
+        return "sonnet"
+
     # Short command-style queries → Haiku
     if n <= 14 and any(lower.startswith(t) or t in lower for t in _HAIKU_TRIGGERS):
         return "haiku"
@@ -208,18 +237,19 @@ def _start_thinking_rotation(stop_event: threading.Event) -> None:
 # ---------------------------------------------------------------------------
 
 _core_tools = [
-    # Smart home
+    # Smart home + manual presence (geofence fallback) + Apple TV
     control_device, get_device_states, set_scene, get_presence, manage_scenes,
+    arrive_home, leave_home, apple_tv,
     # PetKit pet feeders + water fountains (via Home Assistant)
     feed_pet, get_feeder_status, get_feeding_schedule, toggle_feeding_plan,
     get_fountain_status, list_petkit_devices,
     # Information
-    web_search, fetch_url, get_camera_snapshot, get_weather, get_calendar_events,
+    web_search, fetch_url, scrape_page, get_camera_snapshot, get_weather, get_calendar_events,
     # Ring cameras (via ring-mqtt bridge)
     check_ring_camera, list_ring_cameras, ring_privacy,
-    ring_live_view, who_came_by,
+    ring_live_view, who_came_by, get_packages,
     # Memory
-    remember, recall, forget, recall_journal,
+    remember, recall, forget, recall_journal, consolidate_memory,
     # Files & system
     read_file, write_file, list_files, run_shell, run_python,
     # Communication
@@ -228,10 +258,16 @@ _core_tools = [
     focus_mode,
     # Background agents & dispatch
     get_agent_report, trigger_agent, spawn_task, ask_subagent,
+    # Approval Inbox ("what's waiting on me?" / "approve that")
+    manage_approvals,
     # Integrations
     spotify_control, spotify_desktop, github_tool, manage_notes,
-    # Task loop (GTD: inbox / next-actions / projects)
-    manage_tasks,
+    # Relationship memory (CRM-lite) + routine detection from history
+    manage_people, detect_routines,
+    # Travel (Miles: plan in-chat, assisted booking via Approval Inbox) + calls
+    plan_trip, get_trips, propose_booking, make_call, manage_watches,
+    # Task loop (GTD: inbox / next-actions / projects) + action journal/undo
+    manage_tasks, get_recent_actions, undo_last_action,
     # macOS laptop control
     mac_screenshot, mac_clipboard, mac_system_info, mac_shell, mac_applescript,
     mac_open, mac_spotlight, mac_type, mac_notify,
@@ -253,8 +289,11 @@ _core_tools = [
     # Grocery agent control
     get_grocery_status, approve_grocery_order, trigger_grocery_run, suggest_meals,
     learn_fresh_cart, get_usual_order, pin_favorite_product,
-    # Workout coach (Apollo) + fused readiness score
+    # Workout coach (Apollo) + fused readiness score + Atlas health overview
     get_todays_workout, get_workout_plan, plan_workout_week, get_readiness,
+    get_health_overview,
+    # Nutrition (Sage), visual memory (glasses), hands-free capture
+    log_meal, get_nutrition_today, log_sighting, recall_visual, quick_capture,
     trigger_classpass_scan, get_class_suggestions, book_class, manage_classpass_favorites,
     search_classpass, join_classpass_waitlist,
 ]
@@ -273,10 +312,34 @@ tool_node  = None
 agent      = None
 
 
+def _strip_thinking_blocks(msg):
+    """Drop thinking/redacted_thinking blocks from an AIMessage's content.
+
+    Sonnet-5 emits thinking blocks by default. When the graph is streamed
+    (stream_mode="messages"), langchain-anthropic's chunk aggregation can mangle
+    them (block present but its 'thinking' text missing) — and when the tool
+    loop replays that message, the API 400s with
+    "messages.N.content.0.thinking.thinking: Field required", forcing every
+    sonnet reply into the slow non-streaming fallback. We never request
+    extended thinking explicitly, so replaying without the blocks is valid —
+    strip them before the message enters graph state. (Still on latest
+    langchain-anthropic 1.4.8, which hasn't fixed the aggregation.)
+    """
+    content = getattr(msg, "content", None)
+    if isinstance(content, list):
+        cleaned = [b for b in content
+                   if not (isinstance(b, dict)
+                           and b.get("type") in ("thinking", "redacted_thinking"))]
+        if len(cleaned) != len(content):
+            msg = msg.model_copy(update={"content": cleaned})
+    return msg
+
+
 def _call_model(llm_ref, state):
     """Agent node: closed over the llm instance it was built with."""
     response = llm_ref.invoke(state["messages"])
-    return {"messages": [response]}
+    usage_meter.record_response(response)   # cost widget + daily budget alert
+    return {"messages": [_strip_thinking_blocks(response)]}
 
 
 def _rebuild_graph() -> None:
@@ -318,6 +381,34 @@ def _rebuild_graph() -> None:
 r = redis.Redis(host=REDIS_HOST, decode_responses=True)
 
 
+# Tools that spend money, send things on the user's behalf, or execute code —
+# mirrored onto the bus (jarvis/audit/tool) so synapse persists them in the
+# durable event stream (domain "audit"): a replayable "what did Jarvis
+# send/spend/execute, and when". Matching is prefix-based to catch MCP
+# purchase tools (uber_eats_*, doordash_*, resy_*).
+_AUDIT_TOOLS = {
+    "send_email", "send_sms", "make_call", "run_shell", "run_python",
+    "mac_shell", "mac_applescript", "approve_grocery_order", "book_class",
+    "self_modify",
+}
+_AUDIT_PREFIXES = ("uber_eats", "doordash", "resy", "opentable")
+
+
+def _audit_tool_call(tool: str, args_preview: str) -> None:
+    if tool not in _AUDIT_TOOLS and not tool.startswith(_AUDIT_PREFIXES):
+        return
+    try:
+        import paho.mqtt.publish as _mqtt_pub
+        _mqtt_pub.single("jarvis/audit/tool", json.dumps({
+            "tool": tool,
+            "args_preview": args_preview[:300],
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }), hostname=os.environ.get("MQTT_HOST", "localhost"),
+            port=int(os.environ.get("MQTT_PORT", "1883")))
+    except Exception:
+        pass
+
+
 def _push_tool_event(tool: str, args_preview: str, status: str, result_preview: str) -> None:
     event = {
         "id": str(uuid.uuid4())[:8],
@@ -332,6 +423,8 @@ def _push_tool_event(tool: str, args_preview: str, status: str, result_preview: 
         r.ltrim("jarvis:tool_events", 0, 99)
     except Exception:
         pass
+    if status == "calling":
+        _audit_tool_call(tool, args_preview)
 
 
 class AgentState(TypedDict):
@@ -370,6 +463,43 @@ def _plugin_reload_watcher() -> None:
 
 
 threading.Thread(target=_plugin_reload_watcher, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Memory-reflection drain — Chronicle's nightly pass queues durable facts on
+# memory:reflect:queue (agent_runner has no Chroma/embedding deps); this
+# thread stores them into long-term memory with a near-duplicate check, so
+# episodic days compound into semantic memory every agent benefits from.
+# ---------------------------------------------------------------------------
+
+def _reflection_drain() -> None:
+    from tools.memory import store_fact, consolidate_memory
+    drain_r = redis.Redis(host=REDIS_HOST, decode_responses=True, socket_timeout=15)
+    while True:
+        try:
+            item = drain_r.blpop("memory:reflect:queue", timeout=10)
+            if not item:
+                continue
+            body = json.loads(item[1])
+            fact = str(body.get("fact", "")).strip()
+            if not fact:
+                continue
+            stored = store_fact(fact, source=body.get("source", "reflection"),
+                                dedupe=True)
+            print(f"[Memory] reflection fact "
+                  f"{'stored' if stored else 'skipped (near-dup)'}: {fact[:80]}")
+            # Weekly hygiene: after reflection writes, merge exact duplicates
+            # across the whole store (the near-dup check above only guards
+            # reflection's own inserts, not user-added facts).
+            if stored and drain_r.set("jarvis:memory:consolidated", "1",
+                                      nx=True, ex=7 * 24 * 3600):
+                print(f"[Memory] weekly consolidation: {consolidate_memory.func()}")
+        except Exception as e:
+            print(f"[LLM] Reflection drain error: {e}")
+            time.sleep(5)
+
+
+threading.Thread(target=_reflection_drain, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +599,8 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
                 continue
             content = [
                 item for item in content
-                if not (isinstance(item, dict) and item.get("type") == "image")
+                if not (isinstance(item, dict) and item.get("type") in
+                        ("image", "thinking", "redacted_thinking"))
             ]
             if not content:
                 continue
@@ -605,16 +736,24 @@ def process_request(text: str, room: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _fanout_to_active_surfaces(
-    client, response: str, source_room: str = "", title: str = "Jarvis"
+    client, response: str, source_room: str = "", title: str = "Jarvis",
+    always_persist: bool = False,
 ) -> None:
     """Push a message to every active surface that didn't originate the request.
 
     Used both after a user-initiated reply and (via on_agent_report) when a
     background agent completes, so proactive results reach the iPhone / glasses
     HUD instead of only being spoken in one room.
+
+    ``always_persist``: for PROACTIVE content (morning brief, agent reports),
+    publish to the iPhone push topic even when no iPhone surface is currently
+    active — the gateway persists every push to surface:pushes, so it's waiting
+    in the app's feed when opened. Without this, a 6 AM brief spoken to an empty
+    room (app not connected) vanishes with no trace — exactly the bug seen.
     """
-    source_is_mobile = source_room.startswith(("mobile-", "glasses-", "siri-"))
+    source_is_mobile = source_room.startswith(("mobile-", "glasses-", "siri-", "satellite-"))
     try:
+        pushed_iphone = False
         active = r.smembers("jarvis:active_surfaces")
         for surface_id in active:
             meta_raw = r.get(f"jarvis:surface:{surface_id}:meta")
@@ -629,15 +768,126 @@ def _fanout_to_active_surfaces(
                     "jarvis/surfaces/iphone/push",
                     json.dumps({"text": response, "title": title}),
                 )
+                pushed_iphone = True
             elif surface_type == "mac":
                 pass  # Mac already hears the spoken response
+        # Proactive content: guarantee it reaches the phone feed even if the app
+        # wasn't connected (the gateway persists it for later fetch).
+        if always_persist and not pushed_iphone and not source_is_mobile:
+            client.publish(
+                "jarvis/surfaces/iphone/push",
+                json.dumps({"text": response, "title": title}),
+            )
     except Exception as e:
         print(f"[LLM] Surface fanout error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Self-echo suppression — the follow-up mic window catches Jarvis's own TTS
+# playback and re-submits it as a "command", creating a feedback loop that
+# derails conversations and burns tokens. We remember what Jarvis just said and
+# drop incoming voice text that matches it (targeted — real user speech, even a
+# follow-up, won't match Jarvis's own words).
+# ---------------------------------------------------------------------------
+import collections as _collections
+import difflib as _difflib
+import re as _re
+import time as _time
+
+_recent_replies: "_collections.deque" = _collections.deque(maxlen=16)
+_recent_replies_lock = threading.Lock()
+_ECHO_WINDOW_S = 60.0
+
+
+def _norm_echo(t: str) -> str:
+    return _re.sub(r"[^a-z0-9 ]", "", (t or "").lower()).strip()
+
+
+def _record_reply(text: str) -> None:
+    n = _norm_echo(text)
+    if len(n) >= 4:
+        with _recent_replies_lock:
+            _recent_replies.append((_time.time(), n))
+
+
+def _is_self_echo(text: str) -> bool:
+    n = _norm_echo(text)
+    if len(n) < 4:
+        return False
+    now = _time.time()
+    with _recent_replies_lock:
+        recents = [rt for ts, rt in _recent_replies if now - ts < _ECHO_WINDOW_S]
+    words = set(n.split())
+    for rt in recents:
+        if n in rt or rt in n:
+            return True
+        if _difflib.SequenceMatcher(None, n, rt).ratio() > 0.80:
+            return True
+        rt_words = set(rt.split())
+        if words and len(words & rt_words) / len(words) > 0.70:
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Conversation-end reasoning — decide when a spoken exchange is naturally over so
+# the STT doesn't keep the follow-up mic open. A closing turn ("thanks", "ok that's
+# all", "goodbye") still gets a warm reply, but we signal the STT to stop listening
+# (via jarvis:voice:end_turn:{room}) instead of re-opening the window.
+# ---------------------------------------------------------------------------
+_CLOSER_PHRASES = {
+    "thanks", "thank you", "thanks a lot", "thanks so much", "thank you so much",
+    "thx", "ty", "ok", "okay", "cool", "got it", "great", "perfect", "awesome",
+    "nice", "sounds good", "nevermind", "never mind", "thats all", "that's all",
+    "thats it", "that's it", "no thats it", "no that's it", "thats everything",
+    "that's everything", "goodbye", "bye", "good night", "goodnight", "night",
+    "nope", "no thanks", "no thank you", "all good", "appreciate it", "stop",
+    "that will be all", "that'll be all", "we're good", "were good", "im good",
+    "i'm good", "you're the best", "youre the best",
+}
+
+
+def _is_conversation_closer(text: str) -> bool:
+    """True if the user's turn is a closing/acknowledgment with no new request."""
+    if "?" in text:
+        return False   # a question always expects an answer
+    t = _re.sub(r"[^a-z' ]", " ", text.lower())
+    t = " ".join(t.split())
+    if not t:
+        return False
+    if t in _CLOSER_PHRASES:
+        return True
+    words = t.split()
+    if len(words) <= 4:
+        for c in _CLOSER_PHRASES:
+            if t == c or t.startswith(c + " ") or t.endswith(" " + c):
+                return True
+    return False
 
 
 def _handle_request(client, data):
     text = data["text"]
     room = data["room"]
+
+    # Household multi-user foundation: record the verified speaker (from
+    # speaker_verify) so JARVIS can address people by name and future per-user
+    # logic can key off it. Full per-user profile isolation needs each voice
+    # enrolled; this is the non-breaking hook that makes it possible.
+    speaker = data.get("speaker")
+    if speaker:
+        try:
+            r.set("jarvis:current_speaker", str(speaker), ex=1800)
+        except Exception:
+            pass
+
+    # Drop Jarvis's own voice echoed back through the follow-up mic window.
+    if _is_self_echo(text):
+        print(f"[LLM] Dropped self-echo (not processing): '{text[:60]}'")
+        try:
+            r.set(f"jarvis:voice:state:{room}", "ready")
+        except Exception:
+            pass
+        return
 
     tier = _classify_tier(text)
     print(f"[LLM] Processing (tier={tier}): '{text}' (from {room})")
@@ -664,17 +914,30 @@ def _handle_request(client, data):
     except Exception as e:
         err_str = str(e)
         print(f"[LLM] Error: {err_str}")
-        # Only wipe history for genuine history-corruption errors (dangling
-        # tool_use/tool_result pairs). A bare "400" match once deleted the
-        # user's whole conversation over an unrelated temperature-param error.
-        if "tool_use_id" in err_str or "tool_result" in err_str:
+        # Transient Anthropic overload (529) — retry once after a short pause
+        # instead of apologizing ("turn on my apple tv" died to a momentary 529).
+        if "529" in err_str or "overloaded" in err_str.lower():
             try:
-                r.delete(f"conversation:{USER_ID}")
-                print(f"[LLM] Cleared corrupted history for user {USER_ID}")
-            except Exception:
-                pass
-        response = "I'm sorry, I encountered an error processing that request."
-        _sentence_queue.append(response)
+                time.sleep(3)
+                print("[LLM] 529/overloaded — retrying once")
+                response = asyncio.run(
+                    _process_async(text, room, tier=tier, on_sentence=on_sentence))
+                err_str = ""
+            except Exception as e2:
+                err_str = str(e2)
+                print(f"[LLM] retry failed: {err_str}")
+        if err_str:
+            # Only wipe history for genuine history-corruption errors (dangling
+            # tool_use/tool_result pairs). A bare "400" match once deleted the
+            # user's whole conversation over an unrelated temperature-param error.
+            if "tool_use_id" in err_str or "tool_result" in err_str:
+                try:
+                    r.delete(f"conversation:{USER_ID}")
+                    print(f"[LLM] Cleared corrupted history for user {USER_ID}")
+                except Exception:
+                    pass
+            response = "I'm sorry, I encountered an error processing that request."
+            _sentence_queue.append(response)
     finally:
         _stop_thinking.set()
 
@@ -690,6 +953,7 @@ def _handle_request(client, data):
 
     for i, sentence in enumerate(_sentence_queue):
         is_final = (i == len(_sentence_queue) - 1)
+        _record_reply(sentence)   # remember it so the echo doesn't loop back
         client.publish(
             f"jarvis/tts/{room}/speak",
             json.dumps({"text": sentence, "room": room, "is_final": is_final}),
@@ -697,7 +961,19 @@ def _handle_request(client, data):
 
     print(f"[LLM] Tier={tier}, {len(_sentence_queue)} sentence(s): '{response[:80]}...'")
 
-    _fanout_to_active_surfaces(client, response, source_room=room)
+    # Conversation-end reasoning: if the user's turn was a closer, still let the
+    # reply play, but tell the STT to STOP listening instead of re-opening the
+    # follow-up mic. Skipped for non-voice surfaces (mobile/glasses/siri).
+    if not room.startswith(("mobile-", "glasses-", "siri-", "satellite-")) and _is_conversation_closer(text):
+        try:
+            r.set(f"jarvis:voice:end_turn:{room}", "1", ex=30)
+            print(f"[LLM] Conversation closer detected ('{text[:30]}') — ending turn.")
+        except Exception:
+            pass
+
+    # Proactive dispatches (e.g. the morning brief) always land in the phone feed.
+    _fanout_to_active_surfaces(client, response, source_room=room,
+                               always_persist=bool(data.get("proactive")))
 
 
 def on_llm_request(client, userdata, msg):
@@ -724,6 +1000,13 @@ def on_tts_done(client, userdata, msg):
 _FANOUT_AGENT_BLOCKLIST = {
     "newsletter", "job_monitor", "web_monitor", "price_monitor", "grocery",
     "classpass", "ambient",
+    # morning_brief's report is just an internal "dispatched to the brain"
+    # status — the actual briefing reaches surfaces via the brain's proactive
+    # response, so don't also push the status as a card.
+    "morning_brief",
+    # chronicle's nightly report is an internal "journaled X" status; the weekly
+    # review delivers its own card directly. Neither should fan out as a card.
+    "chronicle", "weekly_review",
     # finance runs every 30 min to refresh the widget — don't push each run.
     # Its daily report is read on demand via the get_financial_report tool.
     "finance",
@@ -743,7 +1026,8 @@ def on_agent_report(client, userdata, msg):
         if not report or name in _FANOUT_AGENT_BLOCKLIST:
             return
         summary = report if len(report) <= 240 else report[:237] + "…"
-        _fanout_to_active_surfaces(client, summary, title=name.replace("_", " ").title())
+        _fanout_to_active_surfaces(client, summary, title=name.replace("_", " ").title(),
+                                   always_persist=True)
         print(f"[LLM] Fanned out '{name}' report to surfaces.")
     except Exception as e:
         print(f"[LLM] on_agent_report error: {e}")

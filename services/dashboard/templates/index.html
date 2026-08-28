@@ -937,6 +937,12 @@
 
 <div class="divider"></div>
 
+<!-- ── Approval Inbox ── -->
+<div class="agents-section" id="approvals-section" style="display:none">
+  <div class="section-label">Approvals — Waiting on You</div>
+  <div id="approvals-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px"></div>
+</div>
+
 <!-- ── Agents ── -->
 <div class="agents-section">
   <div class="section-label">Background Agents</div>
@@ -1413,6 +1419,43 @@ async function triggerAgent(name) {
   }
 }
 
+async function refreshApprovals() {
+  try {
+    const resp = await fetch('/api/approvals');
+    const { pending } = await resp.json();
+    const section = document.getElementById('approvals-section');
+    const grid = document.getElementById('approvals-grid');
+    if (!pending || pending.length === 0) { section.style.display = 'none'; grid.innerHTML = ''; return; }
+    section.style.display = '';
+    grid.innerHTML = pending.map(a => `
+      <div class="agent-card" style="border-left:3px solid var(--j-gold);padding:14px" id="approval-${esc(a.id)}">
+        <div class="d-flex align-items-center gap-2 mb-1">
+          <span class="agent-name">${esc(a.title || 'Approval')}</span>
+          <span class="persona-name">${esc(a.source || '')}</span>
+        </div>
+        <div class="agent-desc" style="margin-bottom:10px">${esc(a.text || '')}</div>
+        ${a.media_url ? `<img src="${esc(a.media_url)}" style="max-width:100%;border-radius:6px;margin-bottom:10px">` : ''}
+        <div class="d-flex gap-2">
+          <button class="btn-run" onclick="resolveApproval('${esc(a.id)}','approve')">✓ APPROVE</button>
+          <button class="btn-run" style="border-color:#cc3344;color:#cc3344" onclick="resolveApproval('${esc(a.id)}','deny')">✗ DENY</button>
+        </div>
+      </div>`).join('');
+  } catch(e) { console.warn('approvals refresh failed', e); }
+}
+
+async function resolveApproval(id, decision) {
+  const card = document.getElementById('approval-' + id);
+  if (card) card.style.opacity = '0.4';
+  try {
+    await fetch(`/api/approvals/${id}/resolve`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ decision }),
+    });
+    showToast(decision === 'approve' ? '✓ Approved' : '✗ Denied');
+    setTimeout(refreshApprovals, 1200);
+  } catch(e) { showToast(`Failed: ${e}`); if (card) card.style.opacity = '1'; }
+}
+
 // Inline <script> tags set via innerHTML do NOT execute — re-create them so a
 // widget's own JS (e.g. the finance donut) actually runs after injection.
 function runWidgetScripts(container) {
@@ -1513,8 +1556,10 @@ refreshAgents();
 loadWidgets();
 applyDevMode(localStorage.getItem(DEV_KEY) === '1');
 // Fallback polling for voice state (SSE handles it too, this is a safety net)
+refreshApprovals();
 setInterval(refreshVoiceState, 5000);
 setInterval(refreshAgents,    10000);
+setInterval(refreshApprovals, 10000);
 setInterval(loadWidgets,      30000);
 </script>
 </body>

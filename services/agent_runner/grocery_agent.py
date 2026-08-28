@@ -821,6 +821,42 @@ async def _clean_item_names(titles: list[str]) -> dict[str, str]:
     return {}
 
 
+async def _filter_grocery_titles(titles: list[str]) -> list[dict]:
+    """From raw Amazon ORDER-HISTORY titles (mixed groceries + electronics +
+    household), keep ONLY edible grocery/food items and return short names.
+    Returns [{title, name}]; empty on failure or if nothing is food."""
+    if not titles:
+        return []
+    batch = titles[:40]
+    try:
+        resp = await complete(
+            system=(
+                "You are given raw Amazon order titles — a mix of groceries, "
+                "electronics, household goods, etc. Keep ONLY edible grocery / "
+                "food & drink items someone buys at Amazon Fresh. For each kept "
+                "item return a short plain product name a grocery search box would "
+                "find (keep a distinctive brand; drop sizes, counts, marketing). "
+                'Return ONLY a JSON array of {"title": <original>, "name": <short>} '
+                "objects. Drop every non-food item entirely. No other text."
+            ),
+            user=json.dumps(batch),
+            max_tokens=1800,
+        )
+        match = re.search(r"\[.*\]", resp or "", re.DOTALL)
+        raw = json.loads(match.group()) if match else []
+    except Exception as exc:
+        _log(f"  ⚠ Grocery filter failed ({exc}).")
+        return []
+    out = []
+    for i in raw:
+        if isinstance(i, dict) and str(i.get("title", "")).strip():
+            out.append({
+                "title": str(i["title"]).strip()[:120],
+                "name": str(i.get("name") or i["title"]).strip()[:80],
+            })
+    return out
+
+
 def _load_usual_order(r: redis_lib.Redis) -> list[dict]:
     """Return the learned usual-order items (may be empty)."""
     try:
@@ -1271,6 +1307,8 @@ class GroceryAgent(BaseAgent):
             return await self._run_checkout()
         if action == "learn_cart":
             return await self._run_learn_cart()
+        if action == "learn_orders":
+            return await self._run_learn_orders()
         return await self._run_full()
 
     # ------------------------------------------------------------------
@@ -1364,6 +1402,65 @@ class GroceryAgent(BaseAgent):
             f"Learned your usual order ({by_store}): {added} new item(s), "
             f"{updated} seen before — {len(items)} staples on file now. "
             f"Top items: {names}. Future weekly grocery lists will be built around these."
+        )
+        _log(f"  ✓ {report}")
+        return report
+
+    async def _run_learn_orders(self) -> str:
+        """Learn the usual order from the user's Amazon ORDER HISTORY (past
+        purchases) instead of the current cart — food items only."""
+        _log("=== Grocery Agent | learn_orders: reading Amazon order history ===")
+        async with aiohttp.ClientSession() as session:
+            if not await _check_bridge(session):
+                return f"Mac Bridge unreachable at {MAC_BRIDGE_URL}. Cannot read order history."
+
+            titles = await _fetch_amazon_order_history(session)
+            if not titles:
+                return (
+                    "I couldn't read your Amazon order history. Open the Jarvis "
+                    "browser and sign in to Amazon once, then try again."
+                )
+
+            grocery = await _filter_grocery_titles(titles)
+            if not grocery:
+                return (
+                    f"I read {len(titles)} recent order item(s), but none looked like "
+                    "Amazon Fresh groceries (they may be older, or non-food). Try again, "
+                    "or build a Fresh cart and say 'learn my Fresh cart'."
+                )
+
+            # Merge into the persistent usual-order profile (same shape as learn_cart).
+            try:
+                data = json.loads(self.r.get(USUAL_ORDER_KEY) or "{}")
+            except Exception:
+                data = {}
+            by_norm = {_norm_title(e.get("title", "")): e
+                       for e in (data.get("items", []) or [])}
+            now = datetime.now(timezone.utc).isoformat()
+            added = updated = 0
+            for item in grocery:
+                key = _norm_title(item["title"])
+                if key in by_norm:
+                    entry = by_norm[key]
+                    entry["count"] = int(entry.get("count", 1)) + 1
+                    entry["last_seen"] = now
+                    entry.setdefault("store", "amazon")
+                    updated += 1
+                else:
+                    by_norm[key] = {
+                        "title": item["title"], "name": item["name"],
+                        "asin": "", "store": "amazon", "qty": 1, "count": 1,
+                        "first_seen": now, "last_seen": now,
+                    }
+                    added += 1
+            items = sorted(by_norm.values(), key=lambda e: -int(e.get("count", 1)))[:120]
+            self.r.set(USUAL_ORDER_KEY, json.dumps({"items": items, "updated": now}))
+
+        names = ", ".join(i["name"] for i in items[:12] if i.get("name"))
+        report = (
+            f"Learned from your Amazon order history: {added} new grocery item(s), "
+            f"{updated} already known — {len(items)} staples on file now. "
+            f"Top items: {names}. Future weekly lists will be built around these."
         )
         _log(f"  ✓ {report}")
         return report

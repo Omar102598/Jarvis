@@ -28,6 +28,18 @@ from faster_whisper import WhisperModel
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 
+# Redis (for the brain's conversation-end signal). Native services reach Redis on
+# host port 6380. Optional — the follow-up window still works if Redis is down.
+try:
+    import redis as _redis_mod
+    _r = _redis_mod.Redis(
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", "6380")),
+        decode_responses=True,
+    )
+except Exception:
+    _r = None
+
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 1600  # 100ms at 16kHz
 SILENCE_THRESHOLD = int(os.environ.get("STT_SILENCE_THRESHOLD", "150"))  # RMS; lower = more sensitive
@@ -39,6 +51,17 @@ FOLLOWUP_WINDOW = float(os.environ.get("STT_FOLLOWUP_WINDOW", "25.0"))
 
 AUDIO_DIR = os.environ.get("AUDIO_DIR", "/data/audio_cache")
 AUDIO_CACHE_MAX_FILES = int(os.environ.get("AUDIO_CACHE_MAX_FILES", "50"))
+
+# Rooms with a real physical mic (mirrors tts_mac's PHYSICAL_ROOMS). The
+# follow-up window is keyed off whatever room string arrives on
+# jarvis/tts/{room}/done — with only ONE physical mic on this Mac, a /done for
+# a synthetic bus-check room (Vega's "qa-<hash>", Miles' "miles-<hash>") would
+# still open a REAL recording window and could pick up TTS self-echo if it
+# ever got physically spoken. This is defense-in-depth alongside tts_mac's own
+# allowlist, not a duplicate of the same bug.
+PHYSICAL_ROOMS = {r.strip() for r in
+                  os.environ.get("PHYSICAL_ROOMS", os.environ.get("ROOM_NAME", "office")).split(",")
+                  if r.strip()}
 
 # ---------------------------------------------------------------------------
 # Hallucination filter — faster-whisper emits these on silence/noise
@@ -62,6 +85,20 @@ _HALLUCINATION_PHRASES = {
     "",
 }
 
+# Keyword-combination fallback: real hallucinations often chain/modify stock
+# phrases ("Thanks SO MUCH for watching", "...watching.  Have a great day.")
+# which break exact-match against _HALLUCINATION_PHRASES entirely — caught
+# THREE separate times (2026-07-19/20) because the filter only checked exact
+# equality. Each tuple below is a set of keywords that, ALL present anywhere
+# in the transcript, mark it as a near-certain YouTube-outro artifact rather
+# than something a user would plausibly say to a voice assistant.
+_HALLUCINATION_KEYWORD_GROUPS = [
+    ("thank", "watch"),          # "thank(s) (so much) for watching"
+    ("subscribe",),
+    ("see you", "next video"),
+    ("see you", "next time"),
+]
+
 _REPEAT_PATTERN = re.compile(r"(.{10,}?)\1{2,}", re.DOTALL)
 
 
@@ -73,6 +110,9 @@ def _is_hallucination(text: str) -> bool:
     if len(text.strip()) < 3:
         return True
     if _REPEAT_PATTERN.search(text):
+        return True
+    if any(all(kw in lower for kw in group)
+           for group in _HALLUCINATION_KEYWORD_GROUPS):
         return True
     return False
 
@@ -226,6 +266,33 @@ def on_tts_done(client, userdata, msg):
     except Exception:
         room = "office"
 
+    if room not in PHYSICAL_ROOMS:
+        return   # synthetic/virtual room — no real mic to follow up on
+
+    # Conversation-end reasoning: the brain sets jarvis:voice:end_turn:{room} when
+    # the user's turn was a closer ("thanks", "that's all"). The reply just played;
+    # now DON'T re-open the mic — the conversation is naturally over.
+    if _r is not None:
+        try:
+            if _r.get(f"jarvis:voice:end_turn:{room}"):
+                _r.delete(f"jarvis:voice:end_turn:{room}")
+                print(f"[STT] Conversation ended (brain signalled end-of-turn) in '{room}'.")
+                return
+        except Exception:
+            pass
+        # Media guard: while music/TV is playing (flag set by the spotify /
+        # apple_tv tools), an open follow-up mic hears the SPEAKERS — Whisper
+        # transcribes lyrics/dialogue as commands and Jarvis loops talking to
+        # the music. Skip the window; the wake word still works during playback.
+        try:
+            src = _r.get("jarvis:media:playing")
+            if src:
+                print(f"[STT] Media playing ({src}) — follow-up window skipped "
+                      "(wake word still active).")
+                return
+        except Exception:
+            pass
+
     # Brief pause so the mic doesn't pick up audio reverb from the speaker
     time.sleep(0.6)
     print(f"[STT] Follow-up window open for {FOLLOWUP_WINDOW}s in '{room}'...")
@@ -239,13 +306,9 @@ def on_tts_done(client, userdata, msg):
     text = " ".join([s.text for s in segments]).strip()
 
     if text and not _is_hallucination(text):
-        lower = text.lower().strip(".,!?")
-        if lower in ("goodbye", "goodbye jarvis", "bye", "bye jarvis",
-                     "that's all", "thats all", "thank you", "thanks"):
-            print(f"[STT] Conversation ended by user: '{text}'")
-            if audio_path and os.path.exists(audio_path):
-                os.unlink(audio_path)
-            return
+        # Closers ("thanks", "that's all") are no longer swallowed silently here —
+        # they go to the brain, which replies warmly AND sets the end-turn flag so
+        # the NEXT on_tts_done won't re-open the mic. Feels like a natural sign-off.
         print(f"[STT] Follow-up ({room}): '{text}'")
         _publish_speech(client, room, text, audio_path)
     else:
@@ -281,11 +344,20 @@ def on_wake_word(client, userdata, msg):
 
 def main():
     mqtt_client = mqtt.Client()
-    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
-    mqtt_client.subscribe("jarvis/audio/mic/+/wake_word")
+
+    # Subscribe in on_connect (NOT once in main): paho only restores
+    # subscriptions on reconnect when they're made here. Subscribing in main
+    # meant a mosquitto restart left this service connected but DEAF — wake
+    # words fired, but STT never heard the events (voice "stopped working").
+    def on_connect(client, userdata, flags, rc):
+        client.subscribe("jarvis/audio/mic/+/wake_word")
+        client.subscribe("jarvis/tts/+/done")
+        print(f"[STT] MQTT connected (rc={rc}), subscriptions active.")
+
+    mqtt_client.on_connect = on_connect
     mqtt_client.message_callback_add("jarvis/audio/mic/+/wake_word", on_wake_word)
-    mqtt_client.subscribe("jarvis/tts/+/done")
     mqtt_client.message_callback_add("jarvis/tts/+/done", on_tts_done)
+    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
 
     print("[STT] Waiting for wake word events...")
     mqtt_client.loop_forever()

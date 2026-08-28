@@ -1,0 +1,142 @@
+# =============================================================================
+# Build + publish every containerized JARVIS service to GHCR.
+#
+# WHY: `docker compose up --build` on a fresh box compiles everything from
+# source — 20-30 min on a VPS, worse on a low-power NAS. Prebuilt multi-arch
+# images turn that into a ~2 min pull, which is the hard prerequisite for
+# (a) onboarding a new user, (b) any automated provisioning, and (c) not
+# waiting on your own rebuilds.
+#
+# Triggers:
+#   push to main   — path-filtered: ONLY services whose files changed rebuild
+#   manual         — Actions tab → "Run workflow" (optionally force all / pick arches)
+#
+# COST NOTE (private repo, free plan = 2,000 CI min/month):
+#   arm64 is built under QEMU emulation, which is slow for the ML-heavy images
+#   (vision, mobile_gateway, stt). A first full both-arch run can burn several
+#   hundred minutes. Until you actually have an ARM host, run with
+#   platforms = linux/amd64 (covers the UGREEN NAS's N100 and any x86 VPS).
+#
+# IMPORTANT — make the packages PUBLIC so pulls need no auth:
+#   After the first successful run, go to
+#   github.com/users/<you>/packages → each jarvis-* package → Package settings
+#   → Change visibility → Public.
+#   The repo stays private; only the built images become pullable. Without this,
+#   every new install needs a GitHub token just to `docker compose pull`.
+# =============================================================================
+
+name: Build images
+
+on:
+  push:
+    # This repo's default branch is `develop`; `main` is also live. Manual
+    # dispatch works from ANY branch (Actions tab → Run workflow → pick a ref).
+    branches: [develop, main]
+    paths:
+      - 'services/**'
+      - '.github/workflows/build-images.yml'
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Target architectures'
+        required: true
+        default: 'linux/amd64'
+        type: choice
+        options:
+          - linux/amd64                    # NAS (N100), x86 VPS — fast
+          - linux/amd64,linux/arm64        # + Hetzner CAX, Pi, Apple Silicon — slow (QEMU)
+          - linux/arm64
+      force_all:
+        description: 'Rebuild every service (ignore path filter)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Work out which services actually changed, so a one-line tweak to the
+  # dashboard doesn't rebuild the 2 GB vision image.
+  # ---------------------------------------------------------------------------
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.set.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - id: set
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          FORCE_ALL: ${{ inputs.force_all }}
+        run: |
+          python3 scripts/ci_changed_services.py >> "$GITHUB_OUTPUT"
+          echo "--- selection ---"
+          python3 scripts/ci_changed_services.py
+
+  # ---------------------------------------------------------------------------
+  # One job per changed service — they run in parallel.
+  # ---------------------------------------------------------------------------
+  build:
+    needs: changes
+    if: needs.changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR requires a lowercase namespace; GitHub usernames may be mixed-case.
+      - name: Compute image name
+        id: img
+        run: echo "name=${REGISTRY}/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/jarvis-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        if: contains(inputs.platforms || 'linux/amd64', 'arm64')
+        uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/${{ matrix.service }}
+          file: ./services/${{ matrix.service }}/Dockerfile
+          platforms: ${{ inputs.platforms || 'linux/amd64' }}
+          push: true
+          tags: |
+            ${{ steps.img.outputs.name }}:latest
+            ${{ steps.img.outputs.name }}:${{ github.sha }}
+          # Layer cache keyed per service — a rebuild that only changes app code
+          # reuses the (expensive) pip/apt layers.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          provenance: false
+
+  summary:
+    needs: [changes, build]
+    if: always() && needs.changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "### Built images" >> $GITHUB_STEP_SUMMARY
+          echo '${{ needs.changes.outputs.services }}' | tr -d '[]"' | tr ',' '\n' | \
+            sed 's|^|- ghcr.io/${{ github.repository_owner }}/jarvis-|' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Platforms: \`${{ inputs.platforms || 'linux/amd64' }}\`" >> $GITHUB_STEP_SUMMARY

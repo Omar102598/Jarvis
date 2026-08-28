@@ -20,19 +20,23 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from ambient_agent import AmbientAgent
+from atlas_agent import AtlasAgent
 from chronicle_agent import ChronicleAgent
 from classpass_agent import ClasspassAgent
 from developer_agent import DeveloperAgent
 from email_agent import EmailAgent
 from finance_agent import FinanceAgent
 from grocery_agent import GroceryAgent
+from habit_agent import HabitAgent
 from job_monitor_agent import JobMonitorAgent
 from newsletter_agent import NewsletterAgent
+from qa_agent import QAAgent
 from price_monitor_agent import PriceMonitorAgent
 from spend_guardian_agent import SpendGuardianAgent
 from research_agent import ResearchAgent
 from sentry_agent import SentryAgent
 from task_agent import TaskAgent
+from travel_agent import TravelAgent
 from web_monitor_agent import WebMonitorAgent
 from workout_agent import WorkoutAgent
 
@@ -44,6 +48,11 @@ MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 CONFIG_PATH = Path(os.environ.get("AGENTS_CONFIG", "/config/agents.yml"))
+# Mac bridge (native host API). host.docker.internal only resolves when this
+# container runs ON the Mac — the VPS split sets MAC_BRIDGE_HOST to the Mac's
+# tailnet name instead (docs/HETZNER_SETUP.md).
+MAC_BRIDGE_URL = (f"http://{os.environ.get('MAC_BRIDGE_HOST', 'host.docker.internal')}"
+                  f":{os.environ.get('MAC_BRIDGE_PORT', '7777')}")
 
 AGENT_CLASSES = {
     "ambient": AmbientAgent,
@@ -62,7 +71,12 @@ AGENT_CLASSES = {
     "sentry": SentryAgent,
     "morning_brief": AmbientAgent,   # dedicated daily-briefing schedule
     "chronicle": ChronicleAgent,     # nightly daily-memory journal
+    "weekly_review": ChronicleAgent, # Sunday "week in review" (action=weekly_review)
     "spend_guardian": SpendGuardianAgent,   # subscriptions + unusual-charge watch
+    "habits": HabitAgent,            # Echo — habit mining → Approval Inbox
+    "qa": QAAgent,                   # Vega — nightly live-brain regression suite
+    "atlas": AtlasAgent,             # Atlas — fused weekly health overview
+    "travel": TravelAgent,           # Miles — assisted booking + price watch
 }
 
 # Agents that can be dispatched on demand with params from the trigger payload
@@ -87,6 +101,10 @@ AGENT_PERSONAS = {
     "developer":  ("Forge",  "development — Jarvis self-modification and any coding project"),
     "workout":    ("Apollo", "personal trainer — programs your lifting week around recovery and your ClassPass classes"),
     "sentry":     ("Sentry", "camera watch — assesses Ring motion events and alerts only when it matters"),
+    "habits":     ("Echo",   "habit mining — spots your routines and deviations, suggests automations via the Approval Inbox"),
+    "qa":         ("Vega",   "quality watch — nightly regression checks against the live brain"),
+    "atlas":      ("Atlas",  "health analyst — fuses sleep, training, nutrition, and recovery into one weekly picture"),
+    "travel":     ("Miles",  "travel — trip planning, price watching, and assisted booking (you always pay yourself)"),
 }
 
 # ---------------------------------------------------------------------------
@@ -173,7 +191,7 @@ async def run_agent(name: str, agent_class, params: dict) -> None:
                               f'to buddy "{phone}" of (service 1 whose service type is iMessage)')
                     body = json.dumps({"script": script, "timeout": 20}).encode()
                     _rq.urlopen(_rq.Request(
-                        "http://host.docker.internal:7777/applescript", data=body,
+                        f"{MAC_BRIDGE_URL}/applescript", data=body,
                         headers={"Content-Type": "application/json"}), timeout=25)
             except Exception:
                 pass
@@ -196,6 +214,7 @@ async def run_agent(name: str, agent_class, params: dict) -> None:
 def _on_connect(client, userdata, flags, rc):
     if rc == 0:
         client.subscribe("jarvis/agents/+/trigger")
+        client.subscribe("jarvis/approvals/resolve")
         # Ring cameras (via the ring-mqtt bridge, if running): device state,
         # motion/ding events, and snapshot JPEGs. Harmless no-op when the
         # bridge isn't up. homeassistant/# carries ring-mqtt's discovery
@@ -221,6 +240,9 @@ ARRIVAL_DEBOUNCE_S = int(os.environ.get("ARRIVAL_DEBOUNCE_S", "1800"))
 # spoken greeting until a camera motion confirms they're actually inside,
 # with this timer as the fallback so camera-less arrivals still get greeted.
 ARRIVAL_GREET_FALLBACK_S = int(os.environ.get("ARRIVAL_GREET_FALLBACK_S", "150"))
+# A "left" within this many seconds of an "arrived" is treated as GPS jitter at
+# the geofence edge and ignored (prevents phantom departures eating the greeting).
+DEPARTURE_GRACE_S = int(os.environ.get("DEPARTURE_GRACE_S", "120"))
 
 
 def _speak_pending_greeting() -> None:
@@ -241,16 +263,34 @@ def _speak_pending_greeting() -> None:
 
 def _on_presence(client, userdata, msg):
     try:
-        ev = json.loads(msg.payload).get("event", "")
+        _payload = json.loads(msg.payload)
+        ev = _payload.get("event", "")
+        source = _payload.get("source", "")
     except Exception:
         return
     if ev == "arrived":
+        # Clear away/departure state on ANY arrival — even a debounced re-arrival —
+        # so away-mode can't stick at 1 while the user is actually home (it did:
+        # a flapped arrived→left→arrived left 'away' set with the user home).
+        _redis.delete("jarvis:away")
+        _redis.delete("jarvis:departure:debounce")
+        _redis.set("jarvis:arrival:ts",
+                   str(datetime.now(timezone.utc).timestamp()), ex=3600)
+        # Voice-triggered ("Jarvis, I'm home"): run the scene, but the BRAIN speaks
+        # the welcome itself — skip the held camera-gated greeting and the debounce.
+        if source == "voice":
+            _redis.set("user:presence:home", "1")
+            try:
+                profile = json.loads(_redis.get("user:profile") or "{}")
+            except Exception:
+                profile = {}
+            _run_arrival_scene(profile)
+            print("[AgentRunner] VOICE arrival → scene (brain speaks the welcome)")
+            return
         if not _redis.set("jarvis:arrival:debounce", "1", nx=True, ex=ARRIVAL_DEBOUNCE_S):
-            print("[AgentRunner] arrival within debounce — skipping greeting")
+            print("[AgentRunner] arrival within debounce — home state refreshed, skipping greeting")
             return
         print("[AgentRunner] iPhone geofence: ARRIVED home → scene + greeting")
-        _redis.delete("jarvis:away")          # back home — clear away mode
-        _redis.delete("jarvis:departure:debounce")
         try:
             profile = json.loads(_redis.get("user:profile") or "{}")
         except Exception:
@@ -274,6 +314,18 @@ def _on_presence(client, userdata, msg):
         threading.Timer(ARRIVAL_GREET_FALLBACK_S,
                         _speak_pending_greeting).start()
     elif ev == "left":
+        # GPS-flap hysteresis: a "left" fired shortly after an "arrived" is jitter
+        # at the geofence boundary (the 120m radius trips while walking up). Ignore
+        # it — otherwise it cancels the held arrival greeting and runs a phantom
+        # departure (turning the lamps back off), which is exactly what ate a
+        # greeting on an arrived→left→arrived flap.
+        try:
+            arr_ts = float(_redis.get("jarvis:arrival:ts") or 0)
+        except Exception:
+            arr_ts = 0.0
+        if arr_ts and (datetime.now(timezone.utc).timestamp() - arr_ts) < DEPARTURE_GRACE_S:
+            print("[AgentRunner] 'left' within grace of arrival — GPS flap, ignoring")
+            return
         # Deliberately KEEP the arrival debounce: deleting it here meant a GPS
         # flap at the geofence edge (left→arrived seconds apart) re-greeted
         # every time. The 30-min TTL from the last greeting is the guard.
@@ -303,8 +355,14 @@ def _run_departure_scene(profile: dict) -> None:
         return
     ha_url = os.environ.get("HA_URL", "")
     ha_token = os.environ.get("HA_TOKEN", "")
-    entities = profile.get("arrival_lights",
-                           ["light.living_room_left", "light.living_room_right"])
+    # Departure turns off EVERY managed lamp — not just the arrival pair. The
+    # bedroom lamp stayed burning after a departure because it was never on
+    # this list. Override with profile departure_lights if set.
+    entities = profile.get("departure_lights") or (
+        profile.get("arrival_lights",
+                    ["light.living_room_left", "light.living_room_right"])
+        + ["light.bedroom_lamp"]
+    )
     if not (ha_url and ha_token):
         return
     try:
@@ -364,7 +422,7 @@ def _run_arrival_scene(profile: dict) -> bool:
     if sc:
         try:
             body = json.dumps({"name": sc, "timeout": 30}).encode()
-            _rq.urlopen(_rq.Request("http://host.docker.internal:7777/shortcut/run",
+            _rq.urlopen(_rq.Request(f"{MAC_BRIDGE_URL}/shortcut/run",
                                     data=body, headers={"Content-Type": "application/json"}),
                         timeout=35)
             return True
@@ -464,6 +522,27 @@ def _on_ring_event(client, userdata, msg):
         print(f"[AgentRunner] ring event error: {exc}", file=sys.stderr)
 
 
+def _on_approval_resolve(client, userdata, msg):
+    """Single executor for Approval Inbox decisions (see approvals.py).
+
+    Every surface (dashboard, gateway/iOS, the brain's manage_approvals tool)
+    publishes {id, decision, by} here; running the action in one place means a
+    double-tap on two surfaces can't execute it twice.
+    """
+    try:
+        body = json.loads(msg.payload or b"{}")
+        approval_id = body.get("id", "")
+        decision = body.get("decision", "")
+        if not approval_id or not decision:
+            return
+        import approvals
+        result = approvals.resolve(_redis, approval_id, decision,
+                                   by=body.get("by", "user"))
+        print(f"[AgentRunner] approval {approval_id}: {decision} → {result}")
+    except Exception as exc:
+        print(f"[AgentRunner] approval resolve error: {exc}", file=sys.stderr)
+
+
 def _on_trigger(client, userdata, msg):
     """Handle a manual run request published to jarvis/agents/{name}/trigger.
 
@@ -560,6 +639,7 @@ async def main() -> None:
     _mqtt.user_data_set(agents_cfg)
     _mqtt.on_connect = _on_connect
     _mqtt.message_callback_add("jarvis/agents/+/trigger", _on_trigger)
+    _mqtt.message_callback_add("jarvis/approvals/resolve", _on_approval_resolve)
     _mqtt.message_callback_add("ring/#", _on_ring_event)
     _mqtt.message_callback_add("homeassistant/camera/+/+/config", _on_ring_discovery)
     _mqtt.message_callback_add("homeassistant/binary_sensor/+/+/config", _on_ring_discovery)

@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 struct SettingsView: View {
@@ -6,6 +7,12 @@ struct SettingsView: View {
     @State private var saved     = false
     @AppStorage("devMode") private var devMode = false
     @StateObject private var location = LocationManager.shared
+
+    // Face enrollment (selfie → Sentry camera recognition)
+    @AppStorage("faceName") private var faceName = ""
+    @State private var facePhotos: [PhotosPickerItem] = []
+    @State private var faceStatus = ""
+    @State private var enrolling  = false
 
     var body: some View {
         NavigationStack {
@@ -52,6 +59,39 @@ struct SettingsView: View {
                             }
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .foregroundColor(.jBlue)
+                        }
+
+                        sectionHeader("FACE RECOGNITION")
+                        Text("Teach Jarvis what you look like — pick 3-5 clear selfies (face-on, good light). The cameras use this to tell you apart from strangers; re-enroll any time to replace.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.jBlueDim)
+                        fieldRow(label: "NAME") {
+                            TextField("omar", text: $faceName)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+                        PhotosPicker(selection: $facePhotos, maxSelectionCount: 5,
+                                     matching: .images) {
+                            Text(enrolling ? "ENROLLING..." : "SELECT SELFIES & ENROLL")
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .tracking(2)
+                                .foregroundColor(.black)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(faceName.isEmpty || enrolling
+                                            ? Color.jBlueDim : Color.jBlue)
+                                .cornerRadius(8)
+                        }
+                        .disabled(faceName.isEmpty || enrolling)
+                        .onChange(of: facePhotos) { items in
+                            guard !items.isEmpty else { return }
+                            Task { await enrollFace() }
+                        }
+                        if !faceStatus.isEmpty {
+                            Text(faceStatus)
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundColor(faceStatus.hasPrefix("ENROLLED")
+                                                 ? .jGreen : .jBlueDim)
                         }
 
                         sectionHeader("DEVELOPER")
@@ -131,6 +171,49 @@ struct SettingsView: View {
         JarvisConfig.apiKey    = apiKey
         saved = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { saved = false }
+    }
+
+    private func enrollFace() async {
+        enrolling = true
+        faceStatus = "PROCESSING \(facePhotos.count) PHOTO(S)..."
+        var images: [String] = []
+        for item in facePhotos {
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let ui = UIImage(data: data) {
+                images.append(resizedJPEGBase64(ui))
+            }
+        }
+        facePhotos = []
+        guard !images.isEmpty else {
+            faceStatus = "COULD NOT READ PHOTOS"
+            enrolling = false
+            return
+        }
+        do {
+            let r = try await JarvisClient.shared.enrollFace(
+                name: faceName.trimmingCharacters(in: .whitespaces).lowercased(),
+                imagesB64: images)
+            faceStatus = r.enrolled
+                ? "ENROLLED \(faceName.uppercased()) (\(r.samples)/\(r.of) PHOTOS USABLE)"
+                : "SAMPLES SAVED (\(r.samples)) — NOT FINALIZED"
+        } catch {
+            faceStatus = "FAILED — TRY CLOSER, WELL-LIT, FACE-ON SELFIES"
+        }
+        enrolling = false
+    }
+
+    /// Embedding quality doesn't need 12MP — cap the long edge so uploads
+    /// stay small (the detector runs at 640px anyway).
+    private func resizedJPEGBase64(_ img: UIImage) -> String {
+        let maxDim: CGFloat = 1280
+        let scale = min(1, maxDim / max(img.size.width, img.size.height))
+        let size = CGSize(width: img.size.width * scale,
+                          height: img.size.height * scale)
+        let resized = UIGraphicsImageRenderer(size: size).image { _ in
+            img.draw(in: CGRect(origin: .zero, size: size))
+        }
+        return (resized.jpegData(compressionQuality: 0.85) ?? Data())
+            .base64EncodedString()
     }
 
     private func sectionHeader(_ title: String) -> some View {
