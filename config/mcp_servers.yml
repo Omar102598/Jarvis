@@ -223,7 +223,7 @@ servers:
   home_assistant:
     enabled: true
     transport: sse
-    url: "http://homeassistant:8123/mcp_server/sse"
+    url: "${HA_URL}/mcp_server/sse"
     headers:
       Authorization: "Bearer ${HA_TOKEN}"
     description: "MCP Home Assistant (official) — control/query all Assist-exposed entities"
