@@ -211,6 +211,32 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    // MARK: Video query (phone camera roll)
+
+    func sendVideo(_ videoData: Data, prompt: String = "What is happening in this video?") async {
+        let mb = Double(videoData.count) / 1_048_576.0
+        guard mb <= 40 else {
+            append(.jarvis, text: "That clip is \(String(format: "%.0f", mb))MB — too large to send. "
+                                   + "Try a shorter clip (5-20s works best).")
+            return
+        }
+        append(.user, text: "\(prompt) (video, \(String(format: "%.1f", mb))MB)")
+        let loadingId = appendLoading()
+        await glassesManager?.send(.thinking)
+        isProcessing = true
+        defer { isProcessing = false }
+
+        do {
+            let response = try await JarvisClient.shared.askVideo(videoData, text: prompt)
+            let displayText = response.display.body.isEmpty ? response.text : response.display.body
+            finishLoading(loadingId, text: displayText)
+            await glassesManager?.send(response.display.hudState)
+        } catch {
+            finishLoading(loadingId, text: "Error: \(error.localizedDescription)")
+            await glassesManager?.send(.error(message: error.localizedDescription))
+        }
+    }
+
     // MARK: Audio playback
 
     private func playAudio(base64: String) {

@@ -10,6 +10,19 @@ struct TextQueryRequest: Encodable {
     var speak: Bool = true
 }
 
+struct VideoQueryRequest: Encodable {
+    let videoB64: String
+    let text: String
+    let source: String = "glasses"
+    /// Recording a clip means the screen is already in hand — reply in text.
+    var speak: Bool = false
+
+    enum CodingKeys: String, CodingKey {
+        case videoB64 = "video_b64"
+        case text, source, speak
+    }
+}
+
 struct ImageQueryRequest: Encodable {
     let imageB64: String
     let text: String

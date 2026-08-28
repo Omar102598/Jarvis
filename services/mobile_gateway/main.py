@@ -756,6 +756,8 @@ class VideoQueryRequest(BaseModel):
     video_b64: str
     text: str = "What is happening in this video?"
     source: str = "glasses"
+    # Recording a clip means eyes are on the screen — default to text.
+    speak: bool = False
 
 
 async def _analyze_video_gemini(video_b64: str, question: str) -> Optional[str]:
@@ -825,7 +827,7 @@ async def ask_video(request: VideoQueryRequest, x_api_key: str = Header(default=
             f"(A video the user just recorded was analyzed; here is what it shows: "
             f"{gemini_desc})\n\nThe user asked: {request.text}"
         )
-        return await _run_pipeline_json(composite)
+        return await _run_pipeline_json(composite, speak=request.speak)
 
     tmpdir = tempfile.mkdtemp(prefix="jarvis_vid_")
     try:
