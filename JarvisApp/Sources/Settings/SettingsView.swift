@@ -5,6 +5,7 @@ struct SettingsView: View {
     @State private var serverURL = JarvisConfig.serverURL
     @State private var apiKey    = JarvisConfig.apiKey
     @State private var saved     = false
+    @State private var urlError: String?
     @AppStorage("devMode") private var devMode = false
     @StateObject private var location = LocationManager.shared
 
@@ -26,6 +27,11 @@ struct SettingsView: View {
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .keyboardType(.URL)
+                        }
+                        if let urlError {
+                            Text(urlError)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.red)
                         }
                         fieldRow(label: "API KEY") {
                             SecureField("Optional", text: $apiKey)
@@ -167,7 +173,16 @@ struct SettingsView: View {
     }
 
     private func save() {
-        JarvisConfig.serverURL = serverURL
+        // Reject a URL that can't be parsed rather than storing it and letting
+        // every later request fail (it used to crash on a force-unwrap).
+        let cleaned = JarvisConfig.normalized(serverURL)
+        guard URL(string: cleaned + "/health") != nil, cleaned.count > "http://".count else {
+            urlError = "Not a valid URL. Expected something like http://host:8080"
+            return
+        }
+        urlError = nil
+        serverURL = cleaned
+        JarvisConfig.serverURL = cleaned
         JarvisConfig.apiKey    = apiKey
         saved = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { saved = false }
