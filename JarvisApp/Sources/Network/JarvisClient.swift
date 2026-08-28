@@ -84,6 +84,19 @@ final class JarvisClient {
         return response.events
     }
 
+    /// Every tool call belonging to one turn.
+    ///
+    /// Used to reconcile a message after its reply lands: the live stream can
+    /// drop, or deliver events before the client knows the turn id, so the
+    /// inline list is confirmed against the server rather than trusted.
+    func fetchToolEvents(turnID: String) async throws -> [ToolEvent] {
+        let escaped = turnID.addingPercentEncoding(
+            withAllowedCharacters: .urlQueryAllowed) ?? turnID
+        let request = try baseRequest(path: "/tool-events?turn_id=\(escaped)")
+        let response: ToolEventsResponse = try await execute(request)
+        return response.events
+    }
+
     // MARK: Live tool-call stream (SSE)
 
     /// Tool calls as they happen, so a long multi-tool turn shows progress

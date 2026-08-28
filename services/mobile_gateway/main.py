@@ -524,6 +524,17 @@ def _check_api_key(x_api_key: str) -> None:
 
 async def _run_pipeline_text(text: str, source: str = "mobile") -> str:
     """Send text through the MQTT agent; return the raw response text."""
+    response_text, _turn = await _run_pipeline_text_turn(text, source)
+    return response_text
+
+
+async def _run_pipeline_text_turn(text: str, source: str = "mobile") -> tuple[str, str]:
+    """As _run_pipeline_text, but also returns the room, which is the turn id.
+
+    The brain stamps every tool event of this request with the room, so handing
+    it back lets a client attach that turn's tool calls to the exact message it
+    just received — no guessing from timing.
+    """
     request_id = uuid.uuid4().hex[:12]
     room = f"{source}-{request_id}"
 
@@ -542,7 +553,8 @@ async def _run_pipeline_text(text: str, source: str = "mobile") -> str:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }),
         )
-        return await asyncio.wait_for(asyncio.shield(future), timeout=LLM_TIMEOUT)
+        reply = await asyncio.wait_for(asyncio.shield(future), timeout=LLM_TIMEOUT)
+        return reply, room
     except asyncio.TimeoutError:
         future.cancel()
         raise HTTPException(status_code=504, detail="JARVIS did not respond in time.")
@@ -587,8 +599,9 @@ async def _run_pipeline_json(text: str, speak: bool = True) -> dict:
     ``speak=False`` returns text only and skips synthesis entirely — the caller
     typed, so it has nothing to play.
     """
+    turn_id = ""
     if not speak:
-        response_text = await _run_pipeline_text(text, source="glasses")
+        response_text, turn_id = await _run_pipeline_text_turn(text, source="glasses")
         wav_bytes = b""
     else:
         response_text, wav_bytes = await _run_pipeline_audio(text, source="glasses")
@@ -600,6 +613,8 @@ async def _run_pipeline_json(text: str, speak: bool = True) -> dict:
     return {
         "text": payload.tts_text,
         "audio_b64": base64.b64encode(wav_bytes).decode(),
+        # Lets the client attach this turn's tool calls to this exact message.
+        "turn_id": turn_id,
         "display": {
             "type": payload.type,
             "title": payload.title,
@@ -1455,16 +1470,32 @@ async def stream_tools(request: Request, x_api_key: str = Header(default="")):
 
 
 @app.get("/tool-events", summary="Recent tool call events for iOS timeline")
-async def get_tool_events(x_api_key: str = Header(default=""), limit: int = 30):
+async def get_tool_events(x_api_key: str = Header(default=""), limit: int = 30,
+                          turn_id: str = ""):
+    """Recent tool events, newest first.
+
+    ``turn_id`` narrows to a single request, which is how a client attaches a
+    turn's tool calls to the message it just received. That backfill is what
+    makes inline rendering correct even if the live SSE stream dropped, was
+    never connected, or missed events emitted before the client knew the id.
+    """
     _check_api_key(x_api_key)
     try:
-        raw = _redis.lrange("jarvis:tool_events", 0, min(limit, 50) - 1)
+        # A turn's events can sit behind newer ones, so scan deeper when
+        # filtering — the stored list is capped at 100 anyway.
+        depth = 100 if turn_id else min(limit, 50)
+        raw = _redis.lrange("jarvis:tool_events", 0, depth - 1)
         events = []
         for item in raw:
             try:
-                events.append(json.loads(item))
+                event = json.loads(item)
             except Exception:
-                pass
+                continue
+            if turn_id and event.get("turn_id") != turn_id:
+                continue
+            events.append(event)
+        if not turn_id:
+            events = events[:limit]
         return {"events": events}
     except Exception as exc:
         raise HTTPException(503, f"Redis unavailable: {exc}")
