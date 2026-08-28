@@ -198,11 +198,20 @@ servers:
     args:
       - "-y"
       - "@striderlabs/mcp-southwest"
+    # Verified against the shipped package, not the README — the README lists
+    # get_fares/checkout/book_with_points/change_flight, none of which the
+    # server actually exposes. Real tools are: search_flights, get_flight_details,
+    # get_flight_status, get_rapid_rewards, get_reservations, cancel_reservation,
+    # check_in, login, logout, status.
+    #
+    # Withheld on purpose: cancel_reservation (destructive), check_in (mutates a
+    # booking), login/logout (would need stored credentials), and the account
+    # readers get_rapid_rewards/get_reservations (credentials again).
     allow_tools:
       - search_flights
-      - get_fares
       - get_flight_details
-    description: "Southwest fares (search only) — the one airline Kiwi cannot see"
+      - get_flight_status
+    description: "Southwest search + flight status — the one airline Kiwi cannot see"
 
   # ---------------------------------------------------------------------------
   # American — evaluated and NOT enabled, on purpose.
