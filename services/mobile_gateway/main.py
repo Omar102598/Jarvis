@@ -536,13 +536,20 @@ async def _run_pipeline_audio(text: str, source: str = "mobile") -> tuple[str, b
     return response_text, wav_bytes
 
 
-async def _run_pipeline_json(text: str) -> dict:
+async def _run_pipeline_json(text: str, speak: bool = True) -> dict:
     """Run the full pipeline and return a JSON-friendly dict with display payload.
 
     Used by the native iOS app endpoints.  Sends source='glasses' so the LLM
     knows to format the response with DISPLAY:/BODY: headers.
+
+    ``speak=False`` returns text only and skips synthesis entirely — the caller
+    typed, so it has nothing to play.
     """
-    response_text, wav_bytes = await _run_pipeline_audio(text, source="glasses")
+    if not speak:
+        response_text = await _run_pipeline_text(text, source="glasses")
+        wav_bytes = b""
+    else:
+        response_text, wav_bytes = await _run_pipeline_audio(text, source="glasses")
     payload = parse_display_response(response_text)
 
     # Push display payload to any connected WebSocket clients immediately
@@ -651,6 +658,10 @@ async def ask_text(request: TextRequest, x_api_key: str = Header(default="")):
 class QueryRequest(BaseModel):
     text: str
     source: str = "glasses"
+    # Modality matching: a TYPED message gets a typed reply. Skipping synthesis
+    # is not just a UX choice — it avoids paying ElevenLabs per character and
+    # removes TTS from the response latency for text turns.
+    speak: bool = True
 
 
 @app.post("/ask/query", summary="[iOS app] Text query → JSON with display payload")
@@ -658,12 +669,13 @@ async def ask_query(request: QueryRequest, x_api_key: str = Header(default="")):
     """
     Used by the native iOS Jarvis app for text and typed chat queries.
     Returns structured JSON so the app can update the HUD and play TTS directly.
+    ``speak: false`` (typed chat) returns text only and skips synthesis.
     """
     _check_api_key(x_api_key)
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="text must not be empty")
-    print(f"[Gateway] /ask/query: '{request.text}'")
-    return await _run_pipeline_json(request.text)
+    print(f"[Gateway] /ask/query: '{request.text}' (speak={request.speak})")
+    return await _run_pipeline_json(request.text, speak=request.speak)
 
 
 @app.post("/ask/query/siri", summary="[Siri App Intent] Text query → plain text, no audio synthesis")
