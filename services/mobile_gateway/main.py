@@ -775,17 +775,16 @@ async def _google_access_token() -> str:
     if _GOOGLE_TOKEN["token"] and time.time() < _GOOGLE_TOKEN["exp"]:
         return _GOOGLE_TOKEN["token"]
 
-    import aiohttp
-
     def _store(token: str, ttl: float) -> str:
         _GOOGLE_TOKEN.update(token=token, exp=time.time() + max(0.0, ttl - 60))
         return token
 
     try:
+        import aiohttp
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 "http://metadata.google.internal/computeMetadata/v1/instance/"
-                "service-account/token",
+                "service-accounts/default/token",
                 headers={"Metadata-Flavor": "Google"},
                 timeout=aiohttp.ClientTimeout(total=3),
             ) as resp:
