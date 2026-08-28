@@ -15,7 +15,7 @@ struct JarvisConfig {
     /// NSURLError -1002 "unsupported URL" on every request — including the
     /// Siri intent, which then dismisses silently. Always ensure a scheme.
     static func normalized(_ raw: String) -> String {
-        var url = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var url = raw.components(separatedBy: .whitespacesAndNewlines).joined()
         while url.hasSuffix("/") { url.removeLast() }
         if !url.lowercased().hasPrefix("http://") && !url.lowercased().hasPrefix("https://") {
             url = "http://" + url
@@ -50,7 +50,7 @@ final class JarvisClient {
     // MARK: Audio query → QueryResponse
 
     func askAudio(_ audioData: Data) async throws -> QueryResponse {
-        var request = baseRequest(path: "/ask/query/audio")
+        var request = try baseRequest(path: "/ask/query/audio")
         request.httpMethod = "POST"
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         request.httpBody = audioData
@@ -67,7 +67,7 @@ final class JarvisClient {
     // MARK: Tool events — for the activity timeline
 
     func fetchToolEvents(limit: Int = 25) async throws -> [ToolEvent] {
-        let request = baseRequest(path: "/tool-events?limit=\(limit)")
+        let request = try baseRequest(path: "/tool-events?limit=\(limit)")
         let response: ToolEventsResponse = try await execute(request)
         return response.events
     }
@@ -107,7 +107,7 @@ final class JarvisClient {
     private struct AgentFeedResponse: Codable { let agents: [AgentFeedItem] }
 
     func fetchAgentFeed() async throws -> [AgentFeedItem] {
-        let request = baseRequest(path: "/agents/feed")
+        let request = try baseRequest(path: "/agents/feed")
         let response: AgentFeedResponse = try await execute(request)
         return response.agents
     }
@@ -125,7 +125,7 @@ final class JarvisClient {
     private struct AgentEventsResponse: Codable { let events: [AgentEvent] }
 
     func fetchAgentEvents(limit: Int = 150) async throws -> [AgentEvent] {
-        let request = baseRequest(path: "/agents/events?limit=\(limit)")
+        let request = try baseRequest(path: "/agents/events?limit=\(limit)")
         let response: AgentEventsResponse = try await execute(request)
         return response.events
     }
@@ -140,7 +140,7 @@ final class JarvisClient {
     private struct HistoryResponse: Codable { let messages: [HistoryMessage] }
 
     func fetchHistory(limit: Int = 40) async throws -> [HistoryMessage] {
-        let request = baseRequest(path: "/history?limit=\(limit)")
+        let request = try baseRequest(path: "/history?limit=\(limit)")
         let response: HistoryResponse = try await execute(request)
         return response.messages
     }
@@ -157,7 +157,7 @@ final class JarvisClient {
     /// camera recognition compares against. Re-enrolling a name replaces it.
     func enrollFace(name: String, imagesB64: [String]) async throws
         -> (samples: Int, of: Int, enrolled: Bool) {
-        var request = baseRequest(path: "/face/enroll")
+        var request = try baseRequest(path: "/face/enroll")
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
@@ -174,7 +174,7 @@ final class JarvisClient {
     /// WebSocket only reaches a foregrounded app, so anything sent while
     /// suspended is recovered from this feed on launch/foreground.
     func fetchPushes(limit: Int = 20) async throws -> [PushItem] {
-        let request = baseRequest(path: "/pushes?limit=\(limit)")
+        let request = try baseRequest(path: "/pushes?limit=\(limit)")
         let response: PushesResponse = try await execute(request)
         return response.pushes
     }
@@ -183,7 +183,7 @@ final class JarvisClient {
 
     @discardableResult
     func pushHealthSnapshot(_ snapshot: HealthSnapshot) async throws -> Bool {
-        var request = baseRequest(path: "/health/snapshot")
+        var request = try baseRequest(path: "/health/snapshot")
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(snapshot)
@@ -198,7 +198,7 @@ final class JarvisClient {
 
     @discardableResult
     func pushNextCalendarEvent(_ event: NextCalendarEvent) async throws -> Bool {
-        var request = baseRequest(path: "/calendar/next-event")
+        var request = try baseRequest(path: "/calendar/next-event")
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(event)
@@ -209,49 +209,14 @@ final class JarvisClient {
         return true
     }
 
-    // MARK: WebSocket — receives DisplayPayload pushes from backend
-
-    func connectWebSocket(onMessage: @escaping (DisplayPayload) -> Void) -> URLSessionWebSocketTask {
-        let wsURL = JarvisConfig.serverURL
-            .replacingOccurrences(of: "http://", with: "ws://")
-            .replacingOccurrences(of: "https://", with: "wss://")
-        var request = URLRequest(url: URL(string: "\(wsURL)/ws/glasses")!)
-        if !JarvisConfig.apiKey.isEmpty {
-            request.setValue(JarvisConfig.apiKey, forHTTPHeaderField: "X-API-Key")
-        }
-        let task = session.webSocketTask(with: request)
-
-        func receive() {
-            task.receive { result in
-                switch result {
-                case .success(.string(let text)):
-                    if let data = text.data(using: .utf8),
-                       let payload = try? JSONDecoder().decode(DisplayPayload.self, from: data) {
-                        onMessage(payload)
-                    }
-                    receive()
-                case .success(.data(let data)):
-                    if let payload = try? JSONDecoder().decode(DisplayPayload.self, from: data) {
-                        onMessage(payload)
-                    }
-                    receive()
-                case .failure(let error):
-                    print("[JarvisClient] WebSocket error: \(error)")
-                @unknown default:
-                    receive()
-                }
-            }
-        }
-
-        task.resume()
-        receive()
-        return task
-    }
-
     // MARK: Helpers
 
-    private func baseRequest(path: String) -> URLRequest {
-        var req = URLRequest(url: URL(string: "\(JarvisConfig.serverURL)\(path)")!)
+    private func baseRequest(path: String) throws -> URLRequest {
+        let full = "\(JarvisConfig.serverURL)\(path)"
+        guard let url = URL(string: full) else {
+            throw JarvisError.invalidURL(JarvisConfig.serverURL)
+        }
+        var req = URLRequest(url: url)
         if !JarvisConfig.apiKey.isEmpty {
             req.setValue(JarvisConfig.apiKey, forHTTPHeaderField: "X-API-Key")
         }
@@ -259,7 +224,7 @@ final class JarvisClient {
     }
 
     private func post<Body: Encodable, Response: Decodable>(path: String, body: Body) async throws -> Response {
-        var request = baseRequest(path: path)
+        var request = try baseRequest(path: path)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
@@ -368,11 +333,14 @@ final class JarvisSocket {
 
 enum JarvisError: LocalizedError {
     case invalidResponse
+    case invalidURL(String)
     case httpError(Int, String)
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse: return "Invalid response from Jarvis server."
+        case .invalidURL(let u):
+            return "Server URL isn't valid: \"\(u)\". Expected something like http://host:8080"
         case .httpError(let code, let detail): return "Server error \(code): \(detail)"
         }
     }
