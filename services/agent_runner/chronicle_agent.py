@@ -38,11 +38,16 @@ MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 CHRONICLE_LLM_MODEL = os.environ.get("CHRONICLE_LLM_MODEL", "").strip()
 
 _REVIEW_SYSTEM = (
-    "You are JARVIS delivering a warm, concise weekly review to your user. From "
-    "the week's journal entries and trend signals, write 4-7 sentences: what the "
-    "week held, 1-2 notable trends (sleep, training, spending, habits), a genuine "
-    "highlight, and ONE specific suggestion for next week. Second person, no bullet "
-    "lists, no preamble."
+    "You are JARVIS acting as the user's chief of staff, delivering the Sunday "
+    "weekly review. You get the week's journal entries plus live signals: "
+    "health/training trends, spending and subscriptions, open tasks, next "
+    "week's workout plan, and pending items awaiting the user's approval. "
+    "Write a warm, concise briefing (6-10 sentences, second person, no bullet "
+    "lists, no preamble): what the week held, 1-2 notable trends, a genuine "
+    "highlight, then UP TO THREE specific, actionable recommendations for next "
+    "week — each grounded in a signal you were given (an open task going "
+    "stale, a spend creeping up, a recovery trend, an approval sitting "
+    "unanswered). Skip a recommendation rather than invent one."
 )
 CATCHUP_MAX = int(os.environ.get("CHRONICLE_CATCHUP_MAX", "3"))
 ENTRIES_KEEP = 180
@@ -54,6 +59,21 @@ _SYSTEM = (
     "tense, third person ('He …' / 'The house …'). Note what actually happened "
     "and anything notable or worth recalling later. No preamble, no bullet "
     "points, no speculation. If the day was quiet, say so briefly."
+)
+
+# Reflection: promote the day's episodic record into DURABLE semantic facts.
+# The bar is deliberately high — an empty list is the normal answer.
+_REFLECT_SYSTEM = (
+    "You are JARVIS's memory-reflection pass. Given one day's journal entry "
+    "and raw signals, extract facts that will STILL MATTER MONTHS FROM NOW "
+    "and that JARVIS should permanently remember about the user's life: new "
+    "people or relationships, changes in circumstances (job, home, health "
+    "conditions, pets), significant purchases or commitments, stated "
+    "preferences or decisions. NOT transient events (a workout happened, a "
+    "package arrived, motion was detected) and NOT speculation. Phrase each "
+    "as a standalone present-tense statement. Reply with ONLY a JSON array "
+    'of strings, e.g. ["Omar adopted a second cat named Miso"]. '
+    "Most days the correct answer is []."
 )
 
 
@@ -93,6 +113,10 @@ class ChronicleAgent(BaseAgent):
             if summary:
                 self._store(day, summary, n)
                 written.append(str(day))
+                try:
+                    await self._reflect(day, summary)
+                except Exception as exc:
+                    self.log_event("finding", f"reflection {day} failed: {exc}")
 
         self.r.set("chronicle:last_day", today.strftime("%Y-%m-%d"))
         if not written:
@@ -191,6 +215,36 @@ class ChronicleAgent(BaseAgent):
         )
         return (summary.strip(), n_signals)
 
+    # --------------------------------------------------------------- reflection
+
+    async def _reflect(self, day, summary: str) -> None:
+        """Queue durable facts distilled from the day for the brain to store in
+        long-term memory (Chroma). The brain drains ``memory:reflect:queue`` —
+        heavy embedding deps stay in llm_agent, per this service's design."""
+        raw = await complete(
+            system=_REFLECT_SYSTEM,
+            user=f"Date: {day.isoformat()}\n\nJournal entry:\n{summary}",
+            max_tokens=300, temperature=0.2,
+            model=CHRONICLE_LLM_MODEL,
+        )
+        try:
+            import re as _re
+            match = _re.search(r"\[.*\]", raw, _re.DOTALL)
+            facts = json.loads(match.group(0)) if match else []
+        except Exception:
+            return
+        queued = 0
+        for fact in facts[:5]:
+            fact = str(fact).strip()
+            if len(fact) < 8:
+                continue
+            self.r.lpush("memory:reflect:queue", json.dumps({
+                "fact": fact, "source": "reflection", "day": day.isoformat(),
+            }))
+            queued += 1
+        if queued:
+            self.log_event("finding", f"reflection: queued {queued} durable fact(s)")
+
     # -------------------------------------------------------------------- store
 
     async def _weekly_review(self) -> str:
@@ -234,11 +288,50 @@ class ChronicleAgent(BaseAgent):
         except Exception:
             pass
 
+        # Chief-of-staff signals: open tasks, next week's plan, pending approvals,
+        # Echo's latest habit findings — all cheap Redis reads, all optional.
+        extra: list[str] = []
+        try:
+            user_id = os.environ.get("JARVIS_USER_ID", "default")
+            tasks = []
+            for raw in (self.r.hgetall(f"{user_id}:jarvis:tasks") or {}).values():
+                try:
+                    t = json.loads(raw)
+                    if t.get("status") not in ("done", "dropped"):
+                        tasks.append(t.get("title") or t.get("text") or "")
+                except Exception:
+                    continue
+            if tasks:
+                extra.append(f"Open tasks ({len(tasks)}): " +
+                             "; ".join(x for x in tasks[:8] if x))
+        except Exception:
+            pass
+        try:
+            plan = json.loads(self.r.get("workout:plan") or "{}")
+            if plan:
+                extra.append("Next week's training plan is set (Apollo).")
+        except Exception:
+            pass
+        try:
+            pending = self.r.hlen("jarvis:approvals:pending") or 0
+            if pending:
+                extra.append(f"{pending} item(s) sitting in the Approval Inbox "
+                             "awaiting a decision.")
+        except Exception:
+            pass
+        try:
+            habits = json.loads(self.r.get("habits:last_analysis") or "{}")
+            for s in (habits.get("suggestions") or [])[:2]:
+                extra.append(f"Echo's observation: {s.get('text','')}")
+        except Exception:
+            pass
+
         if not entries and not signals:
             return "Chronicle: not enough history for a weekly review yet."
 
         user = ("Journal entries this week:\n" + "\n".join(entries or ["(none)"]) +
-                "\n\nTrend signals: " + (", ".join(signals) or "none"))
+                "\n\nTrend signals: " + (", ".join(signals) or "none") +
+                "\n\nLive signals:\n" + ("\n".join(extra) or "none"))
         try:
             review = (await complete(system=_REVIEW_SYSTEM, user=user,
                                      max_tokens=500, temperature=0.5,

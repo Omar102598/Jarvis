@@ -335,8 +335,52 @@ class DeveloperAgent(BaseAgent):
             self._progress(f"CLI exited rc={rc}: {out[:200]}")
             return None
         self._progress("CLI run complete.")
-        return (f"Dev task (via Claude Code CLI — Pro plan, no API tokens): "
-                f"{task[:150]}\n\n{out[-3000:]}")
+        report = (f"Dev task (via Claude Code CLI — Pro plan, no API tokens): "
+                  f"{task[:150]}\n\n{out[-3000:]}")
+        # Self-modification safety gate: Forge is TOLD to verify, but for edits
+        # to the Jarvis repo we enforce it — run the golden-task harness and
+        # capture the diffstat so every report says what changed and whether
+        # the core survived. A red harness doesn't undo the edit (the report
+        # + diff is how you decide), it just can't go unnoticed anymore.
+        if not project_dir or "Jarvis" in cwd:
+            gate = await self._verify_jarvis_repo(cwd)
+            if gate:
+                report += gate
+        return report
+
+    async def _verify_jarvis_repo(self, cwd: str) -> str:
+        """Run golden_tasks + git diffstat in the repo. Returns a report tail."""
+        cmd = ("python3 scripts/golden_tasks.py >/tmp/forge_golden.out 2>&1; "
+               "echo GOLDEN_EXIT:$?; tail -4 /tmp/forge_golden.out; "
+               "git diff --stat | tail -12")
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.post(
+                    f"{_BASE}/dev/shell",
+                    json={"cmd": cmd, "cwd": cwd, "timeout": 180},
+                    timeout=aiohttp.ClientTimeout(total=200),
+                ) as resp:
+                    data = await resp.json()
+        except Exception as exc:
+            return f"\n\n⚠ Verification gate unreachable: {exc}"
+        out = (data.get("output") or "").strip()
+        if "GOLDEN_EXIT:0" in out:
+            verdict = "✅ Golden-task harness GREEN after this change."
+            self._progress("golden tasks: green")
+        else:
+            verdict = ("🔴 GOLDEN-TASK HARNESS FAILED after this change — "
+                       "review before trusting it:")
+            self._progress("golden tasks: FAILED")
+            try:
+                from notify import route_notification
+                route_notification("Forge", "A Forge edit left the golden-task "
+                                   "harness red — check the repo before the next "
+                                   "rebuild.", title="🔴 Forge verification failed",
+                                   urgency="urgent")
+            except Exception:
+                pass
+        diff = out.split("GOLDEN_EXIT:", 1)[-1]
+        return f"\n\n{verdict}\n{diff[:1200]}"
 
     # -- tool execution ------------------------------------------------------
 

@@ -1,6 +1,9 @@
-ultralytics>=8.2.0
+# NOTE: onnxruntime (CPU) — the -gpu wheel doesn't exist for linux/arm64
+# (Apple Silicon Docker) and CUDA isn't available in this stack anyway.
+# ultralytics (YOLO) removed with the legacy CAMERAS loop — it pulled ~2GB of
+# torch the Ring face-ID path never uses; add it back if CAMERAS returns.
 insightface>=0.7.3
-onnxruntime-gpu>=1.17.0
+onnxruntime>=1.17.0
 opencv-python-headless>=4.9.0
 paho-mqtt==1.6.1
 redis>=5.0.0

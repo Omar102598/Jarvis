@@ -1,0 +1,278 @@
+# ==============================================================================
+# JARVIS — CORE stack (cloud VPS half of the Month-3 split)
+# ==============================================================================
+# Runs on the always-on box (Hetzner CPX31 / Oracle free ARM). The Mac keeps
+# only I/O-bound services (docker-compose.edge.yml + native mac_bridge/tts_mac).
+# Full migration order, firewall rules, and rollback: docs/HETZNER_SETUP.md.
+#
+# Required .env additions on the VPS (beyond the normal .env):
+#   MAC_HOST=omars-macbook-pro.tail7e74a7.ts.net   # Mac's tailnet name
+#   HA_URL=http://${MAC_HOST}:8123                 # HA stays on the Mac (LAN devices)
+#   GATEWAY_PUBLIC_URL=http://<vps-tailnet-name>:8080
+#
+# Usage (on the VPS):  docker compose -f docker-compose.core.yml up -d
+# ==============================================================================
+
+services:
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: jarvis-mqtt
+    ports:
+      - "1883:1883"        # reachable over the tailnet only (ufw — see runbook)
+    volumes:
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: jarvis-redis
+    ports:
+      - "6379:6379"        # tailnet-only (ufw); edge services connect here
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: always
+
+  chroma:
+    image: chromadb/chroma:0.6.3
+    container_name: jarvis-chroma
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - ANONYMIZED_TELEMETRY=false
+      - ALLOW_RESET=false
+    restart: always
+
+  llm_agent:
+    build: ./services/llm_agent
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-llm_agent:${JARVIS_TAG:-latest}
+    container_name: jarvis-llm
+    depends_on: [mosquitto, redis, chroma]
+    environment:
+      - MQTT_HOST=mosquitto
+      - REDIS_HOST=redis
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-llama3.1}
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+      - FIRECRAWL_URL=${FIRECRAWL_URL:-https://api.firecrawl.dev}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-}
+      - TWILIO_FROM_NUMBER=${TWILIO_FROM_NUMBER:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
+      # HA stays on the Mac (it talks to LAN devices) — point across the tailnet
+      - HA_URL=${HA_URL}
+      - HA_TOKEN=${HA_TOKEN:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - BANKSYNC_API_KEY=${BANKSYNC_API_KEY}
+      - BANKSYNC_MCP_URL=${BANKSYNC_MCP_URL:-https://mcp.banksync.io}
+      - JARVIS_WORKSPACE=/data/workspace
+      - NOTES_DIR=/data/notes
+      - SHELL_ALLOWLIST=${SHELL_ALLOWLIST:-}
+      - CODE_EXEC_ENABLED=${CODE_EXEC_ENABLED:-false}
+      - DAILY_LLM_BUDGET_USD=${DAILY_LLM_BUDGET_USD:-15}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - SMTP_DEFAULT_TO=${SMTP_DEFAULT_TO:-}
+      - TWILIO_FROM=${TWILIO_FROM:-}
+      - SMS_DEFAULT_TO=${SMS_DEFAULT_TO:-}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+      - SPOTIFY_REFRESH_TOKEN=${SPOTIFY_REFRESH_TOKEN:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_DEFAULT_REPO=${GITHUB_DEFAULT_REPO:-}
+      - JARVIS_USER_ID=${JARVIS_USER_ID:-default}
+      - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY:-}
+      - EXPEDIA_API_KEY=${EXPEDIA_API_KEY:-}
+      - API_TOKEN_17TRACK=${API_TOKEN_17TRACK:-}
+      - RESY_EMAIL=${RESY_EMAIL:-}
+      - RESY_PASSWORD=${RESY_PASSWORD:-}
+      - GATEWAY_INTERNAL_URL=${GATEWAY_INTERNAL_URL:-http://mobile_gateway:8080}
+      - GATEWAY_PUBLIC_URL=${GATEWAY_PUBLIC_URL}
+      - MOBILE_API_KEY=${MOBILE_API_KEY:-}
+      # mac_bridge tools (mac_*, dev_*, self_modify) reach the Mac over the tailnet
+      - MAC_BRIDGE_HOST=${MAC_HOST}
+      - MAC_BRIDGE_PORT=${MAC_BRIDGE_PORT:-7777}
+    volumes:
+      - ./data:/data
+      - ./services/llm_agent/plugins:/app/plugins
+      - ./config:/config:ro
+    restart: always
+
+  mobile_gateway:
+    build: ./services/mobile_gateway
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-mobile_gateway:${JARVIS_TAG:-latest}
+    container_name: jarvis-mobile-gateway
+    depends_on: [mosquitto, redis]
+    ports:
+      - "${MOBILE_GATEWAY_PORT:-8080}:8080"
+    environment:
+      - MQTT_HOST=mosquitto
+      - REDIS_HOST=redis
+      - PIPER_MODEL=${PIPER_MODEL:-en_GB-alan-medium}
+      - MOBILE_API_KEY=${MOBILE_API_KEY:-}
+      - MOBILE_GATEWAY_PORT=8080
+      - MOBILE_LLM_TIMEOUT=${MOBILE_LLM_TIMEOUT:-45}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GEMINI_VIDEO_MODEL=${GEMINI_VIDEO_MODEL:-gemini-2.5-flash}
+      - TTS_VOICE=${TTS_VOICE:-en-GB-RyanNeural}
+      - TTS_RATE=${TTS_RATE:--5%}
+      - TTS_PITCH=${TTS_PITCH:--5Hz}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - ELEVENLABS_VOICE_ID=${ELEVENLABS_VOICE_ID:-onwK4e9ZLuTAKqWW03F9}
+      - ELEVENLABS_MODEL=${ELEVENLABS_MODEL:-eleven_turbo_v2_5}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - APNS_KEY_PATH=${APNS_KEY_PATH:-}
+      - APNS_KEY_ID=${APNS_KEY_ID:-}
+      - APNS_TEAM_ID=${APNS_TEAM_ID:-}
+      - APNS_TOPIC=${APNS_TOPIC:-}
+      - APNS_ENV=${APNS_ENV:-sandbox}
+    volumes:
+      - ./models:/models
+      - ./models/hf:/root/.cache/huggingface
+      - ./data:/data
+    restart: always
+
+  agent_runner:
+    build: ./services/agent_runner
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-agent_runner:${JARVIS_TAG:-latest}
+    container_name: jarvis-agent-runner
+    depends_on: [mosquitto, redis]
+    environment:
+      - MQTT_HOST=mosquitto
+      - REDIS_HOST=redis
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+      - FIRECRAWL_URL=${FIRECRAWL_URL:-https://api.firecrawl.dev}
+      - AGENTS_CONFIG=/config/agents.yml
+      - HA_URL=${HA_URL}
+      - HA_TOKEN=${HA_TOKEN:-}
+      - BANKSYNC_API_KEY=${BANKSYNC_API_KEY}
+      - BANKSYNC_MCP_URL=${BANKSYNC_MCP_URL:-https://mcp.banksync.io}
+      # Forge + browser scraping reach the Mac's native bridge over the tailnet.
+      # NOTE: Forge's DEV_PREFER_CLI path runs Claude Code ON THE MAC via the
+      # bridge — that continues to work from the VPS unchanged.
+      - MAC_BRIDGE_HOST=${MAC_HOST}
+      - MAC_BRIDGE_PORT=${MAC_BRIDGE_PORT:-7777}
+      - DEV_LLM_MODEL=${DEV_LLM_MODEL:-claude-opus-4-8}
+      - DEV_PREFER_CLI=${DEV_PREFER_CLI:-true}
+      - DEV_CLI_BIN=${DEV_CLI_BIN:-/usr/local/bin/claude}
+      - DEV_CLI_TIMEOUT_S=${DEV_CLI_TIMEOUT_S:-900}
+      - IMAP_HOST=${IMAP_HOST:-imap.gmail.com}
+      - IMAP_USER=${IMAP_USER:-}
+      - IMAP_PASSWORD=${IMAP_PASSWORD:-}
+      - USER_TZ=${USER_TZ:-America/Chicago}
+      - CHRONICLE_LLM_MODEL=${CHRONICLE_LLM_MODEL:-}
+      - CHRONICLE_CATCHUP_MAX=${CHRONICLE_CATCHUP_MAX:-3}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - GATEWAY_PUBLIC_URL=${GATEWAY_PUBLIC_URL}
+      - MOBILE_API_KEY=${MOBILE_API_KEY:-}
+      - SENTRY_COOLDOWN_S=${SENTRY_COOLDOWN_S:-600}
+      - DAILY_LLM_BUDGET_USD=${DAILY_LLM_BUDGET_USD:-15}
+      - HABIT_WINDOW_DAYS=${HABIT_WINDOW_DAYS:-14}
+      - QA_TASKS_CONFIG=/config/qa_tasks.yml
+      # Native web search (Anthropic server-side tool) — replaces Tavily for
+      # Ada/Jeeves/Walter. Needs a search-capable model: the dynamic-filtering
+      # variant requires Opus 4.6+ / Sonnet 4.6+ (haiku gets the basic one).
+      - SEARCH_LLM_MODEL=${SEARCH_LLM_MODEL:-claude-sonnet-5}
+      - SEARCH_MAX_USES=${SEARCH_MAX_USES:-5}
+      - RESEARCH_MAX_SEARCHES=${RESEARCH_MAX_SEARCHES:-8}
+      # Walter runs daily, so his native-search bill recurs — off by default
+      # (~$0.57/digest vs ~$0.01 on Tavily). See newsletter_agent.py.
+      - NEWSLETTER_NATIVE_SEARCH=${NEWSLETTER_NATIVE_SEARCH:-false}
+    volumes:
+      - ./config:/config:ro
+    restart: always
+
+  synapse:
+    build: ./services/synapse
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-synapse:${JARVIS_TAG:-latest}
+    container_name: jarvis-synapse
+    depends_on: [mosquitto, redis]
+    environment:
+      - MQTT_HOST=mosquitto
+      - REDIS_HOST=redis
+      - SYNAPSE_RULE_INTERVAL_S=${SYNAPSE_RULE_INTERVAL_S:-300}
+      - SYNAPSE_RULE_COOLDOWN_S=${SYNAPSE_RULE_COOLDOWN_S:-43200}
+      - DIGEST_INTERVAL_S=${DIGEST_INTERVAL_S:-3600}
+      - DIGEST_MAX=${DIGEST_MAX:-8}
+      - NOTIFY_DEDUP_TTL_S=${NOTIFY_DEDUP_TTL_S:-1800}
+    restart: always
+
+  dashboard:
+    build: ./services/dashboard
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-dashboard:${JARVIS_TAG:-latest}
+    container_name: jarvis-dashboard
+    depends_on: [mosquitto, redis]
+    ports:
+      - "${DASHBOARD_PORT:-8888}:8888"
+    environment:
+      - REDIS_HOST=redis
+      - MQTT_HOST=mosquitto
+      - DASHBOARD_PORT=8888
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+      - WIDGETS_DIR=/app/widgets
+      - JARVIS_USER_ID=${JARVIS_USER_ID:-default}
+    volumes:
+      - ./services/dashboard/widgets:/app/widgets
+      - ./services/dashboard/templates:/app/templates
+    restart: always
+
+  # Ring → MQTT bridge is pure cloud traffic — it moves to the VPS. Copy
+  # data/ring-mqtt/ (holds the refresh token) from the Mac before first start.
+  ring_mqtt:
+    image: tsightler/ring-mqtt
+    container_name: jarvis-ring-mqtt
+    depends_on: [mosquitto]
+    ports:
+      - "55123:55123"
+    volumes:
+      - ./data/ring-mqtt:/data
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    restart: always
+
+  # Face ID over Ring snapshots — only needs MQTT+Redis, so it rides along.
+  # (ARM VPS note: onnxruntime CPU aarch64 wheels exist; buffalo_l re-downloads
+  # on first start unless models/insightface is copied over.)
+  vision:
+    build: ./services/vision
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-vision:${JARVIS_TAG:-latest}
+    container_name: jarvis-vision
+    depends_on: [mosquitto, redis]
+    environment:
+      - MQTT_HOST=mosquitto
+      - REDIS_HOST=redis
+      - FACE_SIMILARITY_THRESHOLD=${FACE_SIMILARITY_THRESHOLD:-0.45}
+      - CAMERAS=${CAMERAS:-{}}
+    volumes:
+      - ./models:/models
+      - ./data:/data
+      - ./models/insightface:/root/.insightface
+    restart: always
+
+volumes:
+  mosquitto_data:
+  redis_data:
+  chroma_data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.87.0.0/24

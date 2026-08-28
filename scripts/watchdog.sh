@@ -92,6 +92,29 @@ for c in "${EXPECTED[@]}"; do
   fi
 done
 
+# --- 3.5 Mobile gateway HTTP liveness -----------------------------------------
+# The container can be "Up" while hung on the startup Whisper download (model
+# loads before uvicorn binds 8080), so .State.Running alone misses it. Two
+# strikes (~10 min apart) before restarting, so a legitimate slow model load
+# isn't killed mid-startup.
+GW_FAIL_STAMP="/tmp/jarvis_watchdog_gw_fail"
+if docker inspect -f '{{.State.Running}}' jarvis-mobile-gateway 2>/dev/null | grep -q true; then
+  gw_code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://localhost:${MOBILE_GATEWAY_PORT:-8080}/health" 2>/dev/null || echo 000)
+  if [[ "$gw_code" != "200" ]]; then
+    if [[ -f "$GW_FAIL_STAMP" ]]; then
+      log "gateway container Up but /health returned $gw_code twice — restarting (likely hung model load)"
+      docker restart jarvis-mobile-gateway >/dev/null 2>&1
+      rm -f "$GW_FAIL_STAMP"
+      healed+=("mobile-gateway (hung)")
+    else
+      log "gateway /health returned $gw_code — first strike, restart if still failing next run"
+      touch "$GW_FAIL_STAMP"
+    fi
+  else
+    rm -f "$GW_FAIL_STAMP"
+  fi
+fi
+
 # --- 4. Alert (at most once/hour) --------------------------------------------
 if [[ ${#healed[@]} -gt 0 ]]; then
   log "HEALED: ${healed[*]}"

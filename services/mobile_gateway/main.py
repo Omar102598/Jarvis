@@ -384,6 +384,16 @@ def _on_surface_push(client, userdata, msg):
         payload = DisplayPayload(ptype, title, text[:200], media_url, text)
         if _event_loop is not None:
             asyncio.run_coroutine_threadsafe(_push_display_payload(payload), _event_loop)
+        # Real push via APNs (no-op until the Apple Developer .p8 is configured).
+        # We're on the MQTT callback thread here, so the sync sender is fine.
+        try:
+            import apns
+            extra = {"media_url": media_url} if media_url else None
+            n = apns.send_alert(_redis, title, text, payload_extra=extra)
+            if n:
+                print(f"[Gateway] APNs delivered to {n} device(s)")
+        except Exception as exc:
+            print(f"[Gateway] APNs error: {exc}")
     except Exception as exc:
         print(f"[Gateway] Surface push error: {exc}")
 
@@ -1592,6 +1602,82 @@ async def get_pushes(x_api_key: str = Header(default=""), limit: int = 20):
         except Exception:
             continue
     return {"pushes": pushes}
+
+
+# ---------------------------------------------------------------------------
+# APNs device registration (inert until APNS_* env is configured — see apns.py)
+# ---------------------------------------------------------------------------
+
+@app.post("/apns/register", summary="[iOS app] Register an APNs device token")
+async def apns_register(request: Request, x_api_key: str = Header(default="")):
+    _check_api_key(x_api_key)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    token = str(body.get("token", "")).strip()
+    if not token or len(token) < 32:
+        raise HTTPException(400, "missing device token")
+    _redis.sadd("apns:tokens", token)
+    import apns
+    return {"ok": True, "apns_configured": apns.configured(),
+            "registered_devices": _redis.scard("apns:tokens")}
+
+
+# ---------------------------------------------------------------------------
+# Approval Inbox — list pending approvals; publish decisions to the bus.
+# The agent_runner is the single executor (jarvis/approvals/resolve listener);
+# this endpoint only requests the resolution, then the app polls status.
+# ---------------------------------------------------------------------------
+
+@app.get("/approvals", summary="[iOS/Mac app + dashboard] Pending approvals")
+async def get_approvals(x_api_key: str = Header(default=""), history: int = 0):
+    _check_api_key(x_api_key)
+    try:
+        pending = []
+        now = datetime.now(timezone.utc).timestamp()
+        for raw in (_redis.hgetall("jarvis:approvals:pending") or {}).values():
+            try:
+                rec = json.loads(raw)
+                if float(rec.get("expires", 0)) >= now:
+                    pending.append(rec)
+            except Exception:
+                continue
+        pending.sort(key=lambda rec: rec.get("created", ""))
+        out = {"pending": pending}
+        if history:
+            out["resolved"] = [json.loads(x) for x in
+                               _redis.lrange("jarvis:approvals:log", 0,
+                                             min(history, 50) - 1)]
+        return out
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, f"Redis unavailable: {exc}")
+
+
+@app.post("/approvals/{approval_id}/resolve",
+          summary="[iOS/Mac app + dashboard] Approve or deny a pending approval")
+async def resolve_approval(approval_id: str, request: Request,
+                           x_api_key: str = Header(default="")):
+    _check_api_key(x_api_key)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    decision = str(body.get("decision", "")).lower()
+    if decision not in ("approve", "approved", "deny", "denied"):
+        raise HTTPException(400, "decision must be 'approve' or 'deny'")
+    if not _redis.hexists("jarvis:approvals:pending", approval_id):
+        status = _redis.get(f"jarvis:approvals:status:{approval_id}") or "unknown"
+        return {"ok": False, "status": status,
+                "detail": "not pending (already resolved or expired)"}
+    _mqtt_client.publish("jarvis/approvals/resolve", json.dumps({
+        "id": approval_id, "decision": decision,
+        "by": body.get("by", "app"),
+    }))
+    return {"ok": True, "status": "resolving",
+            "detail": "decision published; poll GET /approvals or the status key"}
 
 
 # ---------------------------------------------------------------------------

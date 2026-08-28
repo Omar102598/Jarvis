@@ -1,0 +1,51 @@
+<style>
+  .hlt-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:4px 0; }
+  .hlt-tile { background:rgba(255,255,255,0.04); border-radius:6px; padding:8px 10px; }
+  .hlt-val { font-size:1.25em; font-weight:700; color:#ffb020; line-height:1.15; }
+  .hlt-lbl { font-size:0.58em; letter-spacing:0.08em; text-transform:uppercase; opacity:0.5; margin-top:2px; }
+  .hlt-delta { font-size:0.62em; margin-top:3px; opacity:0.85; }
+  .hlt-delta.up { color:#4cd97b; }
+  .hlt-delta.down { color:#e0566a; }
+  .hlt-delta.flat { opacity:0.4; }
+  .hlt-updated { opacity:.35; font-size:.62em; margin-top:8px; text-align:center; }
+</style>
+<div id="hlt-content"><div style="opacity:.5;font-size:.85em">Loading…</div></div>
+<script>
+(function(){
+  // delta: signed number + arrow so direction never rides on color alone.
+  // goodWhenUp=false flips coloring for metrics where lower is better (RHR).
+  function delta(d, unit, goodWhenUp){
+    if (d == null) return '<div class="hlt-delta flat">— vs last wk</div>';
+    if (Math.abs(d) < 1e-9) return '<div class="hlt-delta flat">±0 vs last wk</div>';
+    var up = d > 0;
+    var good = (goodWhenUp === false) ? !up : up;
+    return '<div class="hlt-delta '+(good?'up':'down')+'">'
+      +(up?'▲ +':'▼ ')+(Math.round(d*10)/10)+(unit||'')+' vs last wk</div>';
+  }
+  function tile(val, unit, label, deltaHtml){
+    if (val == null) return '';
+    return '<div class="hlt-tile"><div class="hlt-val">'+val+(unit||'')+'</div>'
+      +'<div class="hlt-lbl">'+label+'</div>'+deltaHtml+'</div>';
+  }
+  function load(){
+    fetch('/api/widgets/health/data').then(function(r){ return r.json(); }).then(function(resp){
+      var el = document.getElementById('hlt-content');
+      var d = (resp && resp.data) ? resp.data : (resp || {});
+      var tiles =
+        tile(d.sleep_avg_h, 'h', 'Sleep avg', delta(d.sleep_delta_h, 'h', true))
+        + tile(d.steps_avg != null ? Math.round(d.steps_avg).toLocaleString() : null, '', 'Steps avg', delta(d.steps_delta, '', true))
+        + tile(d.hrv_avg_ms, 'ms', 'HRV avg', delta(d.hrv_delta_ms, 'ms', true))
+        + tile(d.resting_hr_avg, 'bpm', 'Resting HR', delta(d.resting_hr_delta, '', false))
+        + tile(d.training_days_7d, '', 'Training days', '<div class="hlt-delta flat">of last 7</div>')
+        + tile(d.readiness_today, '', 'Readiness', '<div class="hlt-delta flat">today</div>');
+      if (!tiles) {
+        el.innerHTML = '<div style="opacity:.5;font-size:.8em">No health data yet — open the iOS app to sync HealthKit.</div>';
+        return;
+      }
+      el.innerHTML = '<div class="hlt-grid">'+tiles+'</div>'
+        + (d.updated ? '<div class="hlt-updated">Atlas · '+d.updated+'</div>' : '');
+    }).catch(function(){ document.getElementById('hlt-content').innerHTML='<div style="opacity:.5">Unavailable</div>'; });
+  }
+  load(); setInterval(load, 600000);
+})();
+</script>

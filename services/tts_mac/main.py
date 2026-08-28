@@ -32,6 +32,14 @@ TTS_VOICE = os.environ.get("TTS_VOICE", "en-GB-RyanNeural")
 TTS_RATE  = os.environ.get("TTS_RATE",  "-5%")
 TTS_PITCH = os.environ.get("TTS_PITCH", "-5Hz")
 
+# Rooms with a real physical speaker — comma-separated, matches ROOM_NAME
+# across the voice pipeline (wake_word/stt). Anything else (mobile-*,
+# glasses-*, siri-*, satellite-*, or any future agent's synthetic bus-check
+# room) is a virtual surface and must NOT be spoken aloud here.
+PHYSICAL_ROOMS = {r.strip() for r in
+                  os.environ.get("PHYSICAL_ROOMS", os.environ.get("ROOM_NAME", "office")).split(",")
+                  if r.strip()}
+
 _MD_PATTERN = re.compile(
     r"\*{1,3}(.+?)\*{1,3}"    # bold / italic / bold-italic
     r"|`{1,3}[^`]*`{1,3}"     # inline code / code blocks
@@ -190,11 +198,17 @@ def on_message(client, userdata, msg):
         raw      = payload.get("text", "").strip()
         room     = payload.get("room", "office")
         is_final = payload.get("is_final", True)
-        # This speaker serves PHYSICAL rooms only. mobile-*/glasses-*/siri-*
-        # rooms are phone/HUD/Siri surfaces — the mobile_gateway (or Siri
-        # itself) handles their audio; the Mac echoing them aloud was a
-        # wildcard-subscription leak.
-        if room.startswith(("mobile-", "glasses-", "siri-", "satellite-")):
+        # This speaker serves PHYSICAL rooms only — an ALLOWLIST, not a
+        # blocklist. Originally this excluded known virtual prefixes
+        # (mobile-/glasses-/siri-/satellite-), but any NEW synthetic room a
+        # future agent invents (e.g. Vega's "qa-<hash>", Miles' "miles-<hash>"
+        # bus round-trips) defaulted to "speak it out loud" — which got
+        # physically spoken on the real office speaker, then picked up by the
+        # STT follow-up mic as self-echo and forwarded back to the brain as a
+        # genuine new query, causing Jarvis to loop talking to itself
+        # (observed 2026-07-19 ~4am, Vega's nightly QA run). Defaulting closed
+        # is the safe direction — every physical surface must opt in.
+        if room not in PHYSICAL_ROOMS:
             return
         if raw:
             clean = _strip_markdown(raw)

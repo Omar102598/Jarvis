@@ -57,13 +57,29 @@ async def _get_states(session) -> list[dict]:
 
 
 def _apple_tvs(states: list[dict]) -> list[dict]:
-    """media_player entities that look like Apple TVs (have an app source list
-    or 'apple' in the name/id). Falls back to all media_players if none match."""
+    """media_player entities that look like Apple TVs. Falls back to all
+    media_players if none match.
+
+    source_list (installed apps) used to be treated as the deciding signal —
+    but it's only populated once the Companion-protocol session is fully up;
+    a media_player whose connection degraded (dropped session, needs a HA
+    restart to recover — see scripts/patch_ha_appletv.sh) reports NO
+    source_list even though it's a genuinely paired Apple TV, and got
+    silently excluded here. Found 2026-07-22: "Omar's Living Room" vanished
+    from apple_tv's candidate list entirely — Jarvis reported it as
+    unregistered when it was actually just degraded. A paired remote.*
+    entity sharing the same object_id is a much more reliable "this is an
+    Apple TV" signal (only this integration creates that pairing), so it
+    counts even when source_list is temporarily empty.
+    """
     players = [s for s in states if s["entity_id"].startswith("media_player.")]
+    remote_ids = {s["entity_id"].split(".", 1)[1] for s in states
+                 if s["entity_id"].startswith("remote.")}
     atvs = [s for s in players
             if "apple" in s["entity_id"].lower()
             or "apple" in (s["attributes"].get("friendly_name") or "").lower()
-            or s["attributes"].get("source_list")]
+            or s["attributes"].get("source_list")
+            or s["entity_id"].split(".", 1)[1] in remote_ids]
     return atvs or players
 
 

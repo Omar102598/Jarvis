@@ -20,19 +20,23 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from ambient_agent import AmbientAgent
+from atlas_agent import AtlasAgent
 from chronicle_agent import ChronicleAgent
 from classpass_agent import ClasspassAgent
 from developer_agent import DeveloperAgent
 from email_agent import EmailAgent
 from finance_agent import FinanceAgent
 from grocery_agent import GroceryAgent
+from habit_agent import HabitAgent
 from job_monitor_agent import JobMonitorAgent
 from newsletter_agent import NewsletterAgent
+from qa_agent import QAAgent
 from price_monitor_agent import PriceMonitorAgent
 from spend_guardian_agent import SpendGuardianAgent
 from research_agent import ResearchAgent
 from sentry_agent import SentryAgent
 from task_agent import TaskAgent
+from travel_agent import TravelAgent
 from web_monitor_agent import WebMonitorAgent
 from workout_agent import WorkoutAgent
 
@@ -44,6 +48,11 @@ MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 CONFIG_PATH = Path(os.environ.get("AGENTS_CONFIG", "/config/agents.yml"))
+# Mac bridge (native host API). host.docker.internal only resolves when this
+# container runs ON the Mac — the VPS split sets MAC_BRIDGE_HOST to the Mac's
+# tailnet name instead (docs/HETZNER_SETUP.md).
+MAC_BRIDGE_URL = (f"http://{os.environ.get('MAC_BRIDGE_HOST', 'host.docker.internal')}"
+                  f":{os.environ.get('MAC_BRIDGE_PORT', '7777')}")
 
 AGENT_CLASSES = {
     "ambient": AmbientAgent,
@@ -64,6 +73,10 @@ AGENT_CLASSES = {
     "chronicle": ChronicleAgent,     # nightly daily-memory journal
     "weekly_review": ChronicleAgent, # Sunday "week in review" (action=weekly_review)
     "spend_guardian": SpendGuardianAgent,   # subscriptions + unusual-charge watch
+    "habits": HabitAgent,            # Echo — habit mining → Approval Inbox
+    "qa": QAAgent,                   # Vega — nightly live-brain regression suite
+    "atlas": AtlasAgent,             # Atlas — fused weekly health overview
+    "travel": TravelAgent,           # Miles — assisted booking + price watch
 }
 
 # Agents that can be dispatched on demand with params from the trigger payload
@@ -88,6 +101,10 @@ AGENT_PERSONAS = {
     "developer":  ("Forge",  "development — Jarvis self-modification and any coding project"),
     "workout":    ("Apollo", "personal trainer — programs your lifting week around recovery and your ClassPass classes"),
     "sentry":     ("Sentry", "camera watch — assesses Ring motion events and alerts only when it matters"),
+    "habits":     ("Echo",   "habit mining — spots your routines and deviations, suggests automations via the Approval Inbox"),
+    "qa":         ("Vega",   "quality watch — nightly regression checks against the live brain"),
+    "atlas":      ("Atlas",  "health analyst — fuses sleep, training, nutrition, and recovery into one weekly picture"),
+    "travel":     ("Miles",  "travel — trip planning, price watching, and assisted booking (you always pay yourself)"),
 }
 
 # ---------------------------------------------------------------------------
@@ -174,7 +191,7 @@ async def run_agent(name: str, agent_class, params: dict) -> None:
                               f'to buddy "{phone}" of (service 1 whose service type is iMessage)')
                     body = json.dumps({"script": script, "timeout": 20}).encode()
                     _rq.urlopen(_rq.Request(
-                        "http://host.docker.internal:7777/applescript", data=body,
+                        f"{MAC_BRIDGE_URL}/applescript", data=body,
                         headers={"Content-Type": "application/json"}), timeout=25)
             except Exception:
                 pass
@@ -197,6 +214,7 @@ async def run_agent(name: str, agent_class, params: dict) -> None:
 def _on_connect(client, userdata, flags, rc):
     if rc == 0:
         client.subscribe("jarvis/agents/+/trigger")
+        client.subscribe("jarvis/approvals/resolve")
         # Ring cameras (via the ring-mqtt bridge, if running): device state,
         # motion/ding events, and snapshot JPEGs. Harmless no-op when the
         # bridge isn't up. homeassistant/# carries ring-mqtt's discovery
@@ -404,7 +422,7 @@ def _run_arrival_scene(profile: dict) -> bool:
     if sc:
         try:
             body = json.dumps({"name": sc, "timeout": 30}).encode()
-            _rq.urlopen(_rq.Request("http://host.docker.internal:7777/shortcut/run",
+            _rq.urlopen(_rq.Request(f"{MAC_BRIDGE_URL}/shortcut/run",
                                     data=body, headers={"Content-Type": "application/json"}),
                         timeout=35)
             return True
@@ -504,6 +522,27 @@ def _on_ring_event(client, userdata, msg):
         print(f"[AgentRunner] ring event error: {exc}", file=sys.stderr)
 
 
+def _on_approval_resolve(client, userdata, msg):
+    """Single executor for Approval Inbox decisions (see approvals.py).
+
+    Every surface (dashboard, gateway/iOS, the brain's manage_approvals tool)
+    publishes {id, decision, by} here; running the action in one place means a
+    double-tap on two surfaces can't execute it twice.
+    """
+    try:
+        body = json.loads(msg.payload or b"{}")
+        approval_id = body.get("id", "")
+        decision = body.get("decision", "")
+        if not approval_id or not decision:
+            return
+        import approvals
+        result = approvals.resolve(_redis, approval_id, decision,
+                                   by=body.get("by", "user"))
+        print(f"[AgentRunner] approval {approval_id}: {decision} → {result}")
+    except Exception as exc:
+        print(f"[AgentRunner] approval resolve error: {exc}", file=sys.stderr)
+
+
 def _on_trigger(client, userdata, msg):
     """Handle a manual run request published to jarvis/agents/{name}/trigger.
 
@@ -600,6 +639,7 @@ async def main() -> None:
     _mqtt.user_data_set(agents_cfg)
     _mqtt.on_connect = _on_connect
     _mqtt.message_callback_add("jarvis/agents/+/trigger", _on_trigger)
+    _mqtt.message_callback_add("jarvis/approvals/resolve", _on_approval_resolve)
     _mqtt.message_callback_add("ring/#", _on_ring_event)
     _mqtt.message_callback_add("homeassistant/camera/+/+/config", _on_ring_discovery)
     _mqtt.message_callback_add("homeassistant/binary_sensor/+/+/config", _on_ring_discovery)

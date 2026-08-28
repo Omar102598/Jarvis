@@ -1,0 +1,505 @@
+# ==============================================================================
+# JARVIS Background Agent Configuration — EXAMPLE / TEMPLATE
+# ==============================================================================
+# New install:  cp config/agents.example.yml config/agents.yml
+#
+# Agents needing a paid or personal integration (grocery, classpass, finance,
+# spend_guardian, email) ship DISABLED here — enable each once its credentials
+# are in .env. The always-useful ones (chronicle, habits, qa, atlas, travel,
+# morning_brief, weekly_review) are on by default and cost only pennies/day.
+# ==============================================================================
+# Each agent runs on its own cron schedule (standard 5-field cron syntax).
+# Set enabled: false to disable without removing the entry.
+# Edit params to customise what each agent does for you.
+# ==============================================================================
+
+agents:
+
+  # ---------------------------------------------------------------------------
+  # Ambient Agent
+  # Proactive monitoring: calendar countdowns, weather alerts, morning briefing,
+  # and user-defined Redis-keyed triggers. Runs every 5 minutes.
+  # ---------------------------------------------------------------------------
+  - name: ambient
+    display_name: "Ambient Monitor"
+    description: >
+      Proactive monitoring agent. Announces upcoming calendar events, weather
+      changes, daily morning briefing, and user-defined triggers without being
+      asked. Runs every 5 minutes with per-trigger cooldowns to avoid spam.
+    # Disabled 2026-07-01 to avoid idle API-token spend — still runs on manual
+    # MQTT trigger (jarvis/agents/ambient/trigger). Restore "true" to re-enable cron.
+    enabled: false
+    schedule: "*/5 * * * *"   # Every 5 minutes (inactive while disabled)
+    params:
+      room: "office"                # Room to announce to (ACTIVE_ROOM when idle)
+      calendar_lookahead_min: 30    # Warn this many minutes before an event
+      morning_hour: 8               # Hour (local) to fire the morning briefing
+      weather_enabled: true         # Monitor for significant weather changes
+
+
+  # ---------------------------------------------------------------------------
+  # Newsletter Digest
+  # Searches the web for news on your chosen topics and produces a daily brief.
+  # ---------------------------------------------------------------------------
+  - name: newsletter
+    display_name: "Daily Newsletter"
+    description: >
+      Searches the web for news on configured topics and produces a concise
+      daily digest. Delivered every morning at 8 AM.
+    enabled: true
+    schedule: "0 8 * * *"    # 8:00 AM daily (server local time)
+    params:
+      topics:
+        - "artificial intelligence news"
+        - "tech industry news"
+        - "software engineering"
+        - "open source projects"
+      max_articles: 12
+
+  # ---------------------------------------------------------------------------
+  # Email Triage — "Hermes"
+  #
+  # Connects to your IMAP inbox (Gmail by default) and produces a concise
+  # morning-brief triage: important / action-needed mail, package & delivery
+  # updates (with tracking numbers), newsletters & promos, and a count of
+  # everything else. Uses only the Python stdlib — no extra pip deps.
+  #
+  # One-time setup — add these to .env (compose passthrough handled separately):
+  #   IMAP_USER      your email address (e.g. you@gmail.com)
+  #   IMAP_PASSWORD  a Gmail App Password (NOT your normal login password)
+  #   IMAP_HOST      optional; defaults to imap.gmail.com
+  #
+  # Runs every morning at 7:30 AM CDT (12:30 UTC).
+  # ---------------------------------------------------------------------------
+  - name: email
+    display_name: "Email Triage"
+    description: >
+      Hermes — triages your inbox each morning into important / action-needed
+      mail, package & delivery updates (with tracking numbers), newsletters &
+      promos, and a count of everything else. Reads IMAP (Gmail by default);
+      requires IMAP_USER and IMAP_PASSWORD (Gmail app password) in .env.
+    enabled: false
+    schedule: "30 12 * * *"   # 7:30 AM CDT (12:30 UTC) daily
+    params:
+      lookback_hours: 24
+
+  # ---------------------------------------------------------------------------
+  # Job Monitor
+  # Searches job boards for new listings matching your criteria.
+  # Deduplicates against previously seen listings (7-day memory).
+  # ---------------------------------------------------------------------------
+  - name: job_monitor
+    display_name: "Job Monitor"
+    description: >
+      Monitors job boards (LinkedIn, Greenhouse, Lever, Indeed) for new listings
+      matching your keywords and location. Runs every 6 hours.
+    enabled: false
+    schedule: "0 */6 * * *"  # Every 6 hours
+    params:
+      keywords: []            # e.g. ["software engineer", "AI engineer"]
+      location: "remote"
+
+  # ---------------------------------------------------------------------------
+  # Web Monitor — "Scout"
+  # Watches search queries for new content AND specific URLs for changes
+  # (params.watch_urls) — apartment availability, restocks, ticket drops.
+  # Each page is fetched via Firecrawl (preferred) or the headless scraper,
+  # hashed, and only sent to the LLM to extract/diff when the page actually
+  # changed — near-zero idle token cost. New matches trigger a push, with
+  # priority emphasis on items matching priority_keywords.
+  # ---------------------------------------------------------------------------
+  - name: web_monitor
+    display_name: "Web Monitor"
+    description: >
+      Scout — monitors search queries for newly published content and watches
+      specific URLs for changes (apartment availability, restocks, ticket
+      drops, anything). Uses Firecrawl when FIRECRAWL_API_KEY is set.
+    enabled: false
+    schedule: "0 */2 * * *"   # Every 2 hours
+    params:
+      queries: []             # e.g. ["new AI agent frameworks"]
+      notify: true            # push + iMessage when a NEW item appears
+      alert_title: "Scout — new match"
+      priority_keywords: []   # e.g. ["1st floor", "patio"] to flag priority hits
+      watch_urls: []
+      # Each watch_url can set `goal` (what to extract), `noun`, and
+      # `alert_title` for ANY use case. Example:
+      #   - name: "Some apartment — floor plans"
+      #     url: "https://example.com/floorplans/"
+      #     goal: "list available units with price and move-in date"
+
+  # ---------------------------------------------------------------------------
+  # Price Monitor
+  # Watches product pages and reports price drops. Runs twice a day.
+  # ---------------------------------------------------------------------------
+  - name: price_monitor
+    display_name: "Price Monitor"
+    description: >
+      Tracks prices on configured product pages and flags drops.
+    enabled: false
+    schedule: "0 9,18 * * *"   # 9 AM and 6 PM daily
+    params:
+      products: []
+
+  # ---------------------------------------------------------------------------
+  # Smart Weekly Grocery Agent — v5
+  #
+  # What's new in v5:
+  #   • Fitness profile loaded from Redis user:profile (configure via Jarvis).
+  #   • TDEE + macro calculation (Mifflin-St Jeor) for calorie/protein/fiber targets.
+  #   • Target redsky public API for reliable prices (no CSS scraping).
+  #   • HEB digital API with headless-scraper fallback.
+  #   • Greedy 1-store-first consolidation (minimises number of stores).
+  #   • Persistent browser login sessions across weekly runs.
+  #   • Cart links included in report.
+  #   • Report delivered via iMessage + Jarvis iOS app.
+  #   • Approval flow: say "approve grocery order" to place orders.
+  #   • Usual-order learning: build a cart at any store, say "learn my Fresh
+  #     cart" / "scan my Target cart" (action=learn_cart, stores=amazon|
+  #     whole_foods|target|heb|all) — Remy scans it (Amazon: precise DOM;
+  #     Target/HEB: page text + LLM extraction), saves staples to Redis
+  #     grocery:usual_order, and builds future lists around them.
+  #
+  # Configure your profile via Jarvis:
+  #   "Set my weight to 195 lbs"
+  #   "Update my activity level to very active"
+  #   "Set my iMessage number to +15551234567"
+  #   "Set my grocery budget to $120"
+  #
+  # Runs every Monday at 8:00 AM CDT (13:00 UTC).
+  # ---------------------------------------------------------------------------
+  - name: grocery
+    display_name: "Smart Grocery Agent"
+    description: >
+      Builds a fitness-optimised weekly grocery list from your health profile
+      (TDEE, protein/fiber targets) and past purchases. Compares prices across
+      Target, HEB, Amazon Fresh, and Whole Foods. Selects the fewest stores,
+      builds carts, and sends a report with cart links via iMessage and the
+      Jarvis iOS app. Say "approve grocery order" to proceed to checkout.
+    enabled: false
+    schedule: "0 13 * * 1"   # Every Monday at 8:00 AM CDT (13:00 UTC)
+    params:
+      notify_on_complete: true
+      # All fitness/profile settings are loaded from Redis user:profile.
+      # Set them via Jarvis: "update my weight to 195 lbs"
+      # or directly: update_user_profile("weight_lbs", "195")
+      #
+      # Key profile fields (with defaults if not set):
+      #   weight_lbs:            201
+      #   height_in:             72       (72 = 6'0")
+      #   age:                   25
+      #   activity_level:        moderately_active
+      #   goal:                  cutting  (cutting / maintaining / bulking)
+      #   weekly_budget_usd:     150.0
+      #   protein_goal_g_per_lb: 1.0
+      #   fiber_goal_g:          35
+      #   imessage_to:           ""       (set to your phone number for iMessage delivery)
+
+  # ---------------------------------------------------------------------------
+  # ClassPass Agent — v1
+  #
+  # Scans your ClassPass schedule and ranks classes by:
+  #   • Recovery  — HealthKit HRV / resting-HR / sleep / today's workout load
+  #                 steer intensity (hard day vs. active-recovery day).
+  #   • Calendar  — only classes that fit an open slot are surfaced.
+  #   • Favorites — studios / instructors / class types you've marked favorite.
+  #
+  # Auto-books favorites whose booking window is open (allowlist only); all other
+  # classes are held as suggestions you confirm ("book the 6pm class").
+  #
+  # One-time setup:
+  #   1. Open the Jarvis browser and log in to ClassPass once (session persists).
+  #   2. Set your area:   "set my ClassPass location to <your city>"
+  #      (or update_user_profile("classpass_home_location", "<your city>"))
+  #   3. Add favorites:   "favorite SoulCycle spin classes and auto-book them"
+  #      (manage_classpass_favorites tool)
+  #
+  # Runs every 30 min from 6am–10pm to catch booking windows as they open.
+  # ---------------------------------------------------------------------------
+  - name: classpass
+    display_name: "ClassPass Agent"
+    description: >
+      Discovers and books ClassPass fitness studio classes ranked by your
+      recovery (HRV/sleep/resting-HR), open calendar slots, and favorite
+      studios/instructors. Auto-books favorites the moment their window opens;
+      suggests the rest for you to confirm. Proactively alerts via the ambient
+      loop when a favorite becomes available.
+    # The SCHEDULED run only does a cheap, mechanical WAITLIST CHECK (no LLM) — it
+    # polls classes you're waitlisted on and auto-books/alerts when a spot opens.
+    # It's a near-instant no-op when you have no active waitlists, so idle token/
+    # cost is ~zero. Full LLM scans + targeted searches are on-demand only
+    # (trigger_classpass_scan / search_classpass).
+    enabled: false
+    schedule: "*/15 6-22 * * *"   # Every 15 min, 6 AM – 10 PM (waitlist polling)
+    params:
+      action: "waitlist_check"
+      # Profile-driven config (set via Jarvis, stored in Redis user:profile):
+      #   classpass_home_location    e.g. "Austin, TX" (your metro)
+      #   classpass_schedule_url     override the ClassPass entry URL (optional)
+      #   classpass_preferred_times  e.g. ["06:00-09:00", "17:00-20:00"]
+      #   classpass_lookahead_days   how many days ahead to scan (default 2)
+      #   imessage_to                phone number for booking confirmations
+      # Favorites allowlist lives in Redis classpass:favorites (managed via tool).
+
+  # ---------------------------------------------------------------------------
+  # Finance Widget Producer
+  # Pulls balances + 30-day spending from BankSync and writes widget:finance:data
+  # for the dashboard finance widget. Requires BANKSYNC_API_KEY in .env.
+  # ---------------------------------------------------------------------------
+  - name: finance
+    display_name: "Finance Widget"
+    description: >
+      Refreshes the dashboard finance widget from BankSync (SoFi etc.): total cash,
+      available balance, and 30-day spending by category. Runs every 30 minutes.
+    enabled: false
+    schedule: "*/30 * * * *"   # Every 30 minutes
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Spend Guardian — Brad's watchful side.
+  # Reuses the BankSync client to watch the transaction feed for recurring
+  # charges (subscriptions, with a monthly-total estimate + next-hit forecast),
+  # unusual one-off charges, and low available cash vs your buffer
+  # (user:profile cash_buffer_usd, default $500). Alerts route through the
+  # notification router (digest urgency). View anytime: get_spending_insights.
+  # Runs daily at 8:00 AM CDT (13:00 UTC).
+  # ---------------------------------------------------------------------------
+  - name: spend_guardian
+    display_name: "Spend Guardian"
+    description: >
+      Brad's watch — flags new subscriptions (with monthly total + next-charge
+      forecast), unusual charges, and low balances from your BankSync feed.
+      Requires BANKSYNC_API_KEY.
+    enabled: false
+    schedule: "0 13 * * *"   # 8:00 AM CDT (13:00 UTC) daily
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Workout Agent — "Apollo", the personal trainer
+  #
+  # Programs the training week around three signals:
+  #   • Split preference (user:profile workout_split; default back/biceps →
+  #     chest/triceps → legs/shoulders ×2 across weekdays)
+  #   • Kai's ClassPass data (booked weekend classes shape the plan)
+  #   • HealthKit recovery (poor sleep / elevated RHR → volume cut)
+  #
+  # Say: "Apollo, plan my week" / "what's today's workout?"
+  # Runs automatically Sunday evening so the week's plan is ready Monday.
+  # ---------------------------------------------------------------------------
+  - name: workout
+    display_name: "Workout Coach"
+    description: >
+      Apollo — personal trainer. Builds a weekly lifting plan around your
+      split, your booked ClassPass classes (via Kai), and HealthKit recovery.
+      On-demand: "plan my workout week", "what's today's workout".
+    enabled: true
+    schedule: "0 23 * * 0"   # Sunday 6:00 PM CDT (23:00 UTC) — plan the week ahead
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Morning Briefing — wake-up greeting composed by the BRAIN with live tools
+  # (weather, maps commute, Apollo's workout, overnight camera events, news).
+  #
+  # PRIMARY trigger: Ring wake-detection — the first Living Room motion in the
+  # WAKE_WINDOW (env, default 5-10 AM local) fires it the moment you're up.
+  # This cron is only the FALLBACK for no-motion mornings; the agent dedupes
+  # to once per local day whichever fires first. (UTC! 14:30 = 9:30 AM CDT.)
+  # ---------------------------------------------------------------------------
+  - name: morning_brief
+    display_name: "Morning Briefing"
+    description: >
+      Wake-up greeting: weather, calendar, commute to the office, today's
+      workout, overnight camera activity, one headline. Fires on your first
+      morning motion (Ring); this schedule is only the fallback.
+    enabled: true
+    schedule: "30 14 * * *"   # 9:30 AM CDT fallback
+    params:
+      action: "morning_brief"
+      room: "office"
+
+  # ---------------------------------------------------------------------------
+  # Chronicle — the daily memory / journaling agent.
+  #
+  # Each night it reads the day's lived signals (the durable event stream, each
+  # agent's reports, camera events, health, spending) and writes a concise
+  # journal entry to Redis so JARVIS remembers your days: "what did I do last
+  # Tuesday?", "when did the plumber come?", "how many gym days this month?".
+  # The brain's recall_journal tool answers those by indexing entries into Chroma.
+  #
+  # Catch-up: summarizes every day since the last entry (up to CHRONICLE_CATCHUP_MAX),
+  # so a night with the Mac asleep is filled in on the next run rather than lost.
+  #
+  # Local-or-API: set CHRONICLE_LLM_MODEL (+ OPENAI_BASE_URL for a local Ollama)
+  # to summarize on-device for $0/night; unset uses the normal API model.
+  #
+  # Runs nightly at 11:15 PM CDT (04:15 UTC) — end of day, and the catch-up makes
+  # the exact fire time non-critical.
+  # ---------------------------------------------------------------------------
+  - name: chronicle
+    display_name: "Chronicle (Daily Memory)"
+    description: >
+      Chronicle — writes a nightly journal of your day from all of JARVIS's
+      signals so he can recall what happened, when. Catches up missed days;
+      can summarize on-device via a local model.
+    enabled: true
+    schedule: "15 4 * * *"   # 11:15 PM CDT (04:15 UTC) nightly
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Weekly Review — Chronicle's Sunday "week in review".
+  # Reads the week's journal entries + trend signals (sleep, training, spending,
+  # subscriptions) and delivers a warm 4-7 sentence review with one suggestion
+  # for next week, as its own card. Runs Sunday 6:00 PM CDT (23:00 UTC).
+  # ---------------------------------------------------------------------------
+  - name: weekly_review
+    display_name: "Weekly Review"
+    description: >
+      Chronicle's Sunday review — what your week held, notable trends, a
+      highlight, and one suggestion for next week. Built from the daily journal.
+    enabled: true
+    schedule: "0 23 * * 0"   # Sunday 6:00 PM CDT (23:00 UTC)
+    params:
+      action: "weekly_review"
+
+  # ---------------------------------------------------------------------------
+  # Habit Miner — "Echo"
+  # Nightly pass over the durable event stream (jarvis:events): finds repeated
+  # time-anchored routines and deviations from your own baseline, and files at
+  # most 2 suggestions/night in the APPROVAL INBOX (dashboard / app / "approve
+  # that" in chat) — never as chat spam. Rejected ideas aren't re-pitched
+  # (90-day dedupe). Approved routines land in habits:routines:approved;
+  # wiring them into ambient triggers/scenes is the follow-up step.
+  # ---------------------------------------------------------------------------
+  - name: habits
+    display_name: "Habit Miner"
+    description: >
+      Echo — mines two weeks of event history for your real routines and
+      recent deviations, then proposes at most two automations or nudges per
+      night through the Approval Inbox. Conservative by design: no pattern,
+      no suggestion.
+    enabled: true
+    schedule: "45 4 * * *"   # 11:45 PM CDT (04:45 UTC), after Chronicle's journal
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Atlas — unified health overview.
+  # Fuses HealthKit trends (sleep/steps/HRV/RHR, week-over-week), Apollo's
+  # training, Sage's nutrition logs, and the readiness score into one weekly
+  # picture + one recommendation. Writes the dashboard Health widget. Ask
+  # anytime: "how's my health trending?" (get_health_overview re-triggers when
+  # stale).
+  # ---------------------------------------------------------------------------
+  - name: atlas
+    display_name: "Health Overview"
+    description: >
+      Atlas — the health analyst. One weekly picture from sleep, steps,
+      HRV/resting-HR trends, training days, nutrition adherence, and
+      readiness, with a single grounded recommendation.
+    enabled: true
+    schedule: "30 13 * * 1"   # Monday 8:30 AM CDT (13:30 UTC)
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # QA Watch — "Vega"
+  # Nightly regression suite against the LIVE brain via the normal MQTT path.
+  # Cases in config/qa_tasks.yml. Remembers yesterday's results and alerts
+  # (urgent) ONLY on pass→fail transitions. Keep the suite small — each case
+  # is a real brain call (tokens).
+  # ---------------------------------------------------------------------------
+  - name: qa
+    display_name: "QA Watch"
+    description: >
+      Vega — runs golden conversations through the live brain every night and
+      alerts only when something that used to pass starts failing. The
+      always-on complement to scripts/golden_tasks.py.
+    enabled: true
+    schedule: "0 9 * * *"   # 4:00 AM CDT (09:00 UTC) — quiet hours
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Sentry — Ring camera watch (EVENT-driven, not scheduled)
+  #
+  # Dispatched automatically by the runner's ring/# MQTT handler whenever a
+  # Ring motion/ding event fires (per-camera cooldown: SENTRY_COOLDOWN_S env,
+  # default 10 min). Assesses the snapshot with Claude vision (haiku) and
+  # notifies (iOS push + iMessage) ONLY when something is genuinely notable —
+  # person, package, vehicle, doorbell, a pet doing something odd.
+  # Requires the ring_mqtt bridge service to be logged in (see docker-compose).
+  # ---------------------------------------------------------------------------
+  - name: sentry
+    display_name: "Camera Sentry"
+    description: >
+      Sentry — watches Ring camera motion/doorbell events, assesses each
+      snapshot with vision AI, and alerts only when something matters
+      (person, package, vehicle, a pet up to something). Event-driven
+      with a per-camera cooldown; no schedule.
+    enabled: false
+    schedule: ""
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Developer Agent — "Forge" (dispatch target — no schedule, on-demand only)
+  #
+  # Jarvis's dedicated software engineer. ALL self-modification of the Jarvis
+  # codebase and any coding project you start goes through Forge:
+  #   "Forge, add a tool that ..."  /  "start a new project that ..."
+  # Jarvis dispatches it via spawn_task(task, agent="developer").
+  #
+  # Runs a full tool-use loop (read/write/shell/rebuild via mac_bridge) on the
+  # powerful model tier (DEV_LLM_MODEL, default claude-opus-4-8). On-demand
+  # only — zero idle token cost. Watch progress: Redis agent:developer:progress.
+  # ---------------------------------------------------------------------------
+  - name: developer
+    display_name: "Developer Agent"
+    description: >
+      Forge — dedicated developer agent. Handles Jarvis self-modification
+      (new tools, bug fixes, service changes + rebuilds) and any delegated
+      coding project on the Mac. Reads before writing, verifies with
+      builds/tests, and reports what changed. Dispatched on demand by JARVIS
+      (spawn_task agent="developer").
+    enabled: false
+    schedule: ""
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Travel — "Miles" (assisted booking, decided 2026-07-18)
+  # PLANNING happens in the brain (it holds the Kiwi/Jinko/Airbnb MCPs +
+  # plan_trip/propose_booking): "plan a trip to Denver in September".
+  # This runner agent covers what happens outside the conversation:
+  #   • confirm — fired when a trip approval is accepted: sends the
+  #     booking-links card (you book and pay yourself; Jarvis never pays)
+  #   • watch — daily cron: re-prices proposed trips via the brain over the
+  #     bus, alerts on drops ≥ TRAVEL_WATCH_DROP_PCT (default 5%).
+  # Near-no-op when no trips are being watched.
+  # ---------------------------------------------------------------------------
+  - name: travel
+    display_name: "Travel (Miles)"
+    description: >
+      Miles — travel. Plans trips in conversation (flight/hotel search via
+      MCPs), files chosen itineraries in the Approval Inbox (assisted
+      booking — you always pay yourself), and watches prices daily on
+      proposed trips.
+    enabled: true
+    schedule: "0 15 * * *"   # 10:00 AM CDT daily price watch
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Research & Task agents (dispatch targets — no schedule, on-demand only)
+  # ---------------------------------------------------------------------------
+  - name: research
+    display_name: "Research Agent"
+    description: >
+      Multi-angle web research synthesized into a sourced briefing.
+      Dispatched on demand by JARVIS (spawn_task).
+    enabled: false
+    schedule: ""
+    params: {}
+
+  - name: task
+    display_name: "Task Agent"
+    description: >
+      Handles arbitrary delegated goals, with web research when needed.
+      Dispatched on demand by JARVIS (spawn_task).
+    enabled: false
+    schedule: ""
+    params: {}

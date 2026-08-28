@@ -417,7 +417,10 @@ class SentryAgent(BaseAgent):
             "- No resident description is on file — for arrivals use "
             "\"arrival\": \"unknown\"."
         )
-        pets = profile.get("pets_description", "a dog (Finley) and house cats")
+        # Profile-driven so this generalizes to any household (set via
+        # "my pets are ..." → update_user_profile pets_description). Falls back
+        # to a neutral phrasing rather than naming anyone's actual pets.
+        pets = profile.get("pets_description") or "none on file"
         indoor_hints = [str(h).lower() for h in
                         profile.get("indoor_cameras", _INDOOR_HINTS)]
         placement = ("INDOOR" if any(h in camera.lower() for h in indoor_hints)

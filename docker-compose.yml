@@ -49,6 +49,7 @@ services:
 
   wake_word:
     build: ./services/wake_word
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-wake_word:${JARVIS_TAG:-latest}
     container_name: jarvis-wake-word
     devices:
       - /dev/snd:/dev/snd
@@ -63,6 +64,7 @@ services:
 
   stt:
     build: ./services/stt
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-stt:${JARVIS_TAG:-latest}
     container_name: jarvis-stt
     devices:
       - /dev/snd:/dev/snd
@@ -80,6 +82,7 @@ services:
 
   speaker_verify:
     build: ./services/speaker_verify
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-speaker_verify:${JARVIS_TAG:-latest}
     container_name: jarvis-speaker-verify
     depends_on:
       - mosquitto
@@ -97,6 +100,7 @@ services:
 
   llm_agent:
     build: ./services/llm_agent
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-llm_agent:${JARVIS_TAG:-latest}
     container_name: jarvis-llm
     depends_on:
       - mosquitto
@@ -133,6 +137,8 @@ services:
       - NOTES_DIR=/data/notes
       - SHELL_ALLOWLIST=${SHELL_ALLOWLIST:-}
       - CODE_EXEC_ENABLED=${CODE_EXEC_ENABLED:-false}
+      # Daily model-spend budget — one urgent alert when today's total crosses it
+      - DAILY_LLM_BUDGET_USD=${DAILY_LLM_BUDGET_USD:-15}
       # Email (SMTP)
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-587}
@@ -163,7 +169,7 @@ services:
       - RESY_PASSWORD=${RESY_PASSWORD:-}
       # Ring live-view tool (start streams via gateway, push public URL)
       - GATEWAY_INTERNAL_URL=${GATEWAY_INTERNAL_URL:-http://mobile_gateway:8080}
-      - GATEWAY_PUBLIC_URL=${GATEWAY_PUBLIC_URL:-http://omars-macbook-pro.tail7e74a7.ts.net:8080}
+      - GATEWAY_PUBLIC_URL=${GATEWAY_PUBLIC_URL:-http://localhost:8080}
       - MOBILE_API_KEY=${MOBILE_API_KEY:-}
     volumes:
       - ./data:/data
@@ -174,6 +180,7 @@ services:
 
   tts:
     build: ./services/tts
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-tts:${JARVIS_TAG:-latest}
     container_name: jarvis-tts
     depends_on:
       - mosquitto
@@ -195,6 +202,7 @@ services:
   # (Profile gate removed 2026-07-13: this is part of the Sentry pipeline now.)
   vision:
     build: ./services/vision
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-vision:${JARVIS_TAG:-latest}
     container_name: jarvis-vision
     depends_on:
       - mosquitto
@@ -217,6 +225,7 @@ services:
 
   mobile_gateway:
     build: ./services/mobile_gateway
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-mobile_gateway:${JARVIS_TAG:-latest}
     container_name: jarvis-mobile-gateway
     depends_on:
       - mosquitto
@@ -245,14 +254,26 @@ services:
       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
       - ELEVENLABS_VOICE_ID=${ELEVENLABS_VOICE_ID:-onwK4e9ZLuTAKqWW03F9}
       - ELEVENLABS_MODEL=${ELEVENLABS_MODEL:-eleven_turbo_v2_5}
+      # APNs real push — inert until the Apple Developer .p8 exists (see
+      # services/mobile_gateway/apns.py for the full activation checklist)
+      - APNS_KEY_PATH=${APNS_KEY_PATH:-}
+      - APNS_KEY_ID=${APNS_KEY_ID:-}
+      - APNS_TEAM_ID=${APNS_TEAM_ID:-}
+      - APNS_TOPIC=${APNS_TOPIC:-}
+      - APNS_ENV=${APNS_ENV:-sandbox}
     volumes:
       - ./models:/models
+      # Persist the Whisper model — a container recreate otherwise re-downloads
+      # 1.6GB from HF Hub, and a stalled download leaves the container "Up" but
+      # never opens port 8080 (the model loads before uvicorn starts).
+      - ./models/hf:/root/.cache/huggingface
     restart: always
 
   # --- Phase 0: Background Agents ---
 
   agent_runner:
     build: ./services/agent_runner
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-agent_runner:${JARVIS_TAG:-latest}
     container_name: jarvis-agent-runner
     depends_on:
       - mosquitto
@@ -297,9 +318,22 @@ services:
       - CHRONICLE_CATCHUP_MAX=${CHRONICLE_CATCHUP_MAX:-3}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       # Sentry: snapshot links in app pushes + iMessage identity
-      - GATEWAY_PUBLIC_URL=${GATEWAY_PUBLIC_URL:-http://omars-macbook-pro.tail7e74a7.ts.net:8080}
+      - GATEWAY_PUBLIC_URL=${GATEWAY_PUBLIC_URL:-http://localhost:8080}
       - MOBILE_API_KEY=${MOBILE_API_KEY:-}
       - SENTRY_COOLDOWN_S=${SENTRY_COOLDOWN_S:-600}
+      # Daily model-spend budget (mirrors llm_agent) + Echo/Vega tuning
+      - DAILY_LLM_BUDGET_USD=${DAILY_LLM_BUDGET_USD:-15}
+      - HABIT_WINDOW_DAYS=${HABIT_WINDOW_DAYS:-14}
+      - QA_TASKS_CONFIG=/config/qa_tasks.yml
+      # Native web search (Anthropic server-side tool) — replaces Tavily for
+      # Ada/Jeeves/Walter. Needs a search-capable model: the dynamic-filtering
+      # variant requires Opus 4.6+ / Sonnet 4.6+ (haiku gets the basic one).
+      - SEARCH_LLM_MODEL=${SEARCH_LLM_MODEL:-claude-sonnet-5}
+      - SEARCH_MAX_USES=${SEARCH_MAX_USES:-5}
+      - RESEARCH_MAX_SEARCHES=${RESEARCH_MAX_SEARCHES:-8}
+      # Walter runs daily, so his native-search bill recurs — off by default
+      # (~$0.57/digest vs ~$0.01 on Tavily). See newsletter_agent.py.
+      - NEWSLETTER_NATIVE_SEARCH=${NEWSLETTER_NATIVE_SEARCH:-false}
     volumes:
       - ./config:/config:ro
     restart: always
@@ -311,6 +345,7 @@ services:
   # Near-no-op when the house is quiet; no LLM calls on the hot path.
   synapse:
     build: ./services/synapse
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-synapse:${JARVIS_TAG:-latest}
     container_name: jarvis-synapse
     depends_on:
       - mosquitto
@@ -327,6 +362,7 @@ services:
 
   dashboard:
     build: ./services/dashboard
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-dashboard:${JARVIS_TAG:-latest}
     container_name: jarvis-dashboard
     depends_on:
       - mosquitto
@@ -350,6 +386,7 @@ services:
 
   glasses_bridge:
     build: ./services/glasses_bridge
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-glasses_bridge:${JARVIS_TAG:-latest}
     container_name: jarvis-glasses
     depends_on:
       - mosquitto

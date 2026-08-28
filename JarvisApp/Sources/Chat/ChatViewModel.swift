@@ -57,18 +57,19 @@ final class ChatViewModel: ObservableObject {
         guard !text.isEmpty else { return }
         let msg = ChatMessage(role: .jarvis, text: text, mediaURL: payload.mediaURL)
         messages.append(msg)
+        pinSnapshotBytes(for: msg.id, urlString: payload.mediaURL)
+    }
 
-        // Snapshot (not a video stream): download the bytes once and pin them
-        // to the message so it renders from memory — never re-fetches, never
-        // flashes-then-vanishes on re-render.
-        if let m = payload.mediaURL, !m.contains(".m3u8"), let url = URL(string: m) {
-            let id = msg.id
-            Task { [weak self] in
-                guard let data = try? await URLSession.shared.data(from: url).0 else { return }
-                await MainActor.run {
-                    if let idx = self?.messages.firstIndex(where: { $0.id == id }) {
-                        self?.messages[idx].imageData = data
-                    }
+    /// Snapshot (not a video stream): download the bytes once and pin them
+    /// to the message so it renders from memory — never re-fetches, never
+    /// flashes-then-vanishes on re-render.
+    private func pinSnapshotBytes(for id: UUID, urlString: String?) {
+        guard let m = urlString, !m.contains(".m3u8"), let url = URL(string: m) else { return }
+        Task { [weak self] in
+            guard let data = try? await URLSession.shared.data(from: url).0 else { return }
+            await MainActor.run {
+                if let idx = self?.messages.firstIndex(where: { $0.id == id }) {
+                    self?.messages[idx].imageData = data
                 }
             }
         }
@@ -103,21 +104,42 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// Pull the shared backend history (other surfaces' turns included) and
-    /// replace the local chat if it changed. Skipped mid-request so an
-    /// in-flight loading bubble isn't clobbered.
+    /// the persisted push feed, then rebuild the local chat. Pushes (Sentry
+    /// cards, agent reports) are NOT in the conversation history and the
+    /// WebSocket only reaches a foregrounded app — the /pushes feed is how
+    /// cards sent while the app was suspended finally appear. Skipped
+    /// mid-request so an in-flight loading bubble isn't clobbered.
     func refreshHistory() async {
         guard !isProcessing else { return }
         guard let history = try? await JarvisClient.shared.fetchHistory() else { return }
+        let pushes = (try? await JarvisClient.shared.fetchPushes()) ?? []
         let fresh = history.map {
             ChatMessage(role: $0.role == "user" ? .user : .jarvis, text: $0.text)
         }
-        guard !fresh.isEmpty else { return }
-        if fresh.count != messages.count || fresh.last?.text != messages.last?.text {
-            // Media cards (Sentry snapshots, live views) arrive via WebSocket
-            // pushes and are NOT in the backend conversation history — carry
-            // them across the replace or they silently vanish on foreground.
-            let mediaCards = messages.filter { $0.mediaURL != nil }
-            messages = fresh + mediaCards
+        guard !fresh.isEmpty || !pushes.isEmpty else { return }
+
+        // Carry cards already in the chat (live WS arrivals have no pushID;
+        // previously merged feed items keep theirs, so bytes aren't re-fetched).
+        let carried = messages.filter { $0.mediaURL != nil || $0.pushID != nil }
+        var merged = fresh + carried
+
+        for item in pushes {
+            let isDupe = merged.contains {
+                $0.pushID == item.id
+                    || ($0.mediaURL != nil && $0.mediaURL == item.mediaURL)
+                    || ($0.mediaURL == nil && item.mediaURL == nil && $0.text == item.text)
+            }
+            if isDupe { continue }
+            var msg = ChatMessage(role: .jarvis, text: item.text, mediaURL: item.mediaURL)
+            msg.pushID = item.id
+            merged.append(msg)
+        }
+
+        if merged.count != messages.count || merged.last?.text != messages.last?.text {
+            messages = merged
+            for msg in merged where msg.mediaURL != nil && msg.imageData == nil {
+                pinSnapshotBytes(for: msg.id, urlString: msg.mediaURL)
+            }
         }
     }
 

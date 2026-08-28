@@ -381,6 +381,61 @@ agents:
       action: "weekly_review"
 
   # ---------------------------------------------------------------------------
+  # Habit Miner — "Echo"
+  # Nightly pass over the durable event stream (jarvis:events): finds repeated
+  # time-anchored routines and deviations from your own baseline, and files at
+  # most 2 suggestions/night in the APPROVAL INBOX (dashboard / app / "approve
+  # that" in chat) — never as chat spam. Rejected ideas aren't re-pitched
+  # (90-day dedupe). Approved routines land in habits:routines:approved;
+  # wiring them into ambient triggers/scenes is the follow-up step.
+  # ---------------------------------------------------------------------------
+  - name: habits
+    display_name: "Habit Miner"
+    description: >
+      Echo — mines two weeks of event history for your real routines and
+      recent deviations, then proposes at most two automations or nudges per
+      night through the Approval Inbox. Conservative by design: no pattern,
+      no suggestion.
+    enabled: true
+    schedule: "45 4 * * *"   # 11:45 PM CDT (04:45 UTC), after Chronicle's journal
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Atlas — unified health overview.
+  # Fuses HealthKit trends (sleep/steps/HRV/RHR, week-over-week), Apollo's
+  # training, Sage's nutrition logs, and the readiness score into one weekly
+  # picture + one recommendation. Writes the dashboard Health widget. Ask
+  # anytime: "how's my health trending?" (get_health_overview re-triggers when
+  # stale).
+  # ---------------------------------------------------------------------------
+  - name: atlas
+    display_name: "Health Overview"
+    description: >
+      Atlas — the health analyst. One weekly picture from sleep, steps,
+      HRV/resting-HR trends, training days, nutrition adherence, and
+      readiness, with a single grounded recommendation.
+    enabled: true
+    schedule: "30 13 * * 1"   # Monday 8:30 AM CDT (13:30 UTC)
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # QA Watch — "Vega"
+  # Nightly regression suite against the LIVE brain via the normal MQTT path.
+  # Cases in config/qa_tasks.yml. Remembers yesterday's results and alerts
+  # (urgent) ONLY on pass→fail transitions. Keep the suite small — each case
+  # is a real brain call (tokens).
+  # ---------------------------------------------------------------------------
+  - name: qa
+    display_name: "QA Watch"
+    description: >
+      Vega — runs golden conversations through the live brain every night and
+      alerts only when something that used to pass starts failing. The
+      always-on complement to scripts/golden_tasks.py.
+    enabled: true
+    schedule: "0 9 * * *"   # 4:00 AM CDT (09:00 UTC) — quiet hours
+    params: {}
+
+  # ---------------------------------------------------------------------------
   # Sentry — Ring camera watch (EVENT-driven, not scheduled)
   #
   # Dispatched automatically by the runner's ring/# MQTT handler whenever a
@@ -423,6 +478,28 @@ agents:
       (spawn_task agent="developer").
     enabled: false
     schedule: ""
+    params: {}
+
+  # ---------------------------------------------------------------------------
+  # Travel — "Miles" (assisted booking, decided 2026-07-18)
+  # PLANNING happens in the brain (it holds the Kiwi/Jinko/Airbnb MCPs +
+  # plan_trip/propose_booking): "plan a trip to Denver in September".
+  # This runner agent covers what happens outside the conversation:
+  #   • confirm — fired when a trip approval is accepted: sends the
+  #     booking-links card (you book and pay yourself; Jarvis never pays)
+  #   • watch — daily cron: re-prices proposed trips via the brain over the
+  #     bus, alerts on drops ≥ TRAVEL_WATCH_DROP_PCT (default 5%).
+  # Near-no-op when no trips are being watched.
+  # ---------------------------------------------------------------------------
+  - name: travel
+    display_name: "Travel (Miles)"
+    description: >
+      Miles — travel. Plans trips in conversation (flight/hotel search via
+      MCPs), files chosen itineraries in the Approval Inbox (assisted
+      booking — you always pay yourself), and watches prices daily on
+      proposed trips.
+    enabled: true
+    schedule: "0 15 * * *"   # 10:00 AM CDT daily price watch
     params: {}
 
   # ---------------------------------------------------------------------------

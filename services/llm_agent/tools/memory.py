@@ -72,6 +72,49 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
+# Core store (shared by the remember tool and the reflection drain)
+# ---------------------------------------------------------------------------
+
+def store_fact(fact: str, source: str = "user", dedupe: bool = False) -> bool:
+    """Write one fact to both stores. Returns False if empty or (with
+    ``dedupe``) a near-duplicate of something already remembered.
+
+    ``dedupe`` is used by the nightly reflection drain — Chronicle can distill
+    the same life fact on consecutive days, and reflection must not silt up
+    memory. A user explicitly saying "remember X" always stores.
+    """
+    fact = fact.strip()
+    if not fact:
+        return False
+
+    col = _get_collection()
+    if dedupe and col is not None:
+        try:
+            existing = col.query(query_texts=[fact], n_results=1,
+                                 include=["distances"])
+            distances = (existing.get("distances") or [[]])[0]
+            if distances and distances[0] < 0.15:
+                return False
+        except Exception:
+            pass
+
+    fact_id = uuid.uuid4().hex[:12]
+    ts = time.time()
+    if col is not None:
+        try:
+            col.add(
+                documents=[fact],
+                ids=[fact_id],
+                metadatas=[{"ts": ts, "user": USER_ID, "source": source}],
+            )
+        except Exception as e:
+            print(f"[Memory] Chroma write error: {e}")
+    _r.hset(_MEM_KEY, fact_id, json.dumps({"text": fact, "ts": ts,
+                                           "source": source}))
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
@@ -86,29 +129,9 @@ def remember(fact: str) -> str:
     Args:
         fact: The fact to remember, phrased as a standalone statement.
     """
-    fact = fact.strip()
-    if not fact:
+    if not store_fact(fact, source="user"):
         return "Nothing to remember — the fact was empty."
-
-    fact_id = uuid.uuid4().hex[:12]
-    ts = time.time()
-
-    # --- Chroma (primary) ---
-    col = _get_collection()
-    if col is not None:
-        try:
-            col.add(
-                documents=[fact],
-                ids=[fact_id],
-                metadatas=[{"ts": ts, "user": USER_ID}],
-            )
-        except Exception as e:
-            print(f"[Memory] Chroma write error: {e}")
-
-    # --- Redis (backup / fallback) ---
-    _r.hset(_MEM_KEY, fact_id, json.dumps({"text": fact, "ts": ts}))
-
-    return f'Noted. I\'ll remember that: "{fact}"'
+    return f'Noted. I\'ll remember that: "{fact.strip()}"'
 
 
 @tool

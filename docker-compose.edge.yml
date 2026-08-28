@@ -1,0 +1,111 @@
+# ==============================================================================
+# JARVIS — EDGE stack (the Mac's half of the Month-3 split)
+# ==============================================================================
+# Only I/O-bound services stay on the Mac: microphone (wake word, STT, speaker
+# verify), room speaker (tts container; native tts_mac keeps running outside
+# Docker), Home Assistant (talks to LAN devices — lamps, PetKit), and the
+# glasses bridge. Everything else lives on the VPS (docker-compose.core.yml).
+#
+# Required .env additions on the Mac:
+#   JARVIS_CORE_HOST=<vps-tailnet-name>   # e.g. jarvis-core.tail7e74a7.ts.net
+#
+# Native services (unchanged, still launched outside Docker):
+#   mac_bridge  — set nothing; the VPS reaches it at <mac-tailnet-name>:7777
+#   tts_mac     — point its MQTT_HOST at ${JARVIS_CORE_HOST}
+#   wake/STT native variants, audio_player — same MQTT_HOST change
+#
+# Usage (on the Mac):  docker compose -f docker-compose.edge.yml up -d
+# ==============================================================================
+
+services:
+
+  wake_word:
+    build: ./services/wake_word
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-wake_word:${JARVIS_TAG:-latest}
+    container_name: jarvis-wake-word
+    devices:
+      - /dev/snd:/dev/snd
+    privileged: true
+    environment:
+      - MQTT_HOST=${JARVIS_CORE_HOST}
+      - ROOM_NAME=${ROOM_NAME:-office}
+      - WAKE_THRESHOLD=${WAKE_THRESHOLD:-0.5}
+    restart: always
+
+  stt:
+    build: ./services/stt
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-stt:${JARVIS_TAG:-latest}
+    container_name: jarvis-stt
+    devices:
+      - /dev/snd:/dev/snd
+    environment:
+      - MQTT_HOST=${JARVIS_CORE_HOST}
+      - STT_DEVICE=${STT_DEVICE:-auto}
+      - STT_MODEL=${STT_MODEL:-}
+      - AUDIO_DIR=/data/audio_cache
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    restart: always
+
+  speaker_verify:
+    build: ./services/speaker_verify
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-speaker_verify:${JARVIS_TAG:-latest}
+    container_name: jarvis-speaker-verify
+    environment:
+      - MQTT_HOST=${JARVIS_CORE_HOST}
+      - REDIS_HOST=${JARVIS_CORE_HOST}
+      - VERIFY_THRESHOLD=${VERIFY_THRESHOLD:-0.25}
+      - VERIFY_MODE=${VERIFY_MODE:-log}
+      - MODEL_DIR=/models/speaker_model
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    restart: always
+
+  tts:
+    build: ./services/tts
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-tts:${JARVIS_TAG:-latest}
+    container_name: jarvis-tts
+    devices:
+      - /dev/snd:/dev/snd
+    environment:
+      - MQTT_HOST=${JARVIS_CORE_HOST}
+      - TTS_ENGINE=${TTS_ENGINE:-piper}
+      - PIPER_MODEL=${PIPER_MODEL:-en_GB-alan-medium}
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    restart: always
+
+  glasses_bridge:
+    build: ./services/glasses_bridge
+    image: ghcr.io/${JARVIS_IMAGE_OWNER:-omar102598}/jarvis-glasses_bridge:${JARVIS_TAG:-latest}
+    container_name: jarvis-glasses
+    ports:
+      - "8765:8765"
+    environment:
+      - MQTT_HOST=${JARVIS_CORE_HOST}
+    profiles:
+      - wearable
+    restart: always
+
+  # HA must stay on the home LAN — it drives local devices (lamps, PetKit hub,
+  # future Matter). The VPS reaches it via HA_URL=http://<mac-tailnet>:8123.
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: jarvis-homeassistant
+    ports:
+      - "8123:8123"
+    volumes:
+      - ./data/homeassistant:/config
+      - /etc/localtime:/ro/etc/localtime:ro
+    environment:
+      - TZ=${USER_TZ:-America/Chicago}
+    restart: always
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.88.0.0/24   # distinct from core's 10.87 to avoid VPN confusion

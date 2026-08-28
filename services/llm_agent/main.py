@@ -64,10 +64,12 @@ from tools.actions import get_recent_actions, undo_last_action
 from tools.firecrawl import scrape_page
 from tools.people import manage_people
 from tools.routines import detect_routines
-from tools.travel import plan_trip, get_trips
+from tools.travel import plan_trip, get_trips, propose_booking
 from tools.calls import make_call
 from tools.watches import manage_watches
 from tools.presence import arrive_home, leave_home
+from tools.approvals import manage_approvals
+from tools.atlas import get_health_overview
 from tools.apple_tv import apple_tv
 from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
@@ -128,6 +130,7 @@ from tools.classpass import (
     trigger_classpass_scan,
 )
 from mcp_loader import load_mcp_tools
+import usage_meter
 
 MQTT_HOST  = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT  = int(os.environ.get("MQTT_PORT", "1883"))
@@ -255,12 +258,14 @@ _core_tools = [
     focus_mode,
     # Background agents & dispatch
     get_agent_report, trigger_agent, spawn_task, ask_subagent,
+    # Approval Inbox ("what's waiting on me?" / "approve that")
+    manage_approvals,
     # Integrations
     spotify_control, spotify_desktop, github_tool, manage_notes,
     # Relationship memory (CRM-lite) + routine detection from history
     manage_people, detect_routines,
-    # Travel (Miles) + outbound calls + dynamic Scout watches
-    plan_trip, get_trips, make_call, manage_watches,
+    # Travel (Miles: plan in-chat, assisted booking via Approval Inbox) + calls
+    plan_trip, get_trips, propose_booking, make_call, manage_watches,
     # Task loop (GTD: inbox / next-actions / projects) + action journal/undo
     manage_tasks, get_recent_actions, undo_last_action,
     # macOS laptop control
@@ -284,8 +289,9 @@ _core_tools = [
     # Grocery agent control
     get_grocery_status, approve_grocery_order, trigger_grocery_run, suggest_meals,
     learn_fresh_cart, get_usual_order, pin_favorite_product,
-    # Workout coach (Apollo) + fused readiness score
+    # Workout coach (Apollo) + fused readiness score + Atlas health overview
     get_todays_workout, get_workout_plan, plan_workout_week, get_readiness,
+    get_health_overview,
     # Nutrition (Sage), visual memory (glasses), hands-free capture
     log_meal, get_nutrition_today, log_sighting, recall_visual, quick_capture,
     trigger_classpass_scan, get_class_suggestions, book_class, manage_classpass_favorites,
@@ -332,6 +338,7 @@ def _strip_thinking_blocks(msg):
 def _call_model(llm_ref, state):
     """Agent node: closed over the llm instance it was built with."""
     response = llm_ref.invoke(state["messages"])
+    usage_meter.record_response(response)   # cost widget + daily budget alert
     return {"messages": [_strip_thinking_blocks(response)]}
 
 
@@ -374,6 +381,34 @@ def _rebuild_graph() -> None:
 r = redis.Redis(host=REDIS_HOST, decode_responses=True)
 
 
+# Tools that spend money, send things on the user's behalf, or execute code —
+# mirrored onto the bus (jarvis/audit/tool) so synapse persists them in the
+# durable event stream (domain "audit"): a replayable "what did Jarvis
+# send/spend/execute, and when". Matching is prefix-based to catch MCP
+# purchase tools (uber_eats_*, doordash_*, resy_*).
+_AUDIT_TOOLS = {
+    "send_email", "send_sms", "make_call", "run_shell", "run_python",
+    "mac_shell", "mac_applescript", "approve_grocery_order", "book_class",
+    "self_modify",
+}
+_AUDIT_PREFIXES = ("uber_eats", "doordash", "resy", "opentable")
+
+
+def _audit_tool_call(tool: str, args_preview: str) -> None:
+    if tool not in _AUDIT_TOOLS and not tool.startswith(_AUDIT_PREFIXES):
+        return
+    try:
+        import paho.mqtt.publish as _mqtt_pub
+        _mqtt_pub.single("jarvis/audit/tool", json.dumps({
+            "tool": tool,
+            "args_preview": args_preview[:300],
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }), hostname=os.environ.get("MQTT_HOST", "localhost"),
+            port=int(os.environ.get("MQTT_PORT", "1883")))
+    except Exception:
+        pass
+
+
 def _push_tool_event(tool: str, args_preview: str, status: str, result_preview: str) -> None:
     event = {
         "id": str(uuid.uuid4())[:8],
@@ -388,6 +423,8 @@ def _push_tool_event(tool: str, args_preview: str, status: str, result_preview: 
         r.ltrim("jarvis:tool_events", 0, 99)
     except Exception:
         pass
+    if status == "calling":
+        _audit_tool_call(tool, args_preview)
 
 
 class AgentState(TypedDict):
@@ -426,6 +463,43 @@ def _plugin_reload_watcher() -> None:
 
 
 threading.Thread(target=_plugin_reload_watcher, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Memory-reflection drain — Chronicle's nightly pass queues durable facts on
+# memory:reflect:queue (agent_runner has no Chroma/embedding deps); this
+# thread stores them into long-term memory with a near-duplicate check, so
+# episodic days compound into semantic memory every agent benefits from.
+# ---------------------------------------------------------------------------
+
+def _reflection_drain() -> None:
+    from tools.memory import store_fact, consolidate_memory
+    drain_r = redis.Redis(host=REDIS_HOST, decode_responses=True, socket_timeout=15)
+    while True:
+        try:
+            item = drain_r.blpop("memory:reflect:queue", timeout=10)
+            if not item:
+                continue
+            body = json.loads(item[1])
+            fact = str(body.get("fact", "")).strip()
+            if not fact:
+                continue
+            stored = store_fact(fact, source=body.get("source", "reflection"),
+                                dedupe=True)
+            print(f"[Memory] reflection fact "
+                  f"{'stored' if stored else 'skipped (near-dup)'}: {fact[:80]}")
+            # Weekly hygiene: after reflection writes, merge exact duplicates
+            # across the whole store (the near-dup check above only guards
+            # reflection's own inserts, not user-added facts).
+            if stored and drain_r.set("jarvis:memory:consolidated", "1",
+                                      nx=True, ex=7 * 24 * 3600):
+                print(f"[Memory] weekly consolidation: {consolidate_memory.func()}")
+        except Exception as e:
+            print(f"[LLM] Reflection drain error: {e}")
+            time.sleep(5)
+
+
+threading.Thread(target=_reflection_drain, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------

@@ -7,3 +7,7 @@ piper-tts==1.2.0
 pydantic>=2.0
 redis>=5.0,<6.0
 edge-tts>=7.0
+# APNs (real iOS push) — inert until the APNS_* env vars are set
+httpx[http2]>=0.27
+PyJWT>=2.8
+cryptography>=42.0

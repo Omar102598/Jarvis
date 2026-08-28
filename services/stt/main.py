@@ -52,6 +52,17 @@ FOLLOWUP_WINDOW = float(os.environ.get("STT_FOLLOWUP_WINDOW", "25.0"))
 AUDIO_DIR = os.environ.get("AUDIO_DIR", "/data/audio_cache")
 AUDIO_CACHE_MAX_FILES = int(os.environ.get("AUDIO_CACHE_MAX_FILES", "50"))
 
+# Rooms with a real physical mic (mirrors tts_mac's PHYSICAL_ROOMS). The
+# follow-up window is keyed off whatever room string arrives on
+# jarvis/tts/{room}/done — with only ONE physical mic on this Mac, a /done for
+# a synthetic bus-check room (Vega's "qa-<hash>", Miles' "miles-<hash>") would
+# still open a REAL recording window and could pick up TTS self-echo if it
+# ever got physically spoken. This is defense-in-depth alongside tts_mac's own
+# allowlist, not a duplicate of the same bug.
+PHYSICAL_ROOMS = {r.strip() for r in
+                  os.environ.get("PHYSICAL_ROOMS", os.environ.get("ROOM_NAME", "office")).split(",")
+                  if r.strip()}
+
 # ---------------------------------------------------------------------------
 # Hallucination filter — faster-whisper emits these on silence/noise
 # ---------------------------------------------------------------------------
@@ -74,6 +85,20 @@ _HALLUCINATION_PHRASES = {
     "",
 }
 
+# Keyword-combination fallback: real hallucinations often chain/modify stock
+# phrases ("Thanks SO MUCH for watching", "...watching.  Have a great day.")
+# which break exact-match against _HALLUCINATION_PHRASES entirely — caught
+# THREE separate times (2026-07-19/20) because the filter only checked exact
+# equality. Each tuple below is a set of keywords that, ALL present anywhere
+# in the transcript, mark it as a near-certain YouTube-outro artifact rather
+# than something a user would plausibly say to a voice assistant.
+_HALLUCINATION_KEYWORD_GROUPS = [
+    ("thank", "watch"),          # "thank(s) (so much) for watching"
+    ("subscribe",),
+    ("see you", "next video"),
+    ("see you", "next time"),
+]
+
 _REPEAT_PATTERN = re.compile(r"(.{10,}?)\1{2,}", re.DOTALL)
 
 
@@ -85,6 +110,9 @@ def _is_hallucination(text: str) -> bool:
     if len(text.strip()) < 3:
         return True
     if _REPEAT_PATTERN.search(text):
+        return True
+    if any(all(kw in lower for kw in group)
+           for group in _HALLUCINATION_KEYWORD_GROUPS):
         return True
     return False
 
@@ -237,6 +265,9 @@ def on_tts_done(client, userdata, msg):
         room = data.get("room", "office")
     except Exception:
         room = "office"
+
+    if room not in PHYSICAL_ROOMS:
+        return   # synthetic/virtual room — no real mic to follow up on
 
     # Conversation-end reasoning: the brain sets jarvis:voice:end_turn:{room} when
     # the user's turn was a closer ("thanks", "that's all"). The reply just played;

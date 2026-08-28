@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import os
 from datetime import datetime, timezone
 
 # USD per 1,000,000 tokens: (input, output). Unknown models fall back to _DEFAULT.
@@ -72,8 +73,30 @@ def record(r, model: str, in_tokens: int, out_tokens: int,
         pipe.hincrbyfloat(key, f"{who}:cost", float(cost))
         pipe.hincrbyfloat(key, "_total:cost", float(cost))
         pipe.expire(key, 60 * 60 * 24 * 40)   # keep ~40 days of daily rollups
-        pipe.execute()
+        results = pipe.execute()
         _snapshot_widget(r, day)
+        _check_budget(r, float(results[3]), day)
+    except Exception:
+        pass
+
+
+# Daily budget line — mirrored in llm_agent/usage_meter.py; whichever recorder
+# crosses it first fires the single daily alert.
+_BUDGET_USD = float(os.environ.get("DAILY_LLM_BUDGET_USD", "15"))
+
+
+def _check_budget(r, total_cost: float, day: str) -> None:
+    try:
+        if _BUDGET_USD <= 0 or total_cost < _BUDGET_USD:
+            return
+        if not r.set(f"jarvis:budget_alerted:{day}", "1", nx=True, ex=60 * 60 * 36):
+            return
+        from notify import route_notification
+        route_notification(
+            "usage",
+            f"Today's model spend hit ${total_cost:.2f} (budget "
+            f"${_BUDGET_USD:.0f}). Biggest spenders are on the dashboard cost widget.",
+            title="💸 Daily LLM budget crossed", urgency="urgent")
     except Exception:
         pass
 
