@@ -847,11 +847,21 @@ def _stash_image(data_uri: str) -> str:
         return f"[GLASSES_CAMERA_IMAGE: {data_uri}]"
 
 
-# Ceiling for an inline image. Set from measurement, not the broker limit: with
-# message_size_limit raised, 1.9MB of base64 answered in 3.5s while 6.4MB still
-# timed out — the model itself caps a single image near 5MB. Refusing above this
-# fails fast and clearly instead of burning the full 45s timeout.
-MAX_IMAGE_B64 = int(os.environ.get("MAX_IMAGE_B64", str(5 * 1024 * 1024)))
+# Ceiling for an image, set from measurement against the live stack now that
+# images travel by reference and the bus is no longer the constraint:
+#
+#     2.6MB base64 -> 200 in 4.7s
+#     4.8MB base64 -> the brain answered correctly, but took longer than
+#                     LLM_TIMEOUT, so the caller had already given up
+#
+# The old 5MB ceiling therefore admitted sizes that reliably produced a 45s
+# "JARVIS did not respond in time" — a timeout that describes nothing and hides
+# a request that actually succeeded. 3MB sits inside what completes comfortably,
+# so anything larger is refused immediately with a reason instead.
+#
+# Clients downscale to 1568px before sending (a few hundred KB), so in practice
+# this only catches callers that do not.
+MAX_IMAGE_B64 = int(os.environ.get("MAX_IMAGE_B64", str(3 * 1024 * 1024)))
 
 
 def _image_media_type(b64: str, default: str = "image/jpeg") -> str:
