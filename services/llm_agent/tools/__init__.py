@@ -1,6 +1,7 @@
 """JARVIS LLM Agent tools."""
 
 from .agents import get_agent_report, trigger_agent
+from .amazon_cart import amazon_add_to_cart
 from .calendar import get_calendar_events, set_reminder
 from .code_exec import run_python
 from .comms import send_email, send_sms
@@ -69,6 +70,7 @@ from .web import fetch_url
 from .web_search import web_search
 
 __all__ = [
+    "amazon_add_to_cart",
     "ask_subagent",
     "control_device",
     "feed_pet",

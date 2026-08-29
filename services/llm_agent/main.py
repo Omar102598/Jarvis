@@ -41,6 +41,7 @@ from typing_extensions import TypedDict
 from llm_factory import TIER_MODELS, build_llm
 from plugin_registry import PluginRegistry
 from tools.agents import get_agent_report, trigger_agent
+from tools.amazon_cart import amazon_add_to_cart
 from tools.smart_home import control_device, get_device_states, get_presence, set_scene
 from tools.scenes import manage_scenes
 from tools.email_drafts import get_email_drafts
@@ -262,6 +263,9 @@ _core_tools = [
     manage_approvals,
     # Integrations
     spotify_control, spotify_desktop, github_tool, manage_notes,
+    # Amazon RETAIL cart staging (groceries go through the grocery agent —
+    # Fresh/Whole Foods use separate carts this cannot reach)
+    amazon_add_to_cart,
     # Relationship memory (CRM-lite) + routine detection from history
     manage_people, detect_routines,
     # Travel (Miles: plan in-chat, assisted booking via Approval Inbox) + calls
