@@ -789,8 +789,13 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
         ).strip() or "(no text response)"
 
     stored_text = re.sub(r"\[GLASSES_CAMERA_IMAGE(?:_REF)?:[^\]]*\]", "[camera image]", text)
-    r.rpush(history_key, json.dumps({"role": "user",      "content": stored_text}))
-    r.rpush(history_key, json.dumps({"role": "assistant", "content": full_response}))
+    # turn_id travels with the stored turn so any surface reading history can
+    # join it to that turn's tool events and show the work inline, instead of
+    # keeping a separate, unrelatable list of tool calls.
+    r.rpush(history_key, json.dumps({"role": "user", "content": stored_text,
+                                     "turn_id": turn_id}))
+    r.rpush(history_key, json.dumps({"role": "assistant", "content": full_response,
+                                     "turn_id": turn_id}))
     r.ltrim(history_key, -40, -1)
 
     return full_response

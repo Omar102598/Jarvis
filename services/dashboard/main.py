@@ -522,7 +522,10 @@ async def event_stream():
         while True:
             try:
                 conv_raw = _redis.lrange(f"conversation:{USER_ID}", -30, -1)
-                tool_raw = _redis.lrange("jarvis:tool_events", 0, 19)
+                # Deep enough to cover every turn in the 30-message window
+                # above — inline rendering joins events to turns, so a short
+                # window would silently leave older replies without their calls.
+                tool_raw = _redis.lrange("jarvis:tool_events", 0, 99)
                 voice_state = _redis.get(f"jarvis:voice:state:office") or "ready"
                 thinking_word = _redis.get("jarvis:thinking:word") or ""
 

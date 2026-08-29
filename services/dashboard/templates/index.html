@@ -491,6 +491,33 @@
     #conv-feed::-webkit-scrollbar { width: 3px; }
     #conv-feed::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 2px; }
 
+    /* Inline tool calls — the work Jarvis did for a given reply, shown with
+       that reply the way Claude/ChatGPT do, rather than in a separate list
+       nobody can relate back to a message. */
+    .tc-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 7px; }
+    .tc-item { border: 1px solid #0e2a40; border-radius: 7px; background: #040c16; }
+    .tc-head {
+      display: flex; align-items: center; gap: 7px;
+      padding: 5px 9px; cursor: pointer; user-select: none;
+    }
+    .tc-head:hover { background: #061020; }
+    .tc-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+    .tc-dot.done { background: #00aa88; }
+    .tc-dot.calling { background: #f0a020; }
+    .tc-name {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.72rem; color: #8dcce8; flex: 1;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .tc-chev { font-size: 0.6rem; color: #2d6a8a; flex: none; }
+    .tc-body { padding: 0 9px 7px 22px; display: none; }
+    .tc-item.open .tc-body { display: block; }
+    .tc-label { font-size: 0.58rem; color: #2d6a8a; letter-spacing: .07em; margin-top: 5px; }
+    .tc-pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.66rem; color: #6f9bb5; white-space: pre-wrap;
+      word-break: break-word; margin-top: 2px;
+    }
     .conv-row { display: flex; gap: 10px; align-items: flex-start; }
     .conv-row.user { flex-direction: row-reverse; }
     .conv-avatar {
@@ -1302,13 +1329,61 @@ function setState(state, thinkingWord) {
 // ══════════════════════════════════════════════════════════
 //  REAL-TIME SSE STREAM  (conv + tools + voice state)
 // ══════════════════════════════════════════════════════════
-function renderConversation(msgs) {
+// Tool calls belonging to one turn, oldest first, with each call collapsed to
+// a single row. A "calling" and its "done" share the model's tool_call_id, so
+// they are ONE row that resolves — not two unrelated entries.
+function toolCallsFor(turnId, events) {
+  if (!turnId || !events) return [];
+  const merged = [];
+  // events arrive newest-first; walk backwards so call order reads naturally
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.turn_id !== turnId) continue;
+    const key = e.call_id || '';
+    const at = key ? merged.findIndex(m => m.call_id === key) : -1;
+    if (at >= 0) {
+      // keep the finished form over the in-flight one
+      if (e.status === 'done') merged[at] = e;
+    } else {
+      merged.push(e);
+    }
+  }
+  return merged;
+}
+
+function renderToolCalls(calls) {
+  if (!calls.length) return '';
+  const rows = calls.map(c => {
+    const done = c.status === 'done';
+    const hasBody = c.args_preview || (done && c.result_preview);
+    return `<div class="tc-item">
+      <div class="tc-head" onclick="this.parentNode.classList.toggle('open')">
+        <div class="tc-dot ${done ? 'done' : 'calling'}"></div>
+        <div class="tc-name">${esc(c.tool || 'tool')}</div>
+        ${hasBody ? '<div class="tc-chev">▾</div>' : ''}
+      </div>
+      ${hasBody ? `<div class="tc-body">
+        ${c.args_preview ? `<div class="tc-label">INPUT</div><div class="tc-pre">${esc(c.args_preview)}</div>` : ''}
+        ${done && c.result_preview ? `<div class="tc-label">RESULT</div><div class="tc-pre">${esc(c.result_preview)}</div>` : ''}
+      </div>` : ''}
+    </div>`;
+  }).join('');
+  return `<div class="tc-list">${rows}</div>`;
+}
+
+function renderConversation(msgs, toolEvents) {
   // Guard on CONTENT, not length. conversation:{user} is read as a -30,-1
   // window of a capped list, so once it fills, msgs.length is permanently 30
   // and a length check suppresses every subsequent render — the feed then only
   // updates on a full page reload. Same bug the SSE backend already fixed.
+  //
+  // Tool events are part of the signature too: calls stream in DURING a turn,
+  // after the message itself is already on screen, so ignoring them would
+  // freeze the inline rows at whatever existed when the reply landed.
+  const te = toolEvents || [];
   const sig = msgs.length + '|' + (msgs.length ? (msgs[msgs.length-1].role + ':' +
-              String(msgs[msgs.length-1].content).slice(0, 200)) : '');
+              String(msgs[msgs.length-1].content).slice(0, 200)) : '') +
+              '|' + te.length + '|' + (te.length ? (te[0].status + te[0].call_id) : '');
   if (sig === _convSig) return;
   _convSig = sig;
   _convCount = msgs.length;
@@ -1324,12 +1399,15 @@ function renderConversation(msgs) {
   const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 100;
   feed.innerHTML = msgs.map(m => {
     const isJ = m.role === 'assistant';
+    // Only a reply shows tool calls — they are the work behind that answer.
+    const calls = isJ ? toolCallsFor(m.turn_id, te) : [];
     return `<div class="conv-row ${isJ ? '' : 'user'}">
       <div class="conv-avatar ${isJ ? 'avatar-j' : 'avatar-u'}">${isJ ? 'AI' : 'YOU'}</div>
-      <div class="conv-bubble ${isJ ? 'bubble-j' : 'bubble-u'}">${esc(m.content)}</div>
+      <div class="conv-bubble ${isJ ? 'bubble-j' : 'bubble-u'}">${renderToolCalls(calls)}${esc(m.content)}</div>
     </div>`;
   }).join('');
   if (atBottom) feed.scrollTop = feed.scrollHeight;
+
 
   const last = msgs[msgs.length - 1];
   if (last.role === 'assistant') {
@@ -1375,7 +1453,7 @@ function connectSSE() {
   evtSource.onmessage = function(e) {
     try {
       const data = JSON.parse(e.data);
-      if (data.messages)     renderConversation(data.messages);
+      if (data.messages)     renderConversation(data.messages, data.tool_events);
       if (data.tool_events)  renderToolEvents(data.tool_events);
       if (data.voice_state)  setState(data.voice_state, data.thinking_word);
     } catch(err) { console.warn('SSE parse error', err); }
