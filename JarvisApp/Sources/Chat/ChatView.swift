@@ -481,96 +481,101 @@ struct MessageBubble: View {
 
 // MARK: - Inline tool calls (Claude/ChatGPT style)
 
-/// One row per tool call, tap to expand its input and result.
+/// A reply's tool calls as a connected timeline: a dot per call joined by a
+/// spine, in the order they ran, with the answer following underneath.
 ///
-/// A row is keyed by the model's tool-call id, so a call resolves in place
-/// from running to finished instead of appearing twice.
+/// Deliberately the same treatment as the dashboard's TOOL EVENTS panel, so the
+/// two surfaces read identically rather than inventing separate vocabularies
+/// for the same thing.
 struct ToolCallList: View {
     let calls: [ToolEvent]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(calls) { call in
-                ToolCallRow(call: call)
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(calls.enumerated()), id: \.element.id) { idx, call in
+                ToolCallRow(call: call, isLast: idx == calls.count - 1)
             }
         }
+        .padding(.bottom, 2)
     }
 }
 
 private struct ToolCallRow: View {
     let call: ToolEvent
+    let isLast: Bool
     @State private var expanded = false
 
-    private var displayName: String {
-        call.tool.replacingOccurrences(of: "_", with: " ")
-    }
+    private var accent: Color { call.isFinished ? .jGreen : .jGold }
 
     private var hasDetail: Bool {
         !call.argsPreview.isEmpty || !call.resultPreview.isEmpty
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
-            } label: {
-                HStack(spacing: 8) {
-                    if call.isFinished {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(.jGreen)
-                    } else {
-                        ProgressView()
-                            .scaleEffect(0.55)
-                            .tint(.jGold)
-                            .frame(width: 12, height: 12)
-                    }
-                    Text(displayName)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundColor(.jText.opacity(0.8))
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    if hasDetail {
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.jBlueDim)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            .disabled(!hasDetail)
-
-            if expanded {
-                if !call.argsPreview.isEmpty {
-                    detail("input", call.argsPreview)
-                }
-                if !call.resultPreview.isEmpty {
-                    detail("result", call.resultPreview)
-                }
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Color.jBg.opacity(0.6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.jBorder, lineWidth: 1)
-        )
-        .cornerRadius(8)
+    private var timeString: String {
+        guard let date = ISO8601DateFormatter().date(from: call.timestamp) else { return "" }
+        let f = DateFormatter()
+        f.dateFormat = "h:mm:ss a"
+        return f.string(from: date)
     }
 
-    private func detail(_ label: String, _ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label.uppercased())
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(.jBlueDim)
-            Text(text)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(.jText.opacity(0.75))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            // The spine: a dot for this call, and a line continuing to the next
+            // one. The line is dropped on the last row so the timeline ends
+            // rather than trailing into the answer.
+            VStack(spacing: 0) {
+                Circle()
+                    .fill(accent)
+                    .frame(width: 7, height: 7)
+                    .shadow(color: accent.opacity(0.6), radius: 3)
+                    .padding(.top, 3)
+                if !isLast {
+                    Rectangle()
+                        .fill(Color.jBorder)
+                        .frame(width: 1)
+                        .frame(maxHeight: .infinity)
+                }
+            }
+            .frame(width: 12)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(call.tool)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundColor(accent)
+                    .lineLimit(1)
+
+                if expanded {
+                    if !call.argsPreview.isEmpty {
+                        Text(call.argsPreview)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.jBlue.opacity(0.45))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !call.resultPreview.isEmpty {
+                        Text(call.resultPreview)
+                            .font(.system(size: 11))
+                            .foregroundColor(.jText.opacity(0.6))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if !timeString.isEmpty {
+                    Text(timeString)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.jBlueDim.opacity(0.55))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, isLast ? 4 : 10)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard hasDetail else { return }
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
