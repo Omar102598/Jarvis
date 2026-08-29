@@ -15,12 +15,15 @@ echo "=== JARVIS Setup ==="
 echo ""
 
 # --- 1. Create .env from template ---
-if [ ! -f "$PROJECT_DIR/.env" ]; then
+# The wizard creates .env, prompts for the keys that matter, and validates each
+# one against the real service. Hand-editing the template is still possible but
+# is how people end up debugging a typo'"'"'d key as if it were a broken install.
+if command -v python3 &> /dev/null; then
+    python3 "$SCRIPT_DIR/setup_wizard.py" || true
+elif [ ! -f "$PROJECT_DIR/.env" ]; then
     cp "$PROJECT_DIR/.env.example" "$PROJECT_DIR/.env"
     echo "✓ Created .env from .env.example"
-    echo "  → Edit .env with your API keys and configuration"
-else
-    echo "• .env already exists, skipping"
+    echo "  → python3 not found; edit .env by hand with your API keys"
 fi
 
 # --- 2. Create required directories ---
@@ -87,7 +90,7 @@ echo ""
 echo "=== Setup Complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. Edit .env with your API keys"
+echo "  1. Re-run 'python3 scripts/setup_wizard.py' any time to add integrations"
 echo "  2. Run: python scripts/download_models.py"
 echo "  3. Run: docker compose up -d"
 echo "  4. Run: python scripts/test_pipeline.py"
