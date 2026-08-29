@@ -1082,20 +1082,43 @@ def on_agent_report(client, userdata, msg):
         print(f"[LLM] on_agent_report error: {e}")
 
 
+def _on_mqtt_connect(client, userdata, flags, rc):
+    """(Re)subscribe on every successful connect.
+
+    Subscriptions used to be made once, inline, right after connect().
+    loop_forever() reconnects automatically after a broker restart or a network
+    blip, but a reconnect starts a FRESH session — the broker remembers no
+    subscriptions. So the brain would come back connected and silently deaf:
+    requests published to jarvis/llm/request went nowhere, every caller waited
+    out its timeout, and the only symptom was "JARVIS did not respond in time"
+    on everything. Nothing logged an error, because nothing had failed.
+
+    Doing it here means the subscriptions are restored every time, including
+    the first connect. Every other MQTT service already does it this way; the
+    brain was the sole exception, and the one where it mattered most.
+    """
+    if rc != 0:
+        print(f"[LLM] MQTT connection failed (rc={rc})")
+        return
+    client.subscribe("jarvis/llm/request")
+    # TTS done so we can reset voice state precisely
+    client.subscribe("jarvis/tts/+/done")
+    # Proactive fanout: surface background-agent completions to active devices
+    client.subscribe("jarvis/agents/+/report")
+    print("[LLM] MQTT connected — subscriptions active")
+
+
 def main():
     mqtt_client = mqtt.Client()
-    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
 
-    mqtt_client.subscribe("jarvis/llm/request")
+    # Callbacks are registered before connecting so a reconnect that races
+    # startup still routes correctly.
+    mqtt_client.on_connect = _on_mqtt_connect
     mqtt_client.message_callback_add("jarvis/llm/request", on_llm_request)
-
-    # Subscribe to TTS done so we can reset voice state precisely
-    mqtt_client.subscribe("jarvis/tts/+/done")
     mqtt_client.message_callback_add("jarvis/tts/+/done", on_tts_done)
-
-    # Proactive fanout: surface background-agent completions to active devices
-    mqtt_client.subscribe("jarvis/agents/+/report")
     mqtt_client.message_callback_add("jarvis/agents/+/report", on_agent_report)
+
+    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
 
     print("[LLM] Agent ready, waiting for requests…")
     mqtt_client.loop_forever()
