@@ -800,6 +800,14 @@ async def ask_image(request: ImageQueryRequest, x_api_key: str = Header(default=
     _check_api_key(x_api_key)
     if not request.image_b64:
         raise HTTPException(status_code=400, detail="image_b64 must not be empty")
+    # Beyond the bus ceiling the broker drops the publisher and the reply never
+    # comes, so the request would otherwise burn the full 45s timeout and report
+    # a misleading "JARVIS did not respond in time". Say what actually happened.
+    if len(request.image_b64) > MAX_IMAGE_B64:
+        raise HTTPException(
+            status_code=413,
+            detail=(f"Image too large ({len(request.image_b64) // 1024}KB encoded); "
+                    f"limit is {MAX_IMAGE_B64 // 1024}KB. Downscale before sending."))
 
     # Wrap image as a data URI so the LLM agent's vision tool can receive it.
     # Sniff the real format — the API rejects a mislabelled image outright.
@@ -808,6 +816,13 @@ async def ask_image(request: ImageQueryRequest, x_api_key: str = Header(default=
 
     print(f"[Gateway] /ask/image: prompt='{request.text}', image_len={len(request.image_b64)}")
     return await _run_pipeline_json(composite_text)
+
+
+# Ceiling for an inline image. Set from measurement, not the broker limit: with
+# message_size_limit raised, 1.9MB of base64 answered in 3.5s while 6.4MB still
+# timed out — the model itself caps a single image near 5MB. Refusing above this
+# fails fast and clearly instead of burning the full 45s timeout.
+MAX_IMAGE_B64 = int(os.environ.get("MAX_IMAGE_B64", str(5 * 1024 * 1024)))
 
 
 def _image_media_type(b64: str, default: str = "image/jpeg") -> str:
