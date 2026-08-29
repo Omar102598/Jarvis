@@ -976,34 +976,77 @@ async def _generate_smart_list(
 # then click its Add-to-Cart control. Because we go to the resolved href (not
 # "first search result"), the item added is the item we compared on price.
 # ---------------------------------------------------------------------------
-_ADD_TO_CART_JS = r"""
-(function() {
-    var selectors = [
-        '#freshAddToCartButton',                     // Amazon Fresh (fpw=alm context)
-        '#addtodeliverystore',                       // Amazon Fresh "Add to Delivery"
-        '#add-to-cart-button',                       // Amazon retail
-        'input[name="submit.add-to-cart"]',
-        'button[name="submit.add-to-cart"]',
-        '[data-test="shippingButton"]',              // Target (ship)
-        '[data-test="orderPickupButton"]',           // Target (pickup)
+# Selectors are per STORE, not one global list.
+#
+# They used to be a single ordered list tried against every store, which caused
+# the wrong-cart bug: on an Amazon Fresh page where #freshAddToCartButton had
+# not rendered yet, the loop fell through to #add-to-cart-button — the RETAIL
+# button — and the item landed in the retail cart while we reported success.
+# The two carts are separate, so that is silent data loss, not a near miss.
+#
+# Each store now sees only its own controls. Amazon Fresh and Whole Foods also
+# opt out of the generic text fallback ("add to cart"), because on those pages
+# the text that matches is usually the retail control.
+_STORE_ADD_SELECTORS = {
+    "amazon": [
+        "#freshAddToCartButton",       # Fresh, in fpw=alm context
+        "#addtodeliverystore",         # Fresh "Add to Delivery"
+        "#sc-alm-buy-box-add-button",
+    ],
+    "whole_foods": [
+        "#freshAddToCartButton",
+        "#addtodeliverystore",
+        "#sc-alm-buy-box-add-button",
+    ],
+    "target": [
+        '[data-test="shippingButton"]',
+        '[data-test="orderPickupButton"]',
         '[data-test="addToCartButton"]',
-        'button[id*="addToCart"]',
-        'button[data-qe-id="addToCartButton"]',      // HEB
-    ];
-    for (var s of selectors) {
-        var btn = document.querySelector(s);
-        if (btn) { btn.click(); return 'clicked:' + s; }
-    }
-    var els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
-    var m = els.find(function(el) {
-        return /add to cart|add item|add for|add to order/i.test(
-            el.innerText || el.value || el.getAttribute('aria-label') || ''
-        );
-    });
-    if (m) { m.click(); return 'clicked:text_match'; }
-    return 'no_add_button';
-})();
-"""
+        '[data-test="chooseOptionsButton"]',
+    ],
+    "heb": [
+        'button[data-qe-id="addToCartButton"]',
+        'button[data-qa-automation="addToCart"]',
+        'button[aria-label*="Add to cart" i]',
+        'button[class*="AddToCart"]',
+        '[data-testid="add-to-cart-button"]',
+    ],
+}
+
+# Stores where a generic "add to cart" text match is DANGEROUS rather than a
+# helpful fallback — on Amazon those pages carry the retail control too.
+_NO_TEXT_FALLBACK = {"amazon", "whole_foods"}
+
+
+def _add_to_cart_js(store_key: str) -> str:
+    """Build the click script for one store.
+
+    Returns 'no_add_button' rather than clicking something plausible: a wrong
+    click is worse than no click, because it lands in a different cart and we
+    would report it as success.
+    """
+    selectors = _STORE_ADD_SELECTORS.get(store_key, [])
+    allow_text = store_key not in _NO_TEXT_FALLBACK
+    return (
+        "(function() {\n"
+        f"    var selectors = {json.dumps(selectors)};\n"
+        "    for (var s of selectors) {\n"
+        "        var btn = document.querySelector(s);\n"
+        "        if (btn && !btn.disabled) { btn.click(); return 'clicked:' + s; }\n"
+        "    }\n"
+        + (
+        "    var els = Array.from(document.querySelectorAll('button, input[type=\"submit\"]'));\n"
+        "    var m = els.find(function(el) {\n"
+        "        return /add to cart|add item|add for|add to order/i.test(\n"
+        "            el.innerText || el.value || el.getAttribute('aria-label') || ''\n"
+        "        );\n"
+        "    });\n"
+        "    if (m) { m.click(); return 'clicked:text_match'; }\n"
+        if allow_text else ""
+        ) +
+        "    return 'no_add_button';\n"
+        "})();"
+    )
 
 
 async def _add_product_to_cart(
@@ -1028,7 +1071,8 @@ async def _add_product_to_cart(
         return "error", f"Navigation failed: {nav['error']}"
     await asyncio.sleep(4)
 
-    res = await _bridge_post(session, "/browser/js", {"script": _ADD_TO_CART_JS}, timeout=15)
+    res = await _bridge_post(session, "/browser/js",
+                             {"script": _add_to_cart_js(product.store)}, timeout=15)
     val = str(res.get("result", "")).lower()
     if "clicked" in val:
         return "added", f"Added to {store['name']}."
@@ -1051,6 +1095,23 @@ async def _verify_cart(session: aiohttp.ClientSession, store_key: str) -> dict:
     text = str(page.get("text") or "")
 
     out: dict = {}
+
+    # HEB prices, stock and cart are all per-STORE, and Austin has several. A
+    # cart built against the wrong location looks completely normal — right
+    # items, plausible prices — and only fails at pickup. Record which store the
+    # page says we are shopping so the report can show it, and flag a mismatch
+    # against HEB_STORE when one is configured.
+    if store_key == "heb":
+        m_store = re.search(r"(?:Shopping at|Store|Pickup at|Curbside at)[:\s]+"
+                            r"([A-Z][A-Za-z0-9 .'&/-]{3,40})", text)
+        if m_store:
+            out["store_location"] = m_store.group(1).strip()
+        expected = os.environ.get("HEB_STORE", "").strip()
+        if expected and out.get("store_location"):
+            if expected.lower() not in out["store_location"].lower():
+                out["store_mismatch"] = f"expected {expected}, page says {out['store_location']}"
+                _log(f"  ⚠ HEB store mismatch: {out['store_mismatch']}", "warn")
+
     # A cart page can carry several "Subtotal (N items): $X" lines (active cart,
     # saved-for-later, buy-again). The main cart is the one with the most items.
     pairs = re.findall(r"[Ss]ubtotal\s*\((\d+)\s*items?\)\s*:?\s*\$?([\d,]+\.\d{2})", text)
@@ -1060,9 +1121,16 @@ async def _verify_cart(session: aiohttp.ClientSession, store_key: str) -> dict:
         out["subtotal"] = float(sub.replace(",", ""))
         return out
     mc = re.search(r"\((\d+)\s*items?\)", text)
+    if not mc:
+        # "12 items in your cart" / "Cart (12)" — HEB and Target phrasings that
+        # the parenthesised form above misses.
+        mc = re.search(r"(\d+)\s*items?\s+in\s+(?:your\s+)?cart", text, re.I) \
+             or re.search(r"[Cc]art\s*\((\d+)\)", text)
     if mc:
         out["count"] = int(mc.group(1))
     ms = re.search(r"[Ss]ubtotal[^$]{0,30}\$([\d,]+\.\d{2})", text)
+    if not ms:
+        ms = re.search(r"(?:Estimated\s+)?[Tt]otal[^$]{0,30}\$([\d,]+\.\d{2})", text)
     if ms:
         out["subtotal"] = float(ms.group(1).replace(",", ""))
     return out
@@ -1217,9 +1285,16 @@ def _build_report(
                 parts.append(f"{cnt} items")
             if sub is not None:
                 parts.append(f"subtotal ${sub:.2f}")
+            loc = v.get("store_location")
+            if loc:
+                parts.append(f"@ {loc}")
             lines.append(f"  {STORES[s]['name']:15} {', '.join(parts)}")
             if cnt is not None and cnt != n_added:
                 lines.append(f"     ⚠ expected {n_added} added — cart shows {cnt}; review before checkout")
+            # A cart built against the wrong HEB looks entirely normal until
+            # pickup, so say so loudly rather than leaving it in the data.
+            if v.get("store_mismatch"):
+                lines.append(f"     ⚠ WRONG STORE — {v['store_mismatch']}")
 
     lines += ["", "CART LINKS"]
     for s in selected_stores:
