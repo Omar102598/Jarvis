@@ -203,6 +203,22 @@ final class ChatViewModel: ObservableObject {
             merged.append(msg)
         }
 
+        // Rebuilding from the server drops everything the server does not store —
+        // tool calls and turn ids live only on the client. Without this, leaving
+        // the app and coming back wiped the inline tool calls off every reply.
+        var toolCallsByText: [String: (calls: [ToolEvent], turn: String?)] = [:]
+        for msg in messages where msg.role == .jarvis && !msg.toolCalls.isEmpty {
+            toolCallsByText[msg.text] = (msg.toolCalls, msg.turnID)
+        }
+        if !toolCallsByText.isEmpty {
+            for idx in merged.indices where merged[idx].role == .jarvis {
+                if let saved = toolCallsByText[merged[idx].text] {
+                    merged[idx].toolCalls = saved.calls
+                    merged[idx].turnID = saved.turn
+                }
+            }
+        }
+
         if merged.count != messages.count || merged.last?.text != messages.last?.text {
             messages = merged
             for msg in merged where msg.mediaURL != nil && msg.imageData == nil {
@@ -270,13 +286,48 @@ final class ChatViewModel: ObservableObject {
 
         do {
             // Camera capture means eyes already on the screen — show, don't speak.
-            let response = try await JarvisClient.shared.askImage(imageData, text: prompt)
+            let payload = Self.downscaledJPEG(imageData)
+            let response = try await JarvisClient.shared.askImage(payload, text: prompt)
             finishLoading(loadingId, text: response.text)
             await glassesManager?.send(response.display.hudState)
         } catch {
             finishLoading(loadingId, text: "Error: \(error.localizedDescription)")
             await glassesManager?.send(.error(message: error.localizedDescription))
         }
+    }
+
+    /// Shrink a photo to something sane before uploading.
+    ///
+    /// Three reasons, any one sufficient:
+    ///   - The request crosses the MQTT bus to the brain, and the broker drops
+    ///     oversize packets ("disconnected: oversize packet"). The reply then
+    ///     never comes and the gateway 504s after 45s — so a full-resolution
+    ///     phone photo failed every time while a small one worked.
+    ///   - The vision model downsamples anything past ~1568px anyway, so the
+    ///     extra pixels buy nothing and cost upload time and tokens.
+    ///   - Library items can be HEIC, which the API rejects. Re-encoding as
+    ///     JPEG normalises that.
+    ///
+    /// Returns the original bytes if decoding fails, so an odd format still
+    /// gets its chance server-side rather than being silently dropped here.
+    static func downscaledJPEG(_ data: Data, maxEdge: CGFloat = 1568,
+                               quality: CGFloat = 0.8) -> Data {
+        guard let image = UIImage(data: data) else { return data }
+        let longest = max(image.size.width, image.size.height)
+
+        // Already small enough: only re-encode if it is not already JPEG.
+        if longest <= maxEdge, let asJPEG = image.jpegData(compressionQuality: quality) {
+            return asJPEG.count < data.count ? asJPEG : data
+        }
+
+        let scale = maxEdge / longest
+        let target = CGSize(width: image.size.width * scale,
+                            height: image.size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: target)
+        let resized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: target))
+        }
+        return resized.jpegData(compressionQuality: quality) ?? data
     }
 
     // MARK: Video query (phone camera roll)
