@@ -44,6 +44,21 @@ not a billing problem).
 ## 1. Clone and configure
 
 ```bash
+git clone https://github.com/Omar102598/Jarvis.git && cd Jarvis
+python3 scripts/setup_wizard.py
+```
+
+The wizard asks only for what Jarvis actually needs, **checks each key against
+the real service before saving it**, and leaves everything else alone. A wrong
+Anthropic key is caught in the wizard rather than surfacing later as a stack of
+failing agents.
+
+It is safe to re-run — it keeps what you already have and only fills gaps, so
+it doubles as the way to add an integration later. It also generates
+`MOBILE_API_KEY` (the phone app ↔ gateway shared secret) so you do not have to
+invent one.
+
+```bash
 git clone <repo-url> Jarvis && cd Jarvis
 cp .env.example .env
 cp config/agents.example.yml config/agents.yml
