@@ -92,6 +92,25 @@ def ask_yes(prompt: str, default: bool = False) -> bool:
 # .env read/write — in place, comments preserved
 # ---------------------------------------------------------------------------
 
+# .env.example ships instructive placeholders rather than empty values, e.g.
+# ANTHROPIC_API_KEY=sk-ant-your-key-here. Treating those as "already set" is
+# how a new user ends up with a .env full of placeholders and an install that
+# fails everywhere at once — the exact outcome this wizard exists to prevent.
+_PLACEHOLDER_PAT = re.compile(
+    r"\byour[-_ ]|change[-_ ]?me|replace[-_ ]?me|"
+    r"placeholder|^<.*>$|example\.com|xxx+|todo|paste[-_ ]?here|here$",
+    re.IGNORECASE,
+)
+
+
+def is_configured(value: str) -> bool:
+    """True only for a value a human actually supplied."""
+    v = (value or "").strip().strip('"').strip("'")
+    if not v:
+        return False
+    return not _PLACEHOLDER_PAT.search(v)
+
+
 def read_env() -> dict[str, str]:
     values: dict[str, str] = {}
     if not ENV.exists():
@@ -237,7 +256,7 @@ def prompt_key(
 
     Returns the value to store, or None to leave the variable untouched.
     """
-    if current:
+    if is_configured(current):
         print(f"  {green('✓')} {label} already set", end="")
         if validator and ask_yes(" — re-check it?", default=False):
             ok, msg = validator(current)
@@ -344,7 +363,7 @@ def main() -> int:
 
     # A shared secret between the phone app and the gateway. Users should not
     # have to invent this, and a weak one is worse than a generated one.
-    if not env.get("MOBILE_API_KEY"):
+    if not is_configured(env.get("MOBILE_API_KEY", "")):
         generated = secrets.token_urlsafe(24)
         updates["MOBILE_API_KEY"] = generated
         print(f"\n  {green('✓')} generated MOBILE_API_KEY (app ↔ gateway shared secret)")
@@ -357,8 +376,11 @@ def main() -> int:
     heading("About you")
     print(dim("  Used for weather, greetings and scheduling. Not sent anywhere\n"
               "  except the services you enable."))
-    loc = ask("Weather location, e.g. 'Austin, TX'", env.get("WEATHER_LOCATION", ""))
-    if loc and loc != env.get("WEATHER_LOCATION", ""):
+    current_loc = env.get("WEATHER_LOCATION", "")
+    if not is_configured(current_loc):
+        current_loc = ""
+    loc = ask("Weather location, e.g. 'Austin, TX'", current_loc)
+    if loc and loc != current_loc:
         updates["WEATHER_LOCATION"] = loc
 
     # --- optional integrations -------------------------------------------
@@ -382,15 +404,18 @@ def main() -> int:
         got = prompt_key(label, var, env.get(var, ""), validator, where)
         if got:
             updates[var] = got
-        elif not env.get(var):
+        elif not is_configured(env.get(var, "")):
             skipped.append(label)
 
     # Home Assistant needs two values that only make sense together.
     heading("Home Assistant (lights, scenes, media)")
-    if env.get("HA_TOKEN"):
+    if is_configured(env.get("HA_TOKEN", "")):
         print(f"  {green('✓')} already configured")
     elif ask_yes("  Set up Home Assistant now?", default=False):
-        ha_url = ask("HA_URL", env.get("HA_URL", "http://homeassistant:8123"))
+        ha_default = env.get("HA_URL", "")
+        if not is_configured(ha_default):
+            ha_default = "http://homeassistant:8123"
+        ha_url = ask("HA_URL", ha_default)
         ha_token = ask("HA_TOKEN (long-lived access token)", secret_hint=True)
         if ha_url and ha_token:
             print(dim("    checking…"))
