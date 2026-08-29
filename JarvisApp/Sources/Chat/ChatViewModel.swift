@@ -17,6 +17,11 @@ final class ChatViewModel: ObservableObject {
     private let socket = JarvisSocket()
     private var toolPollingTask: Task<Void, Never>?
     private var toolStreamTask: Task<Void, Never>?
+    /// Text of the most recent reply we received over HTTP, and when.
+    /// The gateway also broadcasts that same reply over the WebSocket, so
+    /// this is what lets us recognise our own echo whenever it lands.
+    private var lastReplyText: String = ""
+    private var lastReplyAt: Date = .distantPast
 
     weak var glassesManager: GlassesManager?
 
@@ -112,14 +117,23 @@ final class ChatViewModel: ObservableObject {
         let text = payload.body.isEmpty ? payload.title : payload.body
         guard !text.isEmpty else { return }
 
-        // The gateway pushes each reply's display payload to every connected
-        // client — including the one that just requested it over HTTP. That
-        // arrived as a SECOND bubble holding the glasses-HUD body, which is
-        // shortened, so the same answer appeared twice with the copy looking
-        // truncated. Drop a push that repeats what we already have.
+        // The gateway broadcasts each reply's display payload to every connected
+        // client — including the one that just asked for it over HTTP. It
+        // arrives as a SECOND bubble carrying the glasses-HUD body, which is
+        // deliberately shortened, so the same answer shows twice with the copy
+        // looking truncated.
+        //
+        // Comparing against the last message is not enough: the broadcast is
+        // sent BEFORE the HTTP reply returns, so it often lands while our
+        // bubble is still loading and the comparison hits the previous turn
+        // instead. Match against the reply itself, which does not depend on
+        // when the echo arrives.
+        if Date().timeIntervalSince(lastReplyAt) < 60, !lastReplyText.isEmpty,
+           Self.isEcho(of: lastReplyText, text) {
+            return
+        }
         if let last = messages.last(where: { $0.role == .jarvis && !$0.isLoading }),
-           !last.text.isEmpty,
-           last.text == text || last.text.hasPrefix(text) || text.hasPrefix(last.text) {
+           !last.text.isEmpty, Self.isEcho(of: last.text, text) {
             return
         }
 
@@ -192,10 +206,15 @@ final class ChatViewModel: ObservableObject {
         var merged = fresh + carried
 
         for item in pushes {
+            // The persisted feed holds those same broadcast replies, so the
+            // duplicate comes back on every foreground unless it is matched
+            // the same way. Exact text comparison misses it: the stored copy
+            // is the shortened HUD body, not the full answer.
             let isDupe = merged.contains {
                 $0.pushID == item.id
                     || ($0.mediaURL != nil && $0.mediaURL == item.mediaURL)
-                    || ($0.mediaURL == nil && item.mediaURL == nil && $0.text == item.text)
+                    || ($0.mediaURL == nil && item.mediaURL == nil
+                        && $0.role == .jarvis && Self.isEcho(of: $0.text, item.text))
             }
             if isDupe { continue }
             var msg = ChatMessage(role: .jarvis, text: item.text, mediaURL: item.mediaURL)
@@ -389,7 +408,24 @@ final class ChatViewModel: ObservableObject {
         return msg.id
     }
 
+    /// True when `candidate` is the same answer as `reply`, possibly shortened.
+    ///
+    /// The HUD copy is truncated, so exact equality misses it; prefix matching
+    /// in both directions catches the shortened form either way round. A short
+    /// candidate is ignored because a handful of characters could legitimately
+    /// prefix an unrelated message.
+    private static func isEcho(of reply: String, _ candidate: String) -> Bool {
+        guard candidate.count >= 12 else { return false }
+        return reply == candidate
+            || reply.hasPrefix(candidate)
+            || candidate.hasPrefix(reply)
+    }
+
     private func finishLoading(_ id: UUID, text: String, turnID: String = "") {
+        if !text.isEmpty {
+            lastReplyText = text
+            lastReplyAt = Date()
+        }
         if let idx = messages.firstIndex(where: { $0.id == id }) {
             messages[idx].text = text
             messages[idx].isLoading = false
