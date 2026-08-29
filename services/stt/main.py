@@ -378,10 +378,24 @@ def main():
     mqtt_client.on_connect = on_connect
     mqtt_client.message_callback_add("jarvis/audio/mic/+/wake_word", on_wake_word)
     mqtt_client.message_callback_add("jarvis/tts/+/done", on_tts_done)
+    # Back off between reconnect attempts rather than hammering a broker
+    # that is still coming back up.
+    mqtt_client.reconnect_delay_set(min_delay=1, max_delay=30)
     mqtt_client.connect(MQTT_HOST, MQTT_PORT)
 
     print("[STT] Waiting for wake word events...")
-    mqtt_client.loop_forever()
+    # A broker restart or network blip used to raise straight out of
+    # loop_forever and kill this process — the whole voice stack then stayed
+    # dead until someone noticed. Keep retrying instead; paho reconnects and
+    # re-subscribes through its on_connect handler.
+    while True:
+        try:
+            mqtt_client.loop_forever(retry_first_connection=True)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            print(f"[mqtt] connection lost ({exc}) — retrying in 5s", flush=True)
+            time.sleep(5)
 
 
 if __name__ == "__main__":

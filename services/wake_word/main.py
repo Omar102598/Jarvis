@@ -36,7 +36,17 @@ def main():
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
     mqtt_client = mqtt.Client()
-    mqtt_client.connect(MQTT_HOST, MQTT_PORT)
+    # Back off between reconnect attempts instead of hammering a broker that is
+    # still coming back up.
+    mqtt_client.reconnect_delay_set(min_delay=1, max_delay=30)
+    try:
+        mqtt_client.connect(MQTT_HOST, MQTT_PORT)
+    except Exception as exc:
+        # The mic is the point of this process — start listening even if the
+        # broker is down, and let loop_start reconnect underneath us. Exiting
+        # here is how the whole voice stack used to stay dead after an outage.
+        print(f"[WakeWord] MQTT unavailable at startup ({exc}) — will keep retrying",
+              flush=True)
     mqtt_client.loop_start()
 
     audio = pyaudio.PyAudio()
@@ -78,15 +88,20 @@ def main():
                     except Exception:
                         pass
 
-                    mqtt_client.publish(
-                        f"jarvis/audio/mic/{ROOM}/wake_word",
-                        json.dumps({
-                            "model": model_name,
-                            "score": float(score),
-                            "room": ROOM,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }),
-                    )
+                    # A failed publish must not take down the listener; the
+                    # next wake word should still get a chance.
+                    try:
+                        mqtt_client.publish(
+                            f"jarvis/audio/mic/{ROOM}/wake_word",
+                            json.dumps({
+                                "model": model_name,
+                                "score": float(score),
+                                "room": ROOM,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }),
+                        )
+                    except Exception as exc:
+                        print(f"[WakeWord] publish failed ({exc})", flush=True)
                     break  # one event per detection window
 
     except KeyboardInterrupt:
