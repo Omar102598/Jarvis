@@ -7,7 +7,6 @@ struct ChatView: View {
     @State private var inputText = ""
     @State private var isRecording = false
     @State private var micPulse: CGFloat = 1.0
-    @State private var showTimeline = false
     @State private var mediaItem: PhotosPickerItem?
     @State private var showMediaPicker = false
     @State private var showSourceChoice = false
@@ -20,10 +19,6 @@ struct ChatView: View {
             scanLine
             VStack(spacing: 0) {
                 header
-                if showTimeline && !chatViewModel.toolEvents.isEmpty {
-                    ToolTimelinePanel(events: chatViewModel.toolEvents)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
                 messageList
                 if chatViewModel.isPlayingAudio {
                     audioWaveBar
@@ -32,7 +27,6 @@ struct ChatView: View {
                 inputBar
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: showTimeline)
         .animation(.easeInOut(duration: 0.3), value: chatViewModel.isPlayingAudio)
         .onAppear {
             chatViewModel.glassesManager = glassesManager
@@ -52,23 +46,6 @@ struct ChatView: View {
             HStack {
                 statusDot
                 Spacer()
-                if !chatViewModel.toolEvents.isEmpty {
-                    Button {
-                        withAnimation { showTimeline.toggle() }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "terminal")
-                                .font(.system(size: 11, weight: .medium))
-                            Text("\(chatViewModel.toolEvents.count)")
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        }
-                        .foregroundColor(showTimeline ? .jBlue : .jBlueDim)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.jBorder.opacity(showTimeline ? 0.8 : 0.4))
-                        .cornerRadius(6)
-                    }
-                }
             }
             Text("J·A·R·V·I·S")
                 .font(.system(size: 17, weight: .bold, design: .monospaced))
@@ -120,7 +97,17 @@ struct ChatView: View {
                     .padding(.vertical, 12)
                 }
             }
+            // Drag the transcript to put the keyboard away — the expected
+            // gesture in every chat app, and there was no way to dismiss it.
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: chatViewModel.messages.count) {
+                if let last = chatViewModel.messages.last {
+                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+            }
+            // Tool calls stream in during a turn, so follow that growth too —
+            // otherwise the newest rows appear below the fold.
+            .onChange(of: chatViewModel.messages.last?.toolCalls.count ?? 0) {
                 if let last = chatViewModel.messages.last {
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
@@ -411,99 +398,23 @@ struct AudioWaveView: View {
     }
 }
 
-// MARK: - Tool timeline panel
-
-struct ToolTimelinePanel: View {
-    let events: [ToolEvent]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(events.prefix(20).enumerated()), id: \.element.id) { idx, event in
-                        ToolEventRow(event: event, isLast: idx == min(events.count, 20) - 1)
-                    }
-                }
-                .padding(.vertical, 10)
-                .padding(.horizontal, 16)
-            }
-            .frame(maxHeight: 200)
-        }
-        .background(Color.jCard.opacity(0.95))
-        .overlay(Rectangle().frame(height: 1).foregroundColor(.jBorder), alignment: .bottom)
-    }
-}
-
-private struct ToolEventRow: View {
-    let event: ToolEvent
-    let isLast: Bool
-
-    private var dotColor: Color {
-        switch event.status {
-        case "done":    return .jGreen
-        case "calling": return .jGold
-        default:        return .jBlueDim
-        }
-    }
-
-    private var timeString: String {
-        guard let date = ISO8601DateFormatter().date(from: event.timestamp) else { return "" }
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
-        return f.string(from: date)
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            // Spine: dot + vertical line
-            VStack(spacing: 0) {
-                Circle()
-                    .fill(dotColor)
-                    .frame(width: 7, height: 7)
-                    .shadow(color: dotColor.opacity(0.6), radius: 3)
-                    .padding(.top, 3)
-                if !isLast {
-                    Rectangle()
-                        .fill(Color.jBorder)
-                        .frame(width: 1)
-                        .frame(maxHeight: .infinity)
-                }
-            }
-            .frame(width: 14)
-
-            // Content
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(event.tool)
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundColor(dotColor)
-                    Spacer()
-                    Text(timeString)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.jBlueDim.opacity(0.4))
-                }
-                if !event.argsPreview.isEmpty {
-                    Text(event.argsPreview)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.jBlueDim.opacity(0.5))
-                        .lineLimit(2)
-                }
-                if !event.resultPreview.isEmpty && event.status == "done" {
-                    Text(event.resultPreview)
-                        .font(.system(size: 10))
-                        .foregroundColor(.jText.opacity(0.5))
-                        .lineLimit(3)
-                }
-            }
-            .padding(.bottom, isLast ? 0 : 10)
-        }
-    }
-}
-
 // MARK: - Message bubble
 
 struct MessageBubble: View {
     let message: ChatMessage
+
+    /// Render inline markdown (**bold**, *italic*, `code`) instead of showing
+    /// the literal asterisks Jarvis writes.
+    ///
+    /// `.inlineOnlyPreservingWhitespace` keeps newlines — the default parser
+    /// collapses them, which runs multi-line answers together. Falls back to
+    /// the raw string if parsing fails, so malformed markdown still shows.
+    static func rendered(_ text: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(text)
+    }
 
     var body: some View {
         HStack {
@@ -537,8 +448,6 @@ struct MessageBubble: View {
             if message.isLoading {
                 HStack(spacing: 8) {
                     ProgressView().tint(.jBlue).scaleEffect(0.8)
-                    // Once tools are running, the spinner alone is ambiguous —
-                    // name what is happening.
                     if !message.toolCalls.isEmpty {
                         Text("working…")
                             .font(.system(size: 11))
@@ -547,7 +456,7 @@ struct MessageBubble: View {
                 }
             } else {
                 if !message.text.isEmpty {
-                    Text(message.text)
+                    Text(Self.rendered(message.text))
                         .font(.system(size: 14))
                         .foregroundColor(.jText)
                         .textSelection(.enabled)

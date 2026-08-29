@@ -70,12 +70,18 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func applyToolEvent(_ event: ToolEvent) {
-        // Attach to the reply being produced right now. Falling back to the
-        // most recent Jarvis message means a "done" that lands just after the
-        // text arrives still shows up, rather than being dropped.
-        guard let idx = messages.lastIndex(where: { $0.role == .jarvis && $0.isLoading })
-                ?? messages.lastIndex(where: { $0.role == .jarvis })
-        else { return }
+        // Prefer an exact turn match — that is authoritative. Otherwise attach
+        // to the reply being produced right now, because live events arrive
+        // BEFORE the response carrying the turn id does; finishLoading then
+        // stamps the id and reconciles.
+        let idx: Int?
+        if !event.turnID.isEmpty,
+           let exact = messages.lastIndex(where: { $0.turnID == event.turnID }) {
+            idx = exact
+        } else {
+            idx = messages.lastIndex(where: { $0.role == .jarvis && $0.isLoading })
+        }
+        guard let idx else { return }
 
         // Same call_id means this is the SAME call resolving from "calling" to
         // "done" — replace the row rather than appending a duplicate.
@@ -105,6 +111,18 @@ final class ChatViewModel: ObservableObject {
         guard payload.type != .audioOnly else { return }
         let text = payload.body.isEmpty ? payload.title : payload.body
         guard !text.isEmpty else { return }
+
+        // The gateway pushes each reply's display payload to every connected
+        // client — including the one that just requested it over HTTP. That
+        // arrived as a SECOND bubble holding the glasses-HUD body, which is
+        // shortened, so the same answer appeared twice with the copy looking
+        // truncated. Drop a push that repeats what we already have.
+        if let last = messages.last(where: { $0.role == .jarvis && !$0.isLoading }),
+           !last.text.isEmpty,
+           last.text == text || last.text.hasPrefix(text) || text.hasPrefix(last.text) {
+            return
+        }
+
         let msg = ChatMessage(role: .jarvis, text: text, mediaURL: payload.mediaURL)
         messages.append(msg)
         pinSnapshotBytes(for: msg.id, urlString: payload.mediaURL)
@@ -208,7 +226,7 @@ final class ChatViewModel: ObservableObject {
             // to play. Holding the mic button (sendVoice) still speaks.
             let response = try await JarvisClient.shared.askText(text, speak: false)
             let displayText = response.display.body.isEmpty ? response.text : response.display.body
-            finishLoading(loadingId, text: displayText)
+            finishLoading(loadingId, text: displayText, turnID: response.turnID)
             await glassesManager?.send(response.display.hudState)
         } catch {
             finishLoading(loadingId, text: "Error: \(error.localizedDescription)")
@@ -320,10 +338,44 @@ final class ChatViewModel: ObservableObject {
         return msg.id
     }
 
-    private func finishLoading(_ id: UUID, text: String) {
+    private func finishLoading(_ id: UUID, text: String, turnID: String = "") {
         if let idx = messages.firstIndex(where: { $0.id == id }) {
             messages[idx].text = text
             messages[idx].isLoading = false
+            if !turnID.isEmpty {
+                messages[idx].turnID = turnID
+                reconcileToolCalls(messageID: id, turnID: turnID)
+            }
+        }
+    }
+
+    /// Confirm a message's tool calls against the server once its turn is known.
+    ///
+    /// The live stream is an optimisation, not the source of truth — it can be
+    /// disconnected, drop under load, or deliver events before the turn id was
+    /// known. Without this, a dropped frame means a tool call silently never
+    /// appears, which looks like the feature is broken.
+    private func reconcileToolCalls(messageID: UUID, turnID: String) {
+        Task { [weak self] in
+            guard let events = try? await JarvisClient.shared.fetchToolEvents(turnID: turnID),
+                  !events.isEmpty else { return }
+            await MainActor.run {
+                guard let self,
+                      let idx = self.messages.firstIndex(where: { $0.id == messageID })
+                else { return }
+                // Server order is newest-first; the UI reads oldest-first.
+                var merged: [ToolEvent] = []
+                for event in events.reversed() {
+                    if !event.callID.isEmpty,
+                       let existing = merged.firstIndex(where: { $0.callID == event.callID }) {
+                        // Keep the resolved "done" over the earlier "calling".
+                        if event.isFinished { merged[existing] = event }
+                    } else {
+                        merged.append(event)
+                    }
+                }
+                self.messages[idx].toolCalls = merged
+            }
         }
     }
 }

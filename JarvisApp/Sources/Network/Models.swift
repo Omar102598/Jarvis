@@ -79,11 +79,25 @@ struct QueryResponse: Decodable {
     let text: String
     let audioB64: String
     let display: DisplayPayload
+    /// Identifies the request that produced this reply. The brain stamps every
+    /// tool event of the turn with it, so the client can attach exactly this
+    /// turn's tool calls to this message rather than guessing from timing.
+    let turnID: String
 
     enum CodingKeys: String, CodingKey {
         case text
         case audioB64 = "audio_b64"
         case display
+        case turnID = "turn_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        text     = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        audioB64 = try c.decodeIfPresent(String.self, forKey: .audioB64) ?? ""
+        display  = try c.decode(DisplayPayload.self, forKey: .display)
+        // Absent on the voice path and on any gateway older than this change.
+        turnID   = try c.decodeIfPresent(String.self, forKey: .turnID) ?? ""
     }
 }
 
@@ -144,6 +158,9 @@ struct ChatMessage: Identifiable, Equatable {
     /// Tool calls made while producing this reply, in call order. Rendered
     /// inline under the message the way Claude/ChatGPT show their work.
     var toolCalls: [ToolEvent] = []
+    /// The turn that produced this message, once known. Lets tool calls be
+    /// matched to it exactly, and backfilled if the live stream missed any.
+    var turnID: String? = nil
 }
 
 // MARK: - Persisted push (gateway /pushes — cards missed while suspended)

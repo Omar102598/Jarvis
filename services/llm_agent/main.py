@@ -601,9 +601,16 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     Always returns the full accumulated response for history storage.
     """
     ACTIVE_ROOM["room"] = room
-    # One id per request, stamped on every tool event this turn emits so a
-    # surface can group them under the message that caused them.
-    turn_id = uuid.uuid4().hex[:12]
+    # Stamped on every tool event this turn emits so a surface can group them
+    # under the message that caused them.
+    #
+    # The room IS the turn id: the gateway already mints a unique
+    # "{source}-{request_id}" per request and passes it here, and it knows that
+    # value before the request starts. Reusing it means the caller can match
+    # events to its own request deterministically instead of inferring from
+    # timing. Minting a fresh id here would have been a second, private
+    # identifier nobody else could see.
+    turn_id = room or uuid.uuid4().hex[:12]
 
     with _graph_lock:
         current_agent = _agents.get(tier, _agents.get("sonnet"))
