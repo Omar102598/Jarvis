@@ -534,6 +534,36 @@ _SENT_END = re.compile(r'(?<=[.!?…])\s+')
 
 # Camera/video-frame markers embedded by the mobile_gateway (/ask/image, /ask/video)
 _IMG_MARKER = re.compile(r"\[GLASSES_CAMERA_IMAGE:\s*(data:image/[^\]]+)\]")
+# Images arrive by REFERENCE now: the gateway parks the data URI in Redis and
+# sends only this key, because multi-MB payloads on the MQTT bus were rejected
+# by the broker as oversize packets. The inline form above is still accepted so
+# an older gateway keeps working.
+_IMG_REF_MARKER = re.compile(r"\[GLASSES_CAMERA_IMAGE_REF:\s*([^\]]+)\]")
+
+
+def _resolve_image_refs(text: str) -> str:
+    """Swap image-reference markers back into inline data URIs.
+
+    A reference that has expired or vanished is dropped rather than left as a
+    stray marker — the model would otherwise be told an image is present and
+    then be unable to see it, and would confabulate about it.
+    """
+    if "[GLASSES_CAMERA_IMAGE_REF:" not in text:
+        return text
+
+    def _swap(match: "re.Match") -> str:
+        key = match.group(1).strip()
+        try:
+            data_uri = r.get(key)
+        except Exception as exc:
+            print(f"[LLM] image ref lookup failed for {key}: {exc}")
+            return ""
+        if not data_uri:
+            print(f"[LLM] image ref {key} missing or expired")
+            return ""
+        return f"[GLASSES_CAMERA_IMAGE: {data_uri}]"
+
+    return _IMG_REF_MARKER.sub(_swap, text)
 
 
 def _split_sentences(buf: str) -> tuple[list[str], str]:
@@ -651,6 +681,7 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     # gateway embeds photos/video-frames as [GLASSES_CAMERA_IMAGE: data:...]
     # text markers; without this conversion Claude receives megabytes of
     # base64 AS TEXT and cannot see the image at all.
+    text = _resolve_image_refs(text)
     _img_uris = _IMG_MARKER.findall(text)
     if _img_uris:
         _cleaned = _IMG_MARKER.sub("", text).strip() or "What am I looking at?"
@@ -757,7 +788,7 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
             if isinstance(item, dict) and item.get("type") == "text"
         ).strip() or "(no text response)"
 
-    stored_text = re.sub(r"\[GLASSES_CAMERA_IMAGE:[^\]]*\]", "[camera image]", text)
+    stored_text = re.sub(r"\[GLASSES_CAMERA_IMAGE(?:_REF)?:[^\]]*\]", "[camera image]", text)
     r.rpush(history_key, json.dumps({"role": "user",      "content": stored_text}))
     r.rpush(history_key, json.dumps({"role": "assistant", "content": full_response}))
     r.ltrim(history_key, -40, -1)

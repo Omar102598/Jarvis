@@ -812,10 +812,39 @@ async def ask_image(request: ImageQueryRequest, x_api_key: str = Header(default=
     # Wrap image as a data URI so the LLM agent's vision tool can receive it.
     # Sniff the real format — the API rejects a mislabelled image outright.
     data_uri = f"data:{_image_media_type(request.image_b64)};base64,{request.image_b64}"
-    composite_text = f"[GLASSES_CAMERA_IMAGE: {data_uri}]\n{request.text}"
+    composite_text = f"{_stash_image(data_uri)}\n{request.text}"
 
     print(f"[Gateway] /ask/image: prompt='{request.text}', image_len={len(request.image_b64)}")
     return await _run_pipeline_json(composite_text)
+
+
+# Images used to travel to the brain INLINE in the request text, as
+# [GLASSES_CAMERA_IMAGE: data:image/jpeg;base64,…]. That put megabytes on the
+# MQTT bus, and mosquitto rejects oversize packets — it drops the publisher, no
+# reply can arrive, and the gateway burns its full timeout before reporting
+# "JARVIS did not respond in time". Raising message_size_limit did NOT lift the
+# ceiling; a 2.5MB photo was still refused with the limit set to 25MB.
+#
+# So the payload no longer goes on the bus at all. The bytes go into Redis —
+# which both services already share — and the message carries only a short key.
+# Size stops being a bus concern entirely, and video frame-sampling (up to 6
+# images in one request) stops being hopeless.
+IMAGE_REF_TTL_S = int(os.environ.get("IMAGE_REF_TTL_S", "600"))
+
+
+def _stash_image(data_uri: str) -> str:
+    """Park an image in Redis and return the marker to send in its place.
+
+    Falls back to the inline marker if Redis is unavailable, so behaviour is no
+    worse than before rather than failing outright.
+    """
+    try:
+        key = f"jarvis:imgref:{uuid.uuid4().hex[:16]}"
+        _redis.setex(key, IMAGE_REF_TTL_S, data_uri)
+        return f"[GLASSES_CAMERA_IMAGE_REF: {key}]"
+    except Exception as exc:
+        print(f"[Gateway] image stash failed ({exc}) — falling back to inline")
+        return f"[GLASSES_CAMERA_IMAGE: {data_uri}]"
 
 
 # Ceiling for an inline image. Set from measurement, not the broker limit: with
@@ -1059,7 +1088,7 @@ async def ask_video(request: VideoQueryRequest, x_api_key: str = Header(default=
         for fp in frames:
             with open(fp, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
-            markers.append(f"[GLASSES_CAMERA_IMAGE: data:image/jpeg;base64,{b64}]")
+            markers.append(_stash_image(f"data:image/jpeg;base64,{b64}"))
 
         composite_text = (
             "\n".join(markers)
