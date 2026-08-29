@@ -17,6 +17,7 @@ Environment variables:
 import asyncio
 import json
 import os
+import time
 import queue
 import re
 import subprocess
@@ -225,8 +226,22 @@ def main():
     client = mqtt.Client()
     client.on_connect = on_connect
     client.on_message = on_message
+    # Back off between reconnect attempts rather than hammering a broker
+    # that is still coming back up.
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
     client.connect(MQTT_HOST, MQTT_PORT, keepalive=120)
-    client.loop_forever()
+    # A broker restart or network blip used to raise straight out of
+    # loop_forever and kill this process — the whole voice stack then stayed
+    # dead until someone noticed. Keep retrying instead; paho reconnects and
+    # re-subscribes through its on_connect handler.
+    while True:
+        try:
+            client.loop_forever(retry_first_connection=True)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            print(f"[mqtt] connection lost ({exc}) — retrying in 5s", flush=True)
+            time.sleep(5)
 
 
 if __name__ == "__main__":
