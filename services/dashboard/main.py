@@ -14,8 +14,12 @@ GET  /health                        — Health check
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import os
+import secrets as _secrets
+import time
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
@@ -25,7 +29,8 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 import redis
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse, StreamingResponse)
 from fastapi.templating import Jinja2Templates
 
 # ---------------------------------------------------------------------------
@@ -68,6 +73,16 @@ def _mqtt_connect():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if DASHBOARD_PASSWORD:
+        print("[Dashboard] Login required (DASHBOARD_PASSWORD set)", flush=True)
+    else:
+        print(
+            "[Dashboard] WARNING: no DASHBOARD_PASSWORD set — the dashboard is OPEN "
+            "to anyone who can reach this port, and it exposes conversation history, "
+            "approvals and camera snapshots. Set DASHBOARD_PASSWORD in .env (or re-run "
+            "scripts/setup_wizard.py) to require a login.",
+            flush=True,
+        )
     _mqtt_connect()
     yield
     _mqtt.loop_stop()
@@ -185,6 +200,165 @@ def _get_all_recent_reports(limit: int = 20) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Single-owner login
+#
+# The dashboard exposes conversation history, the approvals queue and camera
+# snapshots, and had no authentication at all — the only thing protecting it was
+# being on a private network. That is fine until someone runs Jarvis on a home
+# LAN or opens a port on a VPS, at which point everything is readable by anyone
+# who can reach it.
+#
+# Jarvis is one instance per person, so this is deliberately ONE password rather
+# than user accounts. Set DASHBOARD_PASSWORD to turn it on.
+#
+# Unset leaves the dashboard open, so existing installs keep working, but says
+# so loudly at startup and in the UI. New installs get a password from the setup
+# wizard, so the safe path is the default one.
+# ---------------------------------------------------------------------------
+
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip()
+SESSION_TTL_S = int(os.environ.get("DASHBOARD_SESSION_TTL_S", str(30 * 24 * 3600)))
+SESSION_COOKIE = "jarvis_dash"
+
+# Signing key is derived from the password: changing the password invalidates
+# every existing session, which is what you want after a suspected leak.
+_SIGNING_KEY = hashlib.sha256(f"jarvis-dashboard:{DASHBOARD_PASSWORD}".encode()).digest()
+
+# Crude but effective brute-force brake. In-memory is fine — this is a
+# single-instance dashboard, and a restart costing an attacker their progress is
+# not a weakness.
+_failed_attempts: dict[str, list[float]] = {}
+_LOCKOUT_AFTER = 5
+_LOCKOUT_WINDOW_S = 300
+
+
+def _issue_session() -> str:
+    issued = str(int(time.time()))
+    sig = hmac.new(_SIGNING_KEY, issued.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{issued}.{sig}"
+
+
+def _session_valid(token: str) -> bool:
+    if not token or "." not in token:
+        return False
+    issued, _, sig = token.partition(".")
+    expected = hmac.new(_SIGNING_KEY, issued.encode(), hashlib.sha256).hexdigest()[:32]
+    if not hmac.compare_digest(sig, expected):
+        return False
+    try:
+        return (time.time() - int(issued)) < SESSION_TTL_S
+    except ValueError:
+        return False
+
+
+def _rate_limited(client: str) -> bool:
+    now = time.time()
+    hits = [t for t in _failed_attempts.get(client, []) if now - t < _LOCKOUT_WINDOW_S]
+    _failed_attempts[client] = hits
+    return len(hits) >= _LOCKOUT_AFTER
+
+
+def _record_failure(client: str) -> None:
+    _failed_attempts.setdefault(client, []).append(time.time())
+
+
+# Paths reachable without a session. /health stays open so container health
+# checks and uptime monitors keep working.
+_PUBLIC_PATHS = {"/health", "/login", "/logout"}
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    if not DASHBOARD_PASSWORD:
+        return await call_next(request)
+
+    path = request.url.path
+    if path in _PUBLIC_PATHS or path.startswith("/static"):
+        return await call_next(request)
+
+    if _session_valid(request.cookies.get(SESSION_COOKIE, "")):
+        return await call_next(request)
+
+    # An unauthenticated API call should fail as an API call, not redirect —
+    # otherwise fetch() silently receives a login page as if it were data.
+    if path.startswith("/api/") or path.startswith("/widgets/"):
+        return JSONResponse({"detail": "authentication required"}, status_code=401)
+    return RedirectResponse("/login", status_code=302)
+
+
+_LOGIN_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<title>Jarvis</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+ body{background:#030810;color:#cdd6e8;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+ form{background:#070f1c;border:1px solid #0e2035;border-radius:12px;padding:32px;width:300px}
+ h1{font-size:1rem;letter-spacing:8px;color:#00d4ff;text-align:center;margin:0 0 22px}
+ input{width:100%;box-sizing:border-box;background:#030810;border:1px solid #0e2035;
+       border-radius:7px;color:#cdd6e8;padding:10px;font-family:inherit;font-size:.85rem}
+ button{width:100%;margin-top:12px;background:#00d4ff;color:#03121b;border:0;border-radius:7px;
+        padding:10px;font-family:inherit;font-weight:600;cursor:pointer}
+ .err{color:#cc3344;font-size:.72rem;margin-top:10px;text-align:center}
+</style></head><body>
+<form method="post" action="/login">
+  <h1>JARVIS</h1>
+  <input type="password" name="password" placeholder="password" autofocus autocomplete="current-password">
+  <button type="submit">Sign in</button>
+  __ERROR__
+</form></body></html>"""
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    if not DASHBOARD_PASSWORD:
+        return RedirectResponse("/", status_code=302)
+    if _session_valid(request.cookies.get(SESSION_COOKIE, "")):
+        return RedirectResponse("/", status_code=302)
+    return HTMLResponse(_LOGIN_HTML.replace("__ERROR__", ""))
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request):
+    if not DASHBOARD_PASSWORD:
+        return RedirectResponse("/", status_code=302)
+
+    client = request.client.host if request.client else "unknown"
+    if _rate_limited(client):
+        return HTMLResponse(
+            _LOGIN_HTML.replace("__ERROR__", '<div class="err">Too many attempts — wait 5 minutes.</div>'),
+            status_code=429)
+
+    # Parsed by hand rather than via request.form(): that needs python-multipart,
+    # which this image does not ship. Using it would render the login page fine
+    # and then 500 on submit — locking the owner out of their own dashboard. A
+    # urlencoded login form is trivial to parse, so no dependency is worth it.
+    raw = (await request.body()).decode("utf-8", "replace")
+    supplied = (urllib.parse.parse_qs(raw).get("password") or [""])[0]
+    if not hmac.compare_digest(supplied, DASHBOARD_PASSWORD):
+        _record_failure(client)
+        return HTMLResponse(
+            _LOGIN_HTML.replace("__ERROR__", '<div class="err">Incorrect password.</div>'),
+            status_code=401)
+
+    _failed_attempts.pop(client, None)
+    resp = RedirectResponse("/", status_code=302)
+    resp.set_cookie(
+        SESSION_COOKIE, _issue_session(),
+        max_age=SESSION_TTL_S, httponly=True, samesite="lax",
+        # Only mark Secure over HTTPS — the dashboard is usually plain HTTP on a
+        # private network, and a Secure cookie there would never be sent back.
+        secure=request.url.scheme == "https",
+    )
+    return resp
+
+
+@app.get("/logout")
+async def logout():
+    resp = RedirectResponse("/login", status_code=302)
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
 
 
 @app.get("/", response_class=HTMLResponse)

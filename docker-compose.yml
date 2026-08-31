@@ -381,6 +381,10 @@ services:
       - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
       - WIDGETS_DIR=/app/widgets
       - JARVIS_USER_ID=${JARVIS_USER_ID:-default}
+      # Without this the dashboard cannot see the password and stays
+      # open, while .env suggests it is protected.
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-}
+      - DASHBOARD_SESSION_TTL_S=${DASHBOARD_SESSION_TTL_S:-2592000}
     volumes:
       - ./services/dashboard/widgets:/app/widgets
       - ./services/dashboard/templates:/app/templates
