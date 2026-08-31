@@ -372,6 +372,19 @@ def main() -> int:
     else:
         print(f"  {green('✓')} MOBILE_API_KEY already set")
 
+    # The dashboard exposes conversation history, approvals and camera
+    # snapshots. Generating a password by default means a new install is
+    # protected without the user having to think about it — the failure mode
+    # otherwise is an open dashboard on whatever network they run it on.
+    if not is_configured(env.get("DASHBOARD_PASSWORD", "")):
+        dash_pw = secrets.token_urlsafe(12)
+        updates["DASHBOARD_PASSWORD"] = dash_pw
+        print(f"\n  {green('✓')} generated DASHBOARD_PASSWORD (dashboard login)")
+        print(dim(f"    {dash_pw}"))
+        print(dim("    Save this — it is what you type at http://localhost:8888"))
+    else:
+        print(f"  {green('✓')} DASHBOARD_PASSWORD already set")
+
     # --- personal context -------------------------------------------------
     heading("About you")
     print(dim("  Used for weather, greetings and scheduling. Not sent anywhere\n"
