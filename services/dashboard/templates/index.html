@@ -565,7 +565,6 @@
 
     /* Diagnostics are secondary now that tool calls render inline in the
        conversation — kept for debugging, not given prime space. */
-    .col-side #tool-timeline { max-height: 220px; }
 
     .agents-section { padding: 0 20px 40px; position: relative; z-index: 1; }
     .section-label {
@@ -576,11 +575,20 @@
     }
     .section-label::before { content: '◈'; color: rgba(0,212,255,0.25); font-size: 0.68rem; }
 
-    .agents-grid { display: flex; flex-wrap: wrap; gap: 14px; }
+    /* A list, not a card wall. Stacked in the side column the verbose cards
+       became a tall ribbon to scroll past; what you want at a glance is which
+       agents exist and what state each is in. Detail is one click away. */
+    .agents-grid { display: flex; flex-direction: column; gap: 6px; }
+    .agent-head { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+    .agent-head:hover .agent-name { color: var(--j-blue); }
+    .agent-chev { margin-left: auto; font-size: 0.6rem; color: #2d6a8a; transition: transform .15s; }
+    .agent-card.open .agent-chev { transform: rotate(180deg); }
+    .agent-detail { display: none; margin-top: 10px; }
+    .agent-card.open .agent-detail { display: block; }
     .agent-card {
-      flex: 1 1 260px; background: var(--j-card);
+      background: var(--j-card);
       border: 1px solid var(--j-border); border-radius: 6px;
-      padding: 14px 16px; transition: border-color 0.2s, box-shadow 0.2s;
+      padding: 10px 12px; transition: border-color 0.2s, box-shadow 0.2s;
       position: relative; overflow: hidden;
     }
     .agent-card::before {
@@ -641,16 +649,6 @@
       z-index: 1;
     }
 
-    #tool-timeline {
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-      max-height: 320px;
-      overflow-y: auto;
-      padding-right: 4px;
-    }
-    #tool-timeline::-webkit-scrollbar { width: 3px; }
-    #tool-timeline::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 2px; }
 
     .tl-entry {
       display: flex;
@@ -985,35 +983,27 @@
     {% for agent in agents %}
     <div class="agent-card {% if agent.status == 'running' %}running{% elif agent.status == 'error' %}err{% endif %}"
          id="agent-card-{{ agent.name }}">
-      <div class="d-flex align-items-start justify-content-between">
-        <div>
-          <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
-            <span class="agent-name">{{ agent.display_name }}</span>
-            {% if agent.persona_name %}<span class="persona-name">{{ agent.persona_name }}</span>{% endif %}
-            <span class="sbadge {% if agent.enabled %}s-on{% else %}s-off{% endif %}">
-              {{ "ON" if agent.enabled else "OFF" }}
-            </span>
-            <span class="kind-badge kind-{{ agent.kind }}">
-              {{ "🧠 reasoning" if agent.kind == "reasoning" else "⚙ mechanical" }}
-            </span>
-          </div>
-          <div class="agent-desc">{{ agent.description }}</div>
-        </div>
-        <div class="d-flex flex-column align-items-end gap-2 ms-2">
-          <span class="sbadge s-{{ agent.status }}" id="status-{{ agent.name }}">
-            {{ agent.status | upper }}
-          </span>
-          <button class="btn-run" onclick="triggerAgent('{{ agent.name }}')"
-                  id="btn-{{ agent.name }}"
-                  {% if agent.status == 'running' %}disabled{% endif %}>
-            ▶ RUN
-          </button>
-        </div>
+      <div class="agent-head" onclick="this.parentNode.classList.toggle('open')">
+        <span class="agent-name">{{ agent.display_name }}</span>
+        {% if agent.persona_name %}<span class="persona-name">{{ agent.persona_name }}</span>{% endif %}
+        <span class="sbadge s-{{ agent.status }}" id="status-{{ agent.name }}">{{ agent.status | upper }}</span>
+        {% if not agent.enabled %}<span class="sbadge s-off">OFF</span>{% endif %}
+        <span class="agent-chev">▾</span>
       </div>
-      {% if agent.schedule %}<div class="agent-sched mt-2">⏱ {{ agent.schedule }}</div>{% endif %}
-      {% if agent.last_run %}<div class="last-run">Last run: {{ agent.last_run }}</div>{% endif %}
-      {% if agent.last_error %}<div class="mt-1 small" style="color:#cc3344;font-size:0.7rem">⚠ {{ agent.last_error }}</div>{% endif %}
-      {% if agent.latest_report_preview %}<div class="preview-text">{{ agent.latest_report_preview }}…</div>{% endif %}
+      <div class="agent-detail">
+        <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+          <span class="kind-badge kind-{{ agent.kind }}">
+            {{ "🧠 reasoning" if agent.kind == "reasoning" else "⚙ mechanical" }}
+          </span>
+          <button class="btn-run" onclick="event.stopPropagation(); triggerAgent('{{ agent.name }}')"
+                  id="btn-{{ agent.name }}" {% if agent.status == 'running' %}disabled{% endif %}>▶ RUN</button>
+        </div>
+        <div class="agent-desc">{{ agent.description }}</div>
+        {% if agent.schedule %}<div class="agent-sched mt-2">⏱ {{ agent.schedule }}</div>{% endif %}
+        {% if agent.last_run %}<div class="last-run">Last run: {{ agent.last_run }}</div>{% endif %}
+        {% if agent.last_error %}<div class="mt-1 small" style="color:#cc3344;font-size:0.7rem">⚠ {{ agent.last_error }}</div>{% endif %}
+        {% if agent.latest_report_preview %}<div class="preview-text">{{ agent.latest_report_preview }}…</div>{% endif %}
+      </div>
     </div>
     {% else %}
     <div style="color:#2d4055;font-size:0.8rem">No agents registered yet.</div>
@@ -1024,13 +1014,6 @@
 <div class="agents-section" id="widget-section" style="display:none">
   <div class="section-label">Live Widgets</div>
   <div id="widget-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px"></div>
-</div>
-<!-- ── Tool Event Timeline ── -->
-<div class="timeline-section">
-  <div class="conv-section-label">Tool Events</div>
-  <div id="tool-timeline">
-    <div style="font-size:0.78rem;color:#2d4055">No tool events yet…</div>
-  </div>
 </div>
 <!-- ── Agent Activity (DEV mode) ── -->
 <div class="timeline-section" id="dev-activity-section" style="display:none">
@@ -1454,31 +1437,6 @@ function renderConversation(msgs, toolEvents) {
   }
 }
 
-function renderToolEvents(events) {
-  const tl = document.getElementById('tool-timeline');
-  if (!events || events.length === 0) {
-    tl.innerHTML = '<div style="font-size:0.78rem;color:#2d4055">No tool events yet…</div>';
-    return;
-  }
-  tl.innerHTML = events.map((e, idx) => {
-    const isLast   = idx === events.length - 1;
-    const dotClass = e.status === 'done' ? 'done' : e.status === 'calling' ? 'calling' : 'error';
-    const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
-    return `<div class="tl-entry">
-      <div class="tl-spine">
-        <div class="tl-dot ${dotClass}"></div>
-        ${!isLast ? '<div class="tl-line"></div>' : ''}
-      </div>
-      <div class="tl-content">
-        <div class="tl-tool ${dotClass}">${esc(e.tool)}</div>
-        ${e.args_preview ? `<div class="tl-args">${esc(e.args_preview)}</div>` : ''}
-        ${e.result_preview && e.status === 'done' ? `<div class="tl-result">${esc(e.result_preview)}</div>` : ''}
-        <div class="tl-ts">${ts}</div>
-      </div>
-    </div>`;
-  }).join('');
-}
-
 // SSE connection with polling fallback
 function connectSSE() {
   const evtSource = new EventSource('/api/stream');
@@ -1486,7 +1444,6 @@ function connectSSE() {
     try {
       const data = JSON.parse(e.data);
       if (data.messages)     renderConversation(data.messages, data.tool_events);
-      if (data.tool_events)  renderToolEvents(data.tool_events);
       if (data.voice_state)  setState(data.voice_state, data.thinking_word);
     } catch(err) { console.warn('SSE parse error', err); }
   };
