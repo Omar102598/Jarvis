@@ -579,6 +579,12 @@
        became a tall ribbon to scroll past; what you want at a glance is which
        agents exist and what state each is in. Detail is one click away. */
     .agents-grid { display: flex; flex-direction: column; gap: 6px; }
+    /* 22 agents is a long list. Capped with its own scroll so it cannot push
+       the widgets and approvals above it off screen — the list is a control
+       surface you consult, not something to scroll past every time. */
+    .col-side .agents-grid { max-height: 46vh; overflow-y: auto; padding-right: 4px; }
+    .col-side .agents-grid::-webkit-scrollbar { width: 3px; }
+    .col-side .agents-grid::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 2px; }
     .agent-head { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
     .agent-head:hover .agent-name { color: var(--j-blue); }
     .agent-chev { margin-left: auto; font-size: 0.6rem; color: #2d6a8a; transition: transform .15s; }
@@ -976,6 +982,18 @@
   <div class="section-label">Approvals — Waiting on You</div>
   <div id="approvals-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px"></div>
 </div>
+<!-- ── Dynamic Widgets ── -->
+<div class="agents-section" id="widget-section" style="display:none">
+  <div class="section-label">Live Widgets</div>
+  <div id="widget-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px"></div>
+</div>
+<!-- ── Agent Activity (DEV mode) ── -->
+<div class="timeline-section" id="dev-activity-section" style="display:none">
+  <div class="conv-section-label">Agent Activity
+    <span style="color:var(--j-gold);font-size:0.56rem;letter-spacing:2px;margin-left:8px">DEV</span>
+  </div>
+  <div id="dev-activity">
+    <div style="font-size:0.78rem;color:#2d4055">No agent activity yet…</div>
 <!-- ── Agents ── -->
 <div class="agents-section">
   <div class="section-label">Background Agents</div>
@@ -1010,18 +1028,6 @@
     {% endfor %}
   </div>
 </div>
-<!-- ── Dynamic Widgets ── -->
-<div class="agents-section" id="widget-section" style="display:none">
-  <div class="section-label">Live Widgets</div>
-  <div id="widget-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px"></div>
-</div>
-<!-- ── Agent Activity (DEV mode) ── -->
-<div class="timeline-section" id="dev-activity-section" style="display:none">
-  <div class="conv-section-label">Agent Activity
-    <span style="color:var(--j-gold);font-size:0.56rem;letter-spacing:2px;margin-left:8px">DEV</span>
-  </div>
-  <div id="dev-activity">
-    <div style="font-size:0.78rem;color:#2d4055">No agent activity yet…</div>
   </div>
 </div>
   </div>
