@@ -36,6 +36,10 @@ PRICES: dict[str, tuple[float, float]] = {
 }
 _DEFAULT_PRICE = (1.00, 3.00)
 
+# Anthropic prompt-caching rates, relative to the input price.
+CACHE_READ_MULTIPLIER = 0.10
+CACHE_WRITE_MULTIPLIER = 1.25
+
 _r = redis.Redis(host=REDIS_HOST, decode_responses=True)
 
 
@@ -58,11 +62,41 @@ def record_response(response) -> None:
         meta = getattr(response, "response_metadata", None) or {}
         model = meta.get("model") or meta.get("model_name") or ""
         pin, pout = _price_for(model)
-        cost = (in_tok / 1_000_000) * pin + (out_tok / 1_000_000) * pout
+
+        # Cached input is NOT billed at the input rate, and this matters far
+        # more here than it looks: the system prompt carries ~260 tool schemas
+        # and is marked cache_control, so nearly every input token on every turn
+        # is a cache READ. Anthropic bills those at 10% of input, and cache
+        # WRITES at 125%.
+        #
+        # input_tokens INCLUDES both, verified against a live response:
+        #   {"input_tokens": 6016,
+        #    "input_token_details": {"cache_read": 6009, ...}}
+        # so charging the whole figure at the input rate overstated brain cost
+        # by roughly 10x — reporting ~$36 across four days that actually cost
+        # about $4, and tripping the daily budget alarm on spend that never
+        # happened.
+        details = usage.get("input_token_details") or {}
+        cache_read = int(details.get("cache_read", 0) or 0)
+        # Writes appear as cache_creation on some responses and as the
+        # ephemeral_* buckets on others — the live probe showed the latter.
+        cache_write = (int(details.get("cache_creation", 0) or 0)
+                       or int(details.get("ephemeral_5m_input_tokens", 0) or 0)
+                       + int(details.get("ephemeral_1h_input_tokens", 0) or 0))
+        fresh_in = max(in_tok - cache_read - cache_write, 0)
+
+        cost = (
+            (fresh_in / 1_000_000) * pin
+            + (cache_read / 1_000_000) * pin * CACHE_READ_MULTIPLIER
+            + (cache_write / 1_000_000) * pin * CACHE_WRITE_MULTIPLIER
+            + (out_tok / 1_000_000) * pout
+        )
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         key = f"usage:daily:{day}"
         pipe = _r.pipeline()
         pipe.hincrby(key, "brain:in", in_tok)
+        pipe.hincrby(key, "brain:cache_read", cache_read)
+        pipe.hincrby(key, "brain:fresh_in", fresh_in)
         pipe.hincrby(key, "brain:out", out_tok)
         pipe.hincrbyfloat(key, "brain:cost", float(cost))
         pipe.hincrbyfloat(key, "_total:cost", float(cost))
