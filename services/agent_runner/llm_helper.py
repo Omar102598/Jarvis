@@ -35,10 +35,19 @@ async def complete(system: str, user: str, max_tokens: int = 800,
         from anthropic import AsyncAnthropic
 
         client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+        # NO temperature here. anthropic SDK 1.2.0 removed it from
+        # messages.create(), so passing it raises
+        #     TypeError: AsyncMessages.create() got an unexpected keyword
+        #                argument 'temperature'
+        # which killed every agent on this path — the failure looked like six
+        # unrelated broken agents rather than one SDK change.
+        #
+        # The parameter stays in this function's signature: callers pass it, and
+        # the OpenAI-compatible path below (local models via Ollama) still
+        # honours it.
         resp = await client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            temperature=temperature,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
