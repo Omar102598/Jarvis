@@ -27,6 +27,23 @@ mkdir -p "$REPO_DIR/logs"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 healed=()
 
+# --- Role: is the core stack local, or on the VM? ----------------------------
+# After the move to GCP this script kept "healing" jarvis-llm, redis, mqtt and
+# friends ON THE MAC, because it assumed the core stack was always local. Every
+# five minutes it started a duplicate of services that now live on the VM — a
+# full shadow stack ran here for three days, executing the same scheduled
+# agents twice and spending against the same API key.
+#
+# Rather than hardcode a role, infer it: if REDIS_HOST points somewhere other
+# than this machine, the core lives elsewhere and must not be started here.
+CORE_HOST="$(grep -E '^REDIS_HOST=' "$REPO_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d ' \r')"
+case "${CORE_HOST:-localhost}" in
+  ""|localhost|127.0.0.1|redis|host.docker.internal) ROLE="core" ;;
+  *)                                                 ROLE="edge" ;;
+esac
+COMPOSE_CORE="$REPO_DIR/docker-compose.core.yml"
+[[ -f "$COMPOSE_CORE" ]] || COMPOSE_CORE="$REPO_DIR/docker-compose.yml"
+
 # --- 1. Native audio processes ------------------------------------------------
 audio_dead=0
 if [[ -f "$PIDS_FILE" ]]; then
@@ -48,7 +65,8 @@ if [[ "$audio_dead" == "1" ]]; then
   healed+=("native audio")
 fi
 
-# --- 1.5 Docker disk pressure ------------------------------------------------
+# --- 1.5 Docker disk pressure (core host only) -------------------------------
+if [[ "$ROLE" == "core" ]]; then
 # Today's outage: the Docker VM disk filled from repeated builds → Redis AOF
 # writes failed → agent_runner crash-looped. Prune BEFORE that happens.
 reclaim_gb=$(docker system df --format '{{.Reclaimable}}' 2>/dev/null \
@@ -68,31 +86,37 @@ if ! docker exec jarvis-redis redis-cli set __wd_disk ok >/dev/null 2>&1; then
 fi
 docker exec jarvis-redis redis-cli del __wd_disk >/dev/null 2>&1
 
-# --- 2. Redis / MQTT reachability --------------------------------------------
+fi
+
+# --- 2. Redis / MQTT reachability (core host only) ---------------------------
+if [[ "$ROLE" == "core" ]]; then
 if ! docker exec jarvis-redis redis-cli ping 2>/dev/null | grep -q PONG; then
   log "Redis not responding — restarting container"
-  docker compose -f "$REPO_DIR/docker-compose.yml" up -d redis >/dev/null 2>&1
+  docker compose -f "$COMPOSE_CORE" -p jarvis up -d redis >/dev/null 2>&1
   healed+=("redis")
 fi
 if ! docker exec jarvis-mqtt mosquitto_sub -t '$SYS/#' -C 1 -W 3 >/dev/null 2>&1; then
   log "MQTT not responding — restarting container"
-  docker compose -f "$REPO_DIR/docker-compose.yml" up -d mosquitto >/dev/null 2>&1
+  docker compose -f "$COMPOSE_CORE" -p jarvis up -d mosquitto >/dev/null 2>&1
   healed+=("mqtt")
 fi
 
 # --- 3. Expected containers up ------------------------------------------------
+# Core services only exist on the core host; on the edge these live on the VM.
 EXPECTED=(jarvis-llm jarvis-agent-runner jarvis-mobile-gateway jarvis-synapse jarvis-redis jarvis-mqtt)
 for c in "${EXPECTED[@]}"; do
   status="$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null || echo missing)"
   if [[ "$status" != "true" ]]; then
     svc="${c#jarvis-}"; svc="${svc//-/_}"
     log "container $c not running ($status) — bringing up $svc"
-    docker compose -f "$REPO_DIR/docker-compose.yml" up -d "$svc" >/dev/null 2>&1
+    docker compose -f "$COMPOSE_CORE" -p jarvis up -d "$svc" >/dev/null 2>&1
     healed+=("$c")
   fi
 done
+fi   # end core-only block
 
-# --- 3.5 Mobile gateway HTTP liveness -----------------------------------------
+# --- 3.5 Mobile gateway HTTP liveness (core host only) ------------------------
+if [[ "$ROLE" == "core" ]]; then
 # The container can be "Up" while hung on the startup Whisper download (model
 # loads before uvicorn binds 8080), so .State.Running alone misses it. Two
 # strikes (~10 min apart) before restarting, so a legitimate slow model load
@@ -113,6 +137,8 @@ if docker inspect -f '{{.State.Running}}' jarvis-mobile-gateway 2>/dev/null | gr
   else
     rm -f "$GW_FAIL_STAMP"
   fi
+fi
+
 fi
 
 # --- 4. Alert (at most once/hour) --------------------------------------------
