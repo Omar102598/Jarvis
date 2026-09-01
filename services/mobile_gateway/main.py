@@ -107,7 +107,25 @@ _ws_lock = asyncio.Lock()
 # ---------------------------------------------------------------------------
 
 print("[Gateway] Loading Whisper turbo model (CPU)...")
-_stt_model = WhisperModel("turbo", device="cpu", compute_type="int8")
+# Whisper model for the gateway's speech path. Benchmarked on this VM
+# (2 vCPU) against the same 3-second utterance, all three transcribing it
+# identically ("What is the weather in Dallas right now?"):
+#
+#     base.en    2.1s
+#     small.en   6.7s
+#     turbo     59.3s
+#
+# turbo was 28x slower than base.en for the same output — it is a
+# transcription-quality model being asked to do short command recognition, and
+# it made the voice round-trip ~36s end to end. base.en is the right default for
+# short English commands from a close microphone.
+#
+# Configurable because the tradeoff is real: larger models handle accents,
+# background noise and unusual vocabulary better. Raise this if transcription
+# quality suffers, and prefer more vCPUs over a larger model if latency matters.
+STT_MODEL = os.environ.get("STT_MODEL", "base.en").strip() or "base.en"
+_stt_model = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
+print(f"[Gateway] STT model: {STT_MODEL}", flush=True)
 print("[Gateway] Whisper ready.")
 
 

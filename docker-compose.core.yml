@@ -125,6 +125,8 @@ services:
       - MOBILE_LLM_TIMEOUT=${MOBILE_LLM_TIMEOUT:-45}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GEMINI_VIDEO_MODEL=${GEMINI_VIDEO_MODEL:-gemini-3.6-flash}
+      # base.en ~2s vs turbo ~59s on 2 vCPU; raise only if accuracy suffers
+      - STT_MODEL=${STT_MODEL:-base.en}
       # Vertex AI path: billed to the GCP project (ordinary GCP credit),
       # authenticated by the VM's own service account — no key needed.
       - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
