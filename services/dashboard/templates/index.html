@@ -578,11 +578,24 @@
     /* A list, not a card wall. Stacked in the side column the verbose cards
        became a tall ribbon to scroll past; what you want at a glance is which
        agents exist and what state each is in. Detail is one click away. */
+    /* Widgets are metrics, not a column. Stacked in the side column they were
+       tall enough to consume it and push all 22 agents below the fold. A capped
+       full-width strip keeps them glanceable without costing the workspace. */
+    .widget-strip { padding: 0 20px 14px; position: relative; z-index: 1; }
+    .widget-strip #widget-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px; align-items: start;
+    }
+    .widget-strip #widget-grid > * { max-height: 200px; overflow-y: auto; }
+    .widget-strip #widget-grid > *::-webkit-scrollbar { width: 3px; }
+    .widget-strip #widget-grid > *::-webkit-scrollbar-thumb {
+      background: var(--j-border); border-radius: 2px;
+    }
     .agents-grid { display: flex; flex-direction: column; gap: 6px; }
     /* 22 agents is a long list. Capped with its own scroll so it cannot push
        the widgets and approvals above it off screen — the list is a control
        surface you consult, not something to scroll past every time. */
-    .col-side .agents-grid { max-height: 46vh; overflow-y: auto; padding-right: 4px; }
+    .col-side .agents-grid { max-height: 62vh; overflow-y: auto; padding-right: 4px; }
     .col-side .agents-grid::-webkit-scrollbar { width: 3px; }
     .col-side .agents-grid::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 2px; }
     .agent-head { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
@@ -963,6 +976,12 @@
   <span class="hud-bar-item">T+ <span id="hb-up">00:00</span></span>
 </div>
 
+<!-- ── Dynamic Widgets ── -->
+<div class="widget-strip" id="widget-section" style="display:none">
+  <div class="section-label">Live Widgets</div>
+  <div id="widget-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px"></div>
+</div>
+
 <div class="workspace">
   <!-- Primary: the conversation. -->
   <div class="col-main">
@@ -982,11 +1001,7 @@
   <div class="section-label">Approvals — Waiting on You</div>
   <div id="approvals-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px"></div>
 </div>
-<!-- ── Dynamic Widgets ── -->
-<div class="agents-section" id="widget-section" style="display:none">
-  <div class="section-label">Live Widgets</div>
-  <div id="widget-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px"></div>
-</div>
+
 <!-- ── Agent Activity (DEV mode) ── -->
 <div class="timeline-section" id="dev-activity-section" style="display:none">
   <div class="conv-section-label">Agent Activity
@@ -994,6 +1009,9 @@
   </div>
   <div id="dev-activity">
     <div style="font-size:0.78rem;color:#2d4055">No agent activity yet…</div>
+  </div>
+</div>
+
 <!-- ── Agents ── -->
 <div class="agents-section">
   <div class="section-label">Background Agents</div>
@@ -1026,8 +1044,6 @@
     {% else %}
     <div style="color:#2d4055;font-size:0.8rem">No agents registered yet.</div>
     {% endfor %}
-  </div>
-</div>
   </div>
 </div>
   </div>
