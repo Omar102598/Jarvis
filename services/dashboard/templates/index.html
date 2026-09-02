@@ -230,6 +230,28 @@
     .hud-corner.bl::after { left: -1px; }
     .hud-corner.br::after { right: -1px; }
 
+    /* The orb band ran 1916px wide while using only 820 of it — ~1100px of dead
+       space split either side, with the widgets in a separate band below costing
+       another 255px of height. Three columns (1fr auto 1fr) fill those flanks and
+       keep the orb exactly centred, since equal fr columns balance around it. */
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 24px;
+      width: 100%;
+      max-width: 1800px;
+    }
+    .hero-flank { min-width: 0; }            /* or grid children refuse to shrink */
+    .hero-flank .last-response { max-width: 100%; text-align: left; }
+    .hero-flank .widget-strip { max-width: 100%; padding: 0; }
+    .hero-flank .section-label { text-align: left; }
+    /* Below this the flanks get too narrow to read, so fall back to stacking. */
+    @media (max-width: 1400px) {
+      .hero-grid { grid-template-columns: 1fr; justify-items: center; }
+      .hero-flank .last-response { text-align: center; }
+    }
+
     /* Hero inner row: side panels + orb */
     .hero-row {
       display: flex;
@@ -414,7 +436,7 @@
 
     /* ── Last response ── */
     .last-response {
-      max-width: 680px;
+      max-width: 900px;
       width: 100%;
       text-align: center;
       color: #7dc8e8;
@@ -466,7 +488,7 @@
 
     /* ── Conversation ── */
     .conv-section {
-      max-width: 760px;
+      max-width: 1100px;
       width: 100%;
       margin: 12px auto 28px;
       padding: 0 20px;
@@ -581,12 +603,16 @@
     /* Widgets are metrics, not a column. Stacked in the side column they were
        tall enough to consume it and push all 22 agents below the fold. A capped
        full-width strip keeps them glanceable without costing the workspace. */
-    .widget-strip { padding: 0 20px 14px; position: relative; z-index: 1; }
+    /* The hero band was 1916px wide using 820 — roughly 1100px of dead space
+       flanking the orb, while the widgets sat in their own band below costing
+       another 255px of height. They now live in that dead space: same glance,
+       no extra band, and the workspace moves up a full screen-quarter. */
+    .widget-strip { width: 100%; max-width: 1500px; padding: 14px 20px 0; }
     .widget-strip #widget-grid {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       gap: 12px; align-items: start;
     }
-    .widget-strip #widget-grid > * { max-height: 200px; overflow-y: auto; }
+    .widget-strip #widget-grid > * { max-height: 285px; overflow-y: auto; }
     .widget-strip #widget-grid > *::-webkit-scrollbar { width: 3px; }
     .widget-strip #widget-grid > *::-webkit-scrollbar-thumb {
       background: var(--j-border); border-radius: 2px;
@@ -596,6 +622,13 @@
        the widgets and approvals above it off screen — the list is a control
        surface you consult, not something to scroll past every time. */
     .col-side .agents-grid { max-height: 62vh; overflow-y: auto; padding-right: 4px; }
+    /* Without this the capped list does not scroll — it CRUSHES.
+       .agents-grid is a flex column, flex children default to flex-shrink: 1,
+       and a max-height on the container makes 22 cards compress to fit rather
+       than overflow. Each row rendered at 22px against a natural 41px, so the
+       names were clipped and the rows visually collided. flex: 0 0 auto keeps
+       each row its own height and lets the container scroll as intended. */
+    .col-side .agents-grid > .agent-card { flex: 0 0 auto; }
     .col-side .agents-grid::-webkit-scrollbar { width: 3px; }
     .col-side .agents-grid::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 2px; }
     .agent-head { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
@@ -834,139 +867,160 @@
   <div class="hud-corner bl"></div>
   <div class="hud-corner br"></div>
 
-  <div class="hero-row">
+  <div class="hero-grid">
 
-    <!-- Left data panel -->
-    <div class="side-panel left" id="panel-left">
-      <div class="sp-label">SYS STATUS</div>
-      <div class="sp-row"><span class="sp-key">STATE</span><span class="sp-val" id="sp-state">READY</span></div>
-      <div class="sp-row"><span class="sp-key">UPTIME</span><span class="sp-val" id="sp-uptime">00:00:00</span></div>
-      <div class="sp-row"><span class="sp-key">AGENTS</span><span class="sp-val" id="sp-agents">—</span></div>
-      <div class="sp-row"><span class="sp-key">MEM</span>
-        <span class="sp-val">
-          <span class="sp-bar"><span class="sp-bar-fill" id="sp-mem-bar" style="width:42%"></span></span>
-        </span>
+    <!-- Left flank: what Jarvis last said -->
+    <div class="hero-flank hero-flank-left">
+      <div class="last-response" id="last-response">
+          Say <strong style="color:var(--j-blue)">"Hey Jarvis"</strong> to begin.
+        </div>
+    </div>
+
+    <div class="hero-row">
+
+        <!-- Left data panel -->
+        <div class="side-panel left" id="panel-left">
+          <div class="sp-label">SYS STATUS</div>
+          <div class="sp-row"><span class="sp-key">STATE</span><span class="sp-val" id="sp-state">READY</span></div>
+          <div class="sp-row"><span class="sp-key">UPTIME</span><span class="sp-val" id="sp-uptime">00:00:00</span></div>
+          <div class="sp-row"><span class="sp-key">AGENTS</span><span class="sp-val" id="sp-agents">—</span></div>
+          <div class="sp-row"><span class="sp-key">MEM</span>
+            <span class="sp-val">
+              <span class="sp-bar"><span class="sp-bar-fill" id="sp-mem-bar" style="width:42%"></span></span>
+            </span>
+          </div>
+          <br>
+          <div class="sp-label">NETWORK</div>
+          <div class="sp-row"><span class="sp-key">MQTT</span><span class="sp-val" id="sp-mqtt" style="color:var(--j-green)">ONLINE</span></div>
+          <div class="sp-row"><span class="sp-key">REDIS</span><span class="sp-val" id="sp-redis" style="color:var(--j-green)">ONLINE</span></div>
+          <div class="sp-row"><span class="sp-key">API</span><span class="sp-val" style="color:var(--j-green)">ACTIVE</span></div>
+        </div>
+
+        <!-- Orb scene -->
+        <div class="orb-scene">
+
+          <!-- Halo pulse rings -->
+          <div class="halo"></div>
+          <div class="halo"></div>
+          <div class="halo"></div>
+
+          <!-- SVG arc reticles -->
+          <svg class="arc-svg" viewBox="-150 -150 300 300" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+                <feGaussianBlur stdDeviation="2.5" result="blur"/>
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+              <filter id="glow-sm" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="1.5" result="blur"/>
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+
+            <!-- Outer arc: broken, rotating CW slowly -->
+            <g class="arc-outer">
+              <circle cx="0" cy="0" r="138"
+                fill="none" stroke="rgba(0,212,255,0.22)" stroke-width="1"
+                stroke-dasharray="180 20 60 20 40 20 80 20"/>
+              <!-- bright arc segment with glow -->
+              <path d="M 0,-138 A 138,138 0 0,1 138,0"
+                fill="none" stroke="rgba(0,212,255,0.55)" stroke-width="1.5"
+                filter="url(#glow-sm)"/>
+              <!-- orbiting dot -->
+              <circle cx="138" cy="0" r="3.5" fill="var(--j-blue)" filter="url(#glow)"/>
+            </g>
+
+            <!-- Mid arc: dashes, rotating CCW -->
+            <g class="arc-mid">
+              <circle cx="0" cy="0" r="118"
+                fill="none" stroke="rgba(0,212,255,0.18)" stroke-width="1"
+                stroke-dasharray="12 10 40 10 8 10"/>
+              <!-- second bright spot on mid -->
+              <circle cx="0" cy="-118" r="2.5" fill="rgba(0,212,255,0.7)" filter="url(#glow-sm)"/>
+            </g>
+
+            <!-- Inner ring: tick marks, fast CW -->
+            <g class="arc-inner">
+              <circle cx="0" cy="0" r="98"
+                fill="none" stroke="rgba(0,212,255,0.12)" stroke-width="0.8"
+                stroke-dasharray="3 22"/>
+              <circle cx="98" cy="0" r="1.8" fill="rgba(0,212,255,0.5)"/>
+            </g>
+
+            <!-- Scan sweep line (shows on listening/thinking) -->
+            <g class="arc-sweep">
+              <g class="arc-sweep-line">
+                <line x1="0" y1="0" x2="0" y2="-130"
+                  stroke="url(#sweep-grad)" stroke-width="1.5" opacity="0.6"/>
+                <circle cx="0" cy="-130" r="2" fill="rgba(0,212,255,0.8)"/>
+              </line>
+              <!-- gradient for sweep arm -->
+              <defs>
+                <linearGradient id="sweep-grad" x1="0" y1="1" x2="0" y2="0" gradientUnits="objectBoundingBox">
+                  <stop offset="0%"   stop-color="rgba(0,212,255,0)"/>
+                  <stop offset="100%" stop-color="rgba(0,212,255,0.7)"/>
+                </linearGradient>
+              </defs>
+            </g>
+
+            <!-- Cardinal tick marks (static, at N/E/S/W) -->
+            <g stroke="rgba(0,212,255,0.3)" stroke-width="1">
+              <line x1="0"    y1="-148" x2="0"    y2="-138"/>
+              <line x1="0"    y1="138"  x2="0"    y2="148"/>
+              <line x1="-148" y1="0"    x2="-138" y2="0"/>
+              <line x1="138"  y1="0"    x2="148"  y2="0"/>
+            </g>
+            <!-- Diagonal ticks at 45° -->
+            <g stroke="rgba(0,212,255,0.15)" stroke-width="0.8">
+              <line x1="95"  y1="-95"  x2="100" y2="-100"/>
+              <line x1="-95" y1="-95"  x2="-100" y2="-100"/>
+              <line x1="95"  y1="95"   x2="100" y2="100"/>
+              <line x1="-95" y1="95"   x2="-100" y2="100"/>
+            </g>
+          </svg>
+
+          <!-- Ring waveform canvas -->
+          <canvas id="orb-canvas" width="290" height="290"></canvas>
+
+          <!-- Core sphere -->
+          <div class="orb-core" id="orb-core">
+            <div class="orb-label">J.A.R.V.I.S</div>
+            <div class="orb-status" id="core-status">READY</div>
+          </div>
+        </div>
+
+        <!-- Right data panel -->
+        <div class="side-panel right" id="panel-right">
+          <div class="sp-label">VOICE PIPELINE</div>
+          <div class="sp-row"><span class="sp-val" id="sp-stt">STT</span><span class="sp-key">WHISPER</span></div>
+          <div class="sp-row"><span class="sp-val" id="sp-tts">TTS</span><span class="sp-key">EDGE-TTS</span></div>
+          <div class="sp-row"><span class="sp-val" id="sp-llm">LLM</span><span class="sp-key">CLAUDE</span></div>
+          <br>
+          <div class="sp-label">SURFACES</div>
+          <div class="sp-row"><span class="sp-val" id="sp-mac">MAC</span><span class="sp-key">ACTIVE</span></div>
+          <div class="sp-row"><span class="sp-val" id="sp-phone">PHONE</span><span class="sp-key">STANDBY</span></div>
+          <br>
+          <div class="sp-label">LAST QUERY</div>
+          <div id="sp-last-q" style="color:rgba(0,212,255,0.4);font-size:0.58rem;line-height:1.5;word-break:break-word;text-align:right">—</div>
+        </div>
+
+      </div><!-- /hero-row -->
+
+    <!-- Right flank: live widgets -->
+    <div class="hero-flank hero-flank-right">
+      <!-- ── Dynamic Widgets ── -->
+      <div class="widget-strip" id="widget-section" style="display:none">
+        <div class="section-label">Live Widgets</div>
+        <div id="widget-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px"></div>
       </div>
-      <br>
-      <div class="sp-label">NETWORK</div>
-      <div class="sp-row"><span class="sp-key">MQTT</span><span class="sp-val" id="sp-mqtt" style="color:var(--j-green)">ONLINE</span></div>
-      <div class="sp-row"><span class="sp-key">REDIS</span><span class="sp-val" id="sp-redis" style="color:var(--j-green)">ONLINE</span></div>
-      <div class="sp-row"><span class="sp-key">API</span><span class="sp-val" style="color:var(--j-green)">ACTIVE</span></div>
     </div>
 
-    <!-- Orb scene -->
-    <div class="orb-scene">
+  </div><!-- /hero-grid -->
 
-      <!-- Halo pulse rings -->
-      <div class="halo"></div>
-      <div class="halo"></div>
-      <div class="halo"></div>
 
-      <!-- SVG arc reticles -->
-      <svg class="arc-svg" viewBox="-150 -150 300 300" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="2.5" result="blur"/>
-            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-          </filter>
-          <filter id="glow-sm" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="1.5" result="blur"/>
-            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-          </filter>
-        </defs>
 
-        <!-- Outer arc: broken, rotating CW slowly -->
-        <g class="arc-outer">
-          <circle cx="0" cy="0" r="138"
-            fill="none" stroke="rgba(0,212,255,0.22)" stroke-width="1"
-            stroke-dasharray="180 20 60 20 40 20 80 20"/>
-          <!-- bright arc segment with glow -->
-          <path d="M 0,-138 A 138,138 0 0,1 138,0"
-            fill="none" stroke="rgba(0,212,255,0.55)" stroke-width="1.5"
-            filter="url(#glow-sm)"/>
-          <!-- orbiting dot -->
-          <circle cx="138" cy="0" r="3.5" fill="var(--j-blue)" filter="url(#glow)"/>
-        </g>
 
-        <!-- Mid arc: dashes, rotating CCW -->
-        <g class="arc-mid">
-          <circle cx="0" cy="0" r="118"
-            fill="none" stroke="rgba(0,212,255,0.18)" stroke-width="1"
-            stroke-dasharray="12 10 40 10 8 10"/>
-          <!-- second bright spot on mid -->
-          <circle cx="0" cy="-118" r="2.5" fill="rgba(0,212,255,0.7)" filter="url(#glow-sm)"/>
-        </g>
 
-        <!-- Inner ring: tick marks, fast CW -->
-        <g class="arc-inner">
-          <circle cx="0" cy="0" r="98"
-            fill="none" stroke="rgba(0,212,255,0.12)" stroke-width="0.8"
-            stroke-dasharray="3 22"/>
-          <circle cx="98" cy="0" r="1.8" fill="rgba(0,212,255,0.5)"/>
-        </g>
-
-        <!-- Scan sweep line (shows on listening/thinking) -->
-        <g class="arc-sweep">
-          <g class="arc-sweep-line">
-            <line x1="0" y1="0" x2="0" y2="-130"
-              stroke="url(#sweep-grad)" stroke-width="1.5" opacity="0.6"/>
-            <circle cx="0" cy="-130" r="2" fill="rgba(0,212,255,0.8)"/>
-          </line>
-          <!-- gradient for sweep arm -->
-          <defs>
-            <linearGradient id="sweep-grad" x1="0" y1="1" x2="0" y2="0" gradientUnits="objectBoundingBox">
-              <stop offset="0%"   stop-color="rgba(0,212,255,0)"/>
-              <stop offset="100%" stop-color="rgba(0,212,255,0.7)"/>
-            </linearGradient>
-          </defs>
-        </g>
-
-        <!-- Cardinal tick marks (static, at N/E/S/W) -->
-        <g stroke="rgba(0,212,255,0.3)" stroke-width="1">
-          <line x1="0"    y1="-148" x2="0"    y2="-138"/>
-          <line x1="0"    y1="138"  x2="0"    y2="148"/>
-          <line x1="-148" y1="0"    x2="-138" y2="0"/>
-          <line x1="138"  y1="0"    x2="148"  y2="0"/>
-        </g>
-        <!-- Diagonal ticks at 45° -->
-        <g stroke="rgba(0,212,255,0.15)" stroke-width="0.8">
-          <line x1="95"  y1="-95"  x2="100" y2="-100"/>
-          <line x1="-95" y1="-95"  x2="-100" y2="-100"/>
-          <line x1="95"  y1="95"   x2="100" y2="100"/>
-          <line x1="-95" y1="95"   x2="-100" y2="100"/>
-        </g>
-      </svg>
-
-      <!-- Ring waveform canvas -->
-      <canvas id="orb-canvas" width="290" height="290"></canvas>
-
-      <!-- Core sphere -->
-      <div class="orb-core" id="orb-core">
-        <div class="orb-label">J.A.R.V.I.S</div>
-        <div class="orb-status" id="core-status">READY</div>
-      </div>
-    </div>
-
-    <!-- Right data panel -->
-    <div class="side-panel right" id="panel-right">
-      <div class="sp-label">VOICE PIPELINE</div>
-      <div class="sp-row"><span class="sp-val" id="sp-stt">STT</span><span class="sp-key">WHISPER</span></div>
-      <div class="sp-row"><span class="sp-val" id="sp-tts">TTS</span><span class="sp-key">EDGE-TTS</span></div>
-      <div class="sp-row"><span class="sp-val" id="sp-llm">LLM</span><span class="sp-key">CLAUDE</span></div>
-      <br>
-      <div class="sp-label">SURFACES</div>
-      <div class="sp-row"><span class="sp-val" id="sp-mac">MAC</span><span class="sp-key">ACTIVE</span></div>
-      <div class="sp-row"><span class="sp-val" id="sp-phone">PHONE</span><span class="sp-key">STANDBY</span></div>
-      <br>
-      <div class="sp-label">LAST QUERY</div>
-      <div id="sp-last-q" style="color:rgba(0,212,255,0.4);font-size:0.58rem;line-height:1.5;word-break:break-word;text-align:right">—</div>
-    </div>
-
-  </div><!-- /hero-row -->
-
-  <div class="last-response" id="last-response">
-    Say <strong style="color:var(--j-blue)">"Hey Jarvis"</strong> to begin.
-  </div>
 </div>
 
 <!-- ── HUD telemetry bar ── -->
@@ -976,11 +1030,7 @@
   <span class="hud-bar-item">T+ <span id="hb-up">00:00</span></span>
 </div>
 
-<!-- ── Dynamic Widgets ── -->
-<div class="widget-strip" id="widget-section" style="display:none">
-  <div class="section-label">Live Widgets</div>
-  <div id="widget-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px"></div>
-</div>
+
 
 <div class="workspace">
   <!-- Primary: the conversation. -->
