@@ -26,6 +26,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// Distinguishes the one-shot "set home" fix from ongoing SLC updates.
     private var isSettingHome = false
 
+    /// Event currently being delivered, so repeated self-heals (launch,
+    /// foreground, SLC, requestState) don't pile up concurrent POSTs for it.
+    private var inFlight: String?
+
     override init() {
         super.init()
         manager.delegate = self
@@ -197,13 +201,36 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     // MARK: Backend (de-duped — only post on a real state change)
 
     private func post(_ event: String) {
-        guard lastPosted != event else { return }
-        lastPosted = event
-        Task { await postPresence(event) }
+        guard lastPosted != event, inFlight != event else { return }
+        inFlight = event
+        Task { [weak self] in
+            let delivered = await Self.postPresence(event)
+            await MainActor.run {
+                guard let self else { return }
+                // Only remember the event once the server has actually taken it.
+                // Recording it up-front is what stranded away-mode for hours: the
+                // arrival POST failed, lastPosted advanced to "arrived" anyway,
+                // and because lastPosted is persisted the de-dup guard then
+                // blocked every retry all three self-heal layers attempted — the
+                // recovery path disarmed by the failure it exists to recover from.
+                // Sentry, still reading away, reported the resident on his own
+                // couch as an intruder three times that evening.
+                if delivered { self.lastPosted = event }
+                if self.inFlight == event { self.inFlight = nil }
+            }
+        }
     }
 
-    private func postPresence(_ event: String) async {
-        guard let url = URL(string: "\(JarvisConfig.serverURL)/presence/location") else { return }
+    /// POSTs the event, reporting whether the server confirmed it.
+    ///
+    /// Retries briefly because arriving home is exactly when the phone hands off
+    /// from cellular to Wi-Fi, so the first attempt can land in a dead moment —
+    /// the single likeliest way for an arrival to go missing. Kept short on
+    /// purpose: a region-monitoring wake only gets a few seconds of background
+    /// time, and an unfinished retry is worth less than leaving lastPosted
+    /// untouched so the next self-heal can try again with a clean slate.
+    private static func postPresence(_ event: String) async -> Bool {
+        guard let url = URL(string: "\(JarvisConfig.serverURL)/presence/location") else { return false }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -211,6 +238,16 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             req.setValue(JarvisConfig.apiKey, forHTTPHeaderField: "X-API-Key")
         }
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["event": event])
-        _ = try? await URLSession.shared.data(for: req)
+        req.timeoutInterval = 8
+
+        for delay in [UInt64(0), 1_500_000_000, 4_000_000_000] {
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+            if let (_, resp) = try? await URLSession.shared.data(for: req),
+               let http = resp as? HTTPURLResponse,
+               (200..<300).contains(http.statusCode) {
+                return true
+            }
+        }
+        return false
     }
 }
