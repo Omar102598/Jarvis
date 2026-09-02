@@ -33,7 +33,7 @@ the '{camera}' Ring camera. Assess this snapshot.
 
 CONTEXT (use it — it changes what is notable):
 - This is an {placement} camera.
-- The resident is currently {presence} (phone geofence — reliable).
+- The resident is currently {presence}.{presence_note}
 - Household pets: {pets}. Pets alone are NEVER notable, indoors or out.
 {face_line}
 {resident_hint}
@@ -307,8 +307,41 @@ class SentryAgent(BaseAgent):
         return (f"{GATEWAY_PUBLIC_URL}/ring/snapshot/event/{event_id}.jpg"
                 f"?k={MOBILE_API_KEY}")
 
+    # A physical turn vouches for presence for this long. Matches
+    # PRESENCE_PHYSICAL_TTL_S in the brain, which writes the heartbeat.
+    PRESENCE_ACTIVITY_WINDOW_S = 5400
+
+    def _physical_activity_age(self) -> float | None:
+        """Seconds since somebody last spoke to JARVIS through a house mic.
+
+        None when there is no such record. Written by the brain on every turn
+        from a room in PHYSICAL_ROOMS.
+        """
+        try:
+            raw = self.r.get("presence:physical:ts")
+            if not raw:
+                return None
+            return datetime.now(timezone.utc).timestamp() - float(raw)
+        except Exception:
+            return None
+
+    def _recent_physical_activity(self) -> bool:
+        age = self._physical_activity_age()
+        return age is not None and 0 <= age <= self.PRESENCE_ACTIVITY_WINDOW_S
+
     def _resident_home(self) -> bool:
-        return (self.r.get("user:presence:home") or "") == "1"
+        """Presence from either signal.
+
+        The iPhone geofence used to be the only one, and it fails silently: a
+        missed 'arrived' event left the flag at away for hours, so Sentry
+        reported the resident sitting on his own couch as an intruder three
+        times in one evening. A voice turn through a mic that is physically in
+        the house is independent evidence, and it only ever adds presence —
+        it can never assert that somebody is out.
+        """
+        if (self.r.get("user:presence:home") or "") == "1":
+            return True
+        return self._recent_physical_activity()
 
     async def _face_context(self, device: str) -> str:
         """Deterministic face-ID line for the prompt, from the vision service.
@@ -426,6 +459,22 @@ class SentryAgent(BaseAgent):
         placement = ("INDOOR" if any(h in camera.lower() for h in indoor_hints)
                      else "OUTDOOR")
         presence = "HOME" if self._resident_home() else "AWAY"
+        # When the two presence signals disagree, say so rather than picking one
+        # silently — an alert that claims certainty it does not have is worse
+        # than one that describes what it sees and flags the doubt.
+        presence_note = ""
+        try:
+            if presence == "HOME" and self.r.exists("jarvis:away"):
+                age = self._physical_activity_age()
+                mins = int(age // 60) if age is not None else 0
+                presence_note = (
+                    f"\n- NOTE: the phone geofence still reads AWAY, but somebody "
+                    f"spoke to JARVIS through a microphone inside the house "
+                    f"{mins} minutes ago. The geofence misses arrivals; the "
+                    f"microphone does not move. Treat presence as HOME, and do "
+                    f"NOT call anyone an intruder on presence alone.")
+        except Exception:
+            pass
         face_line = await self._face_context(device) if device else \
             "- Face recognition: unavailable for this event."
         try:
@@ -443,7 +492,8 @@ class SentryAgent(BaseAgent):
                         {"type": "text",
                          "text": _ASSESS_PROMPT.format(
                              kind=kind, camera=camera, placement=placement,
-                             presence=presence, pets=pets, face_line=face_line,
+                             presence=presence, presence_note=presence_note,
+                             pets=pets, face_line=face_line,
                              resident_hint=resident_hint)},
                     ],
                 }],
@@ -456,9 +506,17 @@ class SentryAgent(BaseAgent):
             return None
 
     def _is_away(self) -> bool:
-        """True when the geofence says the resident has left (departure set it)."""
+        """True when the resident has left and nothing contradicts it.
+
+        Away-mode escalates ANY indoor person to a possible intruder, so a
+        stale flag is expensive: it turns ordinary evenings into alarms and
+        trains the resident to ignore the alerts that matter. Recent physical
+        activity overrides the geofence for exactly that reason.
+        """
         try:
-            return bool(self.r.exists("jarvis:away"))
+            if not self.r.exists("jarvis:away"):
+                return False
+            return not self._recent_physical_activity()
         except Exception:
             return False
 

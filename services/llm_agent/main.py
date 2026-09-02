@@ -138,6 +138,18 @@ MQTT_PORT  = int(os.environ.get("MQTT_PORT", "1883"))
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 USER_ID    = os.environ.get("JARVIS_USER_ID", "default")
 
+# Rooms with a real microphone in the house, same convention as stt/tts_mac.
+# A turn arriving from one of these is direct evidence that somebody is
+# physically present; anything else (mobile-*, glasses-*, siri-*, satellite-*)
+# could be anywhere on earth and must never count as being home.
+PHYSICAL_ROOMS = {r.strip() for r in
+                  os.environ.get("PHYSICAL_ROOMS",
+                                 os.environ.get("ROOM_NAME", "office")).split(",")
+                  if r.strip()}
+# How long one physical turn vouches for presence. Long enough to cover a quiet
+# evening on the couch, short enough that it cannot vouch for a whole workday.
+PRESENCE_PHYSICAL_TTL_S = int(os.environ.get("PRESENCE_PHYSICAL_TTL_S", "5400"))
+
 # Load system prompt from file — static portion is eligible for prompt caching
 _PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "system.txt")
 try:
@@ -955,6 +967,19 @@ def _handle_request(client, data):
     if speaker:
         try:
             r.set("jarvis:current_speaker", str(speaker), ex=1800)
+        except Exception:
+            pass
+
+    # Presence heartbeat. The iPhone geofence was the only presence signal and
+    # it fails silently: a missed 'arrived' left away-mode set for hours, and
+    # Sentry duly reported the resident on his own couch as an intruder three
+    # times. Someone speaking to JARVIS through a mic that is bolted to the
+    # house is better evidence of presence than a GPS event that never came.
+    if room in PHYSICAL_ROOMS:
+        try:
+            r.set("presence:physical:ts",
+                  str(datetime.now(timezone.utc).timestamp()),
+                  ex=PRESENCE_PHYSICAL_TTL_S)
         except Exception:
             pass
 
