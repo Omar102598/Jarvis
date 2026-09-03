@@ -20,7 +20,14 @@ import aiohttp
 
 from base_agent import BaseAgent
 
-MAC_BRIDGE_URL = os.environ.get("MAC_BRIDGE_URL", "http://host.docker.internal:7777")
+# An explicit MAC_BRIDGE_URL wins; otherwise build it from the vars compose
+# actually exports (MAC_HOST -> MAC_BRIDGE_HOST). Defaulting straight to
+# host.docker.internal silently stranded this service when the core stack
+# moved to GCP, where that name does not resolve at all.
+MAC_BRIDGE_URL = os.environ.get(
+    "MAC_BRIDGE_URL",
+    f"http://{os.environ.get('MAC_BRIDGE_HOST', 'host.docker.internal')}"
+    f":{os.environ.get('MAC_BRIDGE_PORT', '7777')}")
 MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 SENTRY_MODEL = os.environ.get("SENTRY_MODEL", "claude-haiku-4-5-20251001")
