@@ -101,7 +101,7 @@ services:
       - GATEWAY_PUBLIC_URL=${GATEWAY_PUBLIC_URL}
       - MOBILE_API_KEY=${MOBILE_API_KEY:-}
       # mac_bridge tools (mac_*, dev_*, self_modify) reach the Mac over the tailnet
-      - MAC_BRIDGE_HOST=${MAC_HOST}
+      - MAC_BRIDGE_HOST=${MAC_HOST:-host.docker.internal}
       - MAC_BRIDGE_PORT=${MAC_BRIDGE_PORT:-7777}
     volumes:
       - ./data:/data
@@ -171,7 +171,7 @@ services:
       # Forge + browser scraping reach the Mac's native bridge over the tailnet.
       # NOTE: Forge's DEV_PREFER_CLI path runs Claude Code ON THE MAC via the
       # bridge — that continues to work from the VPS unchanged.
-      - MAC_BRIDGE_HOST=${MAC_HOST}
+      - MAC_BRIDGE_HOST=${MAC_HOST:-host.docker.internal}
       - MAC_BRIDGE_PORT=${MAC_BRIDGE_PORT:-7777}
       - DEV_LLM_MODEL=${DEV_LLM_MODEL:-claude-opus-4-8}
       - DEV_PREFER_CLI=${DEV_PREFER_CLI:-true}
@@ -237,6 +237,11 @@ services:
       # open, while .env suggests it is protected.
       - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-}
       - DASHBOARD_SESSION_TTL_S=${DASHBOARD_SESSION_TTL_S:-2592000}
+      # The log viewer reads native-audio logs through the Mac bridge. Without
+      # this it falls back to host.docker.internal, which does not resolve on
+      # the GCP core host, and every log request fails.
+      - MAC_BRIDGE_HOST=${MAC_HOST:-host.docker.internal}
+      - MAC_BRIDGE_PORT=${MAC_BRIDGE_PORT:-7777}
     volumes:
       - ./services/dashboard/widgets:/app/widgets
       - ./services/dashboard/templates:/app/templates
