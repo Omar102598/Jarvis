@@ -26,13 +26,16 @@ POST /scraper/close                   — close scraper context
 """
 
 import base64
+import collections
 import json
 import os
+import re
 import queue
 import shlex
 import subprocess
 import tempfile
 import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -76,6 +79,81 @@ _browser_context  = None
 _page             = None
 
 _BROWSER_STATE_PATH = os.path.expanduser("~/.jarvis/browser_state.json")
+
+# ---------------------------------------------------------------------------
+# Network capture
+#
+# Store cart flows are driven by internal JSON APIs. Clicking the button is a
+# proxy for calling that API, and it is the brittle part: the grocery agent
+# carries 17 hardcoded add-to-cart selectors across 4 stores, each of which
+# breaks on a redesign. Watching the traffic while a cart add happens shows the
+# endpoint and payload directly, so the add can become a request instead of a
+# selector hunt.
+#
+# In memory only, never written to disk: this records traffic from a browser
+# logged into real accounts. Bodies are truncated and obvious secrets are
+# redacted, but the buffer should still be treated as sensitive.
+# ---------------------------------------------------------------------------
+_NET_LOG_MAX      = 400
+_NET_BODY_MAX     = 2000
+_net_log: "collections.deque" = collections.deque(maxlen=_NET_LOG_MAX)
+
+# Query/body keys whose values are never worth keeping.
+_REDACT_KEYS = ("password", "passwd", "token", "auth", "secret", "session",
+                "csrf", "cvv", "card", "ssn")
+
+
+def _redact(text: Optional[str], limit: int = _NET_BODY_MAX) -> Optional[str]:
+    """Blank out obvious secrets and truncate. Best-effort, not a guarantee."""
+    if not text:
+        return text
+    out = text[:limit]
+    for key in _REDACT_KEYS:
+        # JSON ("key": "value") and form (key=value) shapes.
+        out = re.sub(rf'("{key}[^"]*"\s*:\s*)"[^"]*"', r'\1"<redacted>"',
+                     out, flags=re.I)
+        out = re.sub(rf'(\b{key}[^=&\s]*=)[^&\s]*', r'\1<redacted>',
+                     out, flags=re.I)
+    if len(text) > limit:
+        out += f"... [{len(text)} bytes total]"
+    return out
+
+
+def _attach_network_capture(context, label: str) -> None:
+    """Record XHR/fetch traffic on a context. Idempotent per context."""
+    if getattr(context, "_jarvis_net_attached", False):
+        return
+
+    async def _on_response(response):
+        try:
+            request = response.request
+            if request.resource_type not in ("xhr", "fetch"):
+                return
+            entry = {
+                "ts": time.time(),
+                "context": label,
+                "method": request.method,
+                "url": _redact(request.url, 1000),
+                "status": response.status,
+                "resource_type": request.resource_type,
+                "request_body": _redact(request.post_data),
+                "content_type": (response.headers or {}).get("content-type", ""),
+                "response_body": None,
+            }
+            # Only JSON bodies, and only best-effort: a redirected or aborted
+            # response raises here, and a capture failure must never disturb
+            # the page it is observing.
+            if "json" in entry["content_type"].lower():
+                try:
+                    entry["response_body"] = _redact(await response.text())
+                except Exception:
+                    pass
+            _net_log.append(entry)
+        except Exception:
+            pass
+
+    context.on("response", _on_response)
+    context._jarvis_net_attached = True
 
 # ---------------------------------------------------------------------------
 # Headless scraper singleton (separate context — for grocery/price scraping)
@@ -124,6 +202,7 @@ async def _get_page():
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             window.chrome = { runtime: {} };
         """)
+        _attach_network_capture(_browser_context, "visible")
         if state_file:
             print(f"[MacBridge] Browser session loaded from {state_file}")
     if _page is None or _page.is_closed():
@@ -166,6 +245,7 @@ async def _get_scraper_page():
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             window.chrome = { runtime: {} };
         """)
+        _attach_network_capture(context, "scraper")
         _scraper_page = await context.new_page()
     return _scraper_page
 
@@ -569,6 +649,39 @@ async def browser_screenshot():
         return {"image_base64": b64, "format": "png", "url": page.url}
     except Exception as e:
         raise HTTPException(500, f"Browser screenshot failed: {e}")
+
+
+@app.get("/browser/network")
+async def browser_network(
+    limit: int = Query(50, ge=1, le=_NET_LOG_MAX),
+    contains: str = Query("", description="Only entries whose URL contains this"),
+    method: str = Query("", description="Filter by HTTP method, e.g. POST"),
+    include_bodies: bool = Query(True),
+):
+    """Recent XHR/fetch traffic seen by the browser, newest last.
+
+    The point is to find the API a page uses rather than driving its buttons —
+    e.g. add one item to a cart by hand, then read back the POST that did it.
+    Bodies are truncated and lightly redacted; treat the output as sensitive.
+    """
+    entries = list(_net_log)
+    if contains:
+        entries = [e for e in entries if contains.lower() in (e["url"] or "").lower()]
+    if method:
+        entries = [e for e in entries if e["method"].upper() == method.upper()]
+    entries = entries[-limit:]
+    if not include_bodies:
+        entries = [{k: v for k, v in e.items()
+                    if k not in ("request_body", "response_body")} for e in entries]
+    return {"count": len(entries), "captured": len(_net_log), "entries": entries}
+
+
+@app.post("/browser/network/clear")
+async def browser_network_clear():
+    """Drop the capture buffer — call before an action to isolate its traffic."""
+    n = len(_net_log)
+    _net_log.clear()
+    return {"cleared": n}
 
 
 @app.get("/browser/url")
