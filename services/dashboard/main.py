@@ -761,10 +761,13 @@ async def event_stream():
 # actually exports (MAC_HOST -> MAC_BRIDGE_HOST). Defaulting straight to
 # host.docker.internal silently stranded this service when the core stack
 # moved to GCP, where that name does not resolve at all.
-MAC_BRIDGE_URL = os.environ.get(
-    "MAC_BRIDGE_URL",
-    f"http://{os.environ.get('MAC_BRIDGE_HOST', 'host.docker.internal')}"
-    f":{os.environ.get('MAC_BRIDGE_PORT', '7777')}")
+# 'or' throughout rather than get() defaults: compose expands an unset variable
+# to an EMPTY string rather than omitting it, and a get() default only fires when
+# the key is absent — so the default would never apply and the URL would come out
+# as "http://:7777".
+MAC_BRIDGE_URL = os.environ.get("MAC_BRIDGE_URL") or (
+    f"http://{os.environ.get('MAC_BRIDGE_HOST') or 'host.docker.internal'}"
+    f":{os.environ.get('MAC_BRIDGE_PORT') or '7777'}")
 
 
 def _bridge_get(path: str) -> dict:

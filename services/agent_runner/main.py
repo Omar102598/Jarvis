@@ -51,7 +51,7 @@ CONFIG_PATH = Path(os.environ.get("AGENTS_CONFIG", "/config/agents.yml"))
 # Mac bridge (native host API). host.docker.internal only resolves when this
 # container runs ON the Mac — the VPS split sets MAC_BRIDGE_HOST to the Mac's
 # tailnet name instead (docs/HETZNER_SETUP.md).
-MAC_BRIDGE_URL = (f"http://{os.environ.get('MAC_BRIDGE_HOST', 'host.docker.internal')}"
+MAC_BRIDGE_URL = (f"http://{os.environ.get('MAC_BRIDGE_HOST') or 'host.docker.internal'}"
                   f":{os.environ.get('MAC_BRIDGE_PORT', '7777')}")
 
 AGENT_CLASSES = {
