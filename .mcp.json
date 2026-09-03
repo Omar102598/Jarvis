@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "wearables-dat": {
+      "type": "http",
+      "url": "https://mcp.facebook.com/wearables_dat"
+    }
+  }
+}

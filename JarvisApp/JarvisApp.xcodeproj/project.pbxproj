@@ -19,10 +19,12 @@
 		5804145E27C3BCB4DC363141 /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12B2DA705EF3A7EF2CE84457 /* LocationManager.swift */; };
 		69FE3CB9F475B44F9F2CD865 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DB76D2E01AE4FFC890367A0D /* Assets.xcassets */; };
 		6D3A81EEB495E8BCC8E6CEE6 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = 76CEC077EB6AB178FEB46CFA /* MWDATCamera */; };
+		C0C65A1DC23B3BF773184EFE /* MWDATMockDevice in Frameworks */ = {isa = PBXBuildFile; productRef = 330102F90BA369084B343C70 /* MWDATMockDevice */; };
 		778B3926A24EFF71053F3603 /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E06625565B69F6487B5E4A9 /* HealthKitManager.swift */; };
 		815B7FD2D06021F52551C1CA /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12BF08499D6DED3B05E5AEC0 /* ChatView.swift */; };
 		BAA353FE5C3C4B1EA3CB1A46 /* CameraPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 035BB951A2F14AA9860CE8D9 /* CameraPicker.swift */; };
 		867005A85979C9578868B5C4 /* HUDRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E1D7CE5DA8EE7405878BE41 /* HUDRenderer.swift */; };
+		9E3355A68118911891487E32 /* GlassesMockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78D97D660028D49C48D19B99 /* GlassesMockController.swift */; };
 		916FD28AD327E03F2DEFDA3D /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62305609ECC5C1E0BF545BC6 /* Models.swift */; };
 		A6C598CF1AD360258E0EE920 /* JarvisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0CD866B2962AE9EBBBFCC0 /* JarvisApp.swift */; };
 		B21B1DD67E2EF4E0956E77B7 /* GlassesManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE2853AF41CA3597BC07C02 /* GlassesManager.swift */; };
@@ -49,6 +51,7 @@
 		6931A58F122A71990D09EF46 /* JarvisApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JarvisApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6ED77026FB4C749323DEFB83 /* JarvisTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisTheme.swift; sourceTree = "<group>"; };
 		7E1D7CE5DA8EE7405878BE41 /* HUDRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDRenderer.swift; sourceTree = "<group>"; };
+		78D97D660028D49C48D19B99 /* GlassesMockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassesMockController.swift; sourceTree = "<group>"; };
 		AFE2853AF41CA3597BC07C02 /* GlassesManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassesManager.swift; sourceTree = "<group>"; };
 		C575D13A1066337B17BF9CD9 /* PresenceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresenceManager.swift; sourceTree = "<group>"; };
 		CBC398BFD0D411B5F40A28F3 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
@@ -64,6 +67,7 @@
 				365191E0FC23319F9CA2C898 /* MWDATCore in Frameworks */,
 				6D3A81EEB495E8BCC8E6CEE6 /* MWDATCamera in Frameworks */,
 				D311028518E5332DF8FD48CF /* MWDATDisplay in Frameworks */,
+				C0C65A1DC23B3BF773184EFE /* MWDATMockDevice in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -101,6 +105,7 @@
 			children = (
 				AFE2853AF41CA3597BC07C02 /* GlassesManager.swift */,
 				7E1D7CE5DA8EE7405878BE41 /* HUDRenderer.swift */,
+				78D97D660028D49C48D19B99 /* GlassesMockController.swift */,
 			);
 			path = Glasses;
 			sourceTree = "<group>";
@@ -221,6 +226,7 @@
 				FF438430EB2C80F2F63E9EBD /* MWDATCore */,
 				76CEC077EB6AB178FEB46CFA /* MWDATCamera */,
 				B3ED96B3B3457B1A0855C4CB /* MWDATDisplay */,
+				330102F90BA369084B343C70 /* MWDATMockDevice */,
 			);
 			productName = JarvisApp;
 			productReference = 6931A58F122A71990D09EF46 /* JarvisApp.app */;
@@ -288,6 +294,7 @@
 				DEE4A6A0FA414A580939ED2B /* ContentView.swift in Sources */,
 				B21B1DD67E2EF4E0956E77B7 /* GlassesManager.swift in Sources */,
 				867005A85979C9578868B5C4 /* HUDRenderer.swift in Sources */,
+				9E3355A68118911891487E32 /* GlassesMockController.swift in Sources */,
 				778B3926A24EFF71053F3603 /* HealthKitManager.swift in Sources */,
 				A6C598CF1AD360258E0EE920 /* JarvisApp.swift in Sources */,
 				299C52A2483D4B83A86BADFD /* JarvisClient.swift in Sources */,
@@ -511,6 +518,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C7EEFA47C4A603A2BF235621 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
 			productName = MWDATCore;
+		};
+		330102F90BA369084B343C70 /* MWDATMockDevice */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C7EEFA47C4A603A2BF235621 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATMockDevice;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
