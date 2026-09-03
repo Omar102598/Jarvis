@@ -65,6 +65,51 @@ if [[ "$audio_dead" == "1" ]]; then
   healed+=("native audio")
 fi
 
+# --- 1.7 Mac bridge liveness (macOS only) ------------------------------------
+# Nothing supervised the bridge until now, and it failed in the one way a port
+# check cannot see: the process sat up for 61 days answering /health in 9ms
+# while every /browser/* call hung forever behind a wedged Playwright context.
+# Remy and Scout had been failing since July because of it. So liveness here
+# means the BROWSER answers, not that the port is open.
+if [[ "$(uname)" == "Darwin" ]]; then
+BRIDGE_PORT="$(grep -E '^MAC_BRIDGE_PORT=' "$REPO_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d ' \r')"
+BRIDGE_PORT="${BRIDGE_PORT:-7777}"
+BRIDGE_FAIL_STAMP="/tmp/jarvis_watchdog_bridge_fail"
+bridge_bad=""
+
+if ! curl -s -o /dev/null -m 5 "http://localhost:${BRIDGE_PORT}/health" 2>/dev/null; then
+  bridge_bad="not answering on :${BRIDGE_PORT}"
+else
+  # Only probe the browser when one is already running. /browser/url LAUNCHES
+  # a headful Chromium if none exists, so probing unconditionally would pop a
+  # window onto the desktop every watchdog run. No browser means nothing to be
+  # wedged, which is the case we are looking for.
+  bridge_pid="$(cat "$REPO_DIR/.mac_bridge.pid" 2>/dev/null || true)"
+  if [[ -n "$bridge_pid" ]] && pgrep -P "$bridge_pid" >/dev/null 2>&1; then
+    # 25s: a cold Chromium start takes ~10s, a wedged one never returns.
+    b_code=$(curl -s -o /dev/null -w '%{http_code}' -m 25 \
+             "http://localhost:${BRIDGE_PORT}/browser/url" 2>/dev/null || echo 000)
+    [[ "$b_code" == "200" ]] || bridge_bad="browser wedged (/browser/url -> $b_code)"
+  fi
+fi
+
+if [[ -n "$bridge_bad" ]]; then
+  if [[ -f "$BRIDGE_FAIL_STAMP" ]]; then
+    log "mac bridge $bridge_bad on two consecutive runs — restarting"
+    "$REPO_DIR/scripts/run_mac_bridge.sh" stop  >/dev/null 2>&1
+    "$REPO_DIR/scripts/run_mac_bridge.sh" start >/dev/null 2>&1 &
+    rm -f "$BRIDGE_FAIL_STAMP"
+    healed+=("mac bridge ($bridge_bad)")
+  else
+    # One strike first: a long navigation or a slow cold start is not a fault.
+    log "mac bridge $bridge_bad — first strike, restart if still bad next run"
+    touch "$BRIDGE_FAIL_STAMP"
+  fi
+else
+  rm -f "$BRIDGE_FAIL_STAMP"
+fi
+fi
+
 # --- 1.5 Docker disk pressure (core host only) -------------------------------
 if [[ "$ROLE" == "core" ]]; then
 # Today's outage: the Docker VM disk filled from repeated builds → Redis AOF

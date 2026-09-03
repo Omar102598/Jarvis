@@ -32,7 +32,22 @@ cmd_stop() {
   if [ ! -f "$PID_FILE" ]; then echo "[bridge] Not running."; return; fi
   pid=$(cat "$PID_FILE")
   if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid" && echo "[bridge] Stopped (pid $pid)"
+    kill "$pid" 2>/dev/null
+    # TERM alone is not enough. The FastAPI lifespan handler closes the
+    # Playwright context on shutdown, and when the browser is wedged that
+    # await never returns — the process sits there holding the port while the
+    # PID file gets removed, so the next start would bring up a second bridge
+    # against a port that is still occupied. Wait, then escalate.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "[bridge] Still alive after 10s (browser likely wedged) — sending KILL"
+      kill -9 "$pid" 2>/dev/null
+      sleep 1
+    fi
+    echo "[bridge] Stopped (pid $pid)"
   else
     echo "[bridge] Process already gone."
   fi
