@@ -74,6 +74,10 @@
 	<array>
 		<string>audio</string>
 		<string>location</string>
+		<string>bluetooth-peripheral</string>
+		<string>external-accessory</string>
+		<string>bluetooth-central</string>
+		<string>processing</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
@@ -84,10 +88,26 @@
 	<key>UISupportedExternalAccessoryProtocols</key>
 	<array>
 		<string>com.meta.frames</string>
+		<string>com.meta.ar.wearable</string>
 	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Jarvis connects to your Meta glasses over Bluetooth to show alerts and answers on the display.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>fb-viewapp</string>
+	</array>
+	<key>MWDAT</key>
+	<dict>
+		<key>AppLinkURLScheme</key>
+		<string>jarvisapp://</string>
+		<key>MetaAppID</key>
+		<string>0</string>
+		<key>TeamID</key>
+		<string>FCTJWGB3C4</string>
+	</dict>
 </dict>
 </plist>

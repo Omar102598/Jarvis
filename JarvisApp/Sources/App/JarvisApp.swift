@@ -17,6 +17,13 @@ struct JarvisApp: App {
         } catch {
             print("[JarvisApp] Wearables SDK configuration failed: \(error)")
         }
+
+        #if DEBUG
+        // Opt-in smoke test against Mock Device Kit — see GlassesMockController
+        // for why it runs its own session instead of going through
+        // GlassesManager (which requires a display-capable device).
+        GlassesMockController.runSmokeTestIfRequested()
+        #endif
     }
 
     var body: some Scene {
