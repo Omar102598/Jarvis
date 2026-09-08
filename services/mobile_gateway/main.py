@@ -979,6 +979,22 @@ async def _analyze_video_gemini(video_b64: str, question: str) -> Optional[str]:
     upload (~<14MB base64); returns None on any failure so the caller falls
     back to the frame-sampling path. Model override: GEMINI_VIDEO_MODEL.
 
+    On "agentic video understanding" (announced Sept 2026, promising ~88% fewer
+    tokens on long clips): the documented `processing: "agentic"` flag is NOT
+    reachable from this REST integration. Probed against the live API — Vertex
+    v1 and v1beta1, AI Studio v1beta, with both inline_data and a Files API
+    file_uri — and every shape returns 400 "Unknown name \"processing\"". It
+    appears to be exposed only through the newer google-genai SDK, or not yet
+    rolled out to these endpoints. Do not re-add it from documentation alone
+    without re-probing; it will 400 and drop every clip to frame sampling.
+
+    What IS available and verified on gemini-3.8-flash: video_metadata.fps and
+    generationConfig.mediaResolution. The Files API (resumable upload) also
+    works end-to-end and is the route to clips beyond the inline limit, but it
+    is AI Studio only — Vertex takes GCS URIs instead — so it would bill the
+    separate AI Studio prepay pool rather than GCP credit. Not wired up because
+    nothing currently sends a clip long enough to need it.
+
     Backends are tried in order:
       1. Vertex AI  — billed to the GCP project, so it draws on ordinary GCP
          credit. Auth is the VM's own service account (no key in .env).
@@ -988,7 +1004,11 @@ async def _analyze_video_gemini(video_b64: str, question: str) -> Optional[str]:
     if len(video_b64) > 14_000_000:
         return None
 
-    model = os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.6-flash").strip()
+    model = os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.8-flash").strip()
+    # Media resolution trades detail for tokens. Unset leaves the API default;
+    # "low" is what makes hour-plus clips affordable. Verified accepted by
+    # Vertex v1 (a 6s probe went 523 -> 473 total tokens).
+    media_res = os.environ.get("GEMINI_MEDIA_RESOLUTION", "").strip().lower()
     body = {
         "contents": [{
             "role": "user",
@@ -998,6 +1018,10 @@ async def _analyze_video_gemini(video_b64: str, question: str) -> Optional[str]:
             ],
         }]
     }
+    if media_res in ("low", "medium", "high"):
+        body["generationConfig"] = {
+            "mediaResolution": f"MEDIA_RESOLUTION_{media_res.upper()}"
+        }
 
     attempts: list = []
     project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
