@@ -979,21 +979,29 @@ async def _analyze_video_gemini(video_b64: str, question: str) -> Optional[str]:
     upload (~<14MB base64); returns None on any failure so the caller falls
     back to the frame-sampling path. Model override: GEMINI_VIDEO_MODEL.
 
-    On "agentic video understanding" (announced Sept 2026, promising ~88% fewer
-    tokens on long clips): the documented `processing: "agentic"` flag is NOT
-    reachable from this REST integration. Probed against the live API — Vertex
-    v1 and v1beta1, AI Studio v1beta, with both inline_data and a Files API
-    file_uri — and every shape returns 400 "Unknown name \"processing\"". It
-    appears to be exposed only through the newer google-genai SDK, or not yet
-    rolled out to these endpoints. Do not re-add it from documentation alone
-    without re-probing; it will 400 and drop every clip to frame sampling.
+    On "agentic video understanding" (Sept 2026, advertised as cutting tokens
+    by up to 88%): measured, and it is a large LOSS for anything this service
+    sends. Not wired up on purpose.
 
-    What IS available and verified on gemini-3.8-flash: video_metadata.fps and
-    generationConfig.mediaResolution. The Files API (resumable upload) also
-    works end-to-end and is the route to clips beyond the inline limit, but it
-    is AI Studio only — Vertex takes GCS URIs instead — so it would bill the
-    separate AI Studio prepay pool rather than GCP credit. Not wired up because
-    nothing currently sends a clip long enough to need it.
+    The flag is real but the REST field name is `media_processing` on the part
+    (value "AGENTIC") — NOT the `processing` the docs show, which 400s on every
+    endpoint. Found by inspecting google-genai's own types, not the docs.
+
+    Measured with gemini-3.8-flash on synthetic clips (a green flash to find in
+    an otherwise static video), agentic vs standard, same question, both correct:
+
+        4-min clip:   15,957 ->  121,453 tokens (+661%),  2.4s ->  16.1s
+        30-min clip: 118,934 ->  603,782 tokens (+408%),  3.0s ->  51.3s
+
+    Agentic mode runs an internal tool-calling loop (~10 call/response pairs
+    observed), and those intermediate turns dwarf what flat frame sampling
+    costs. Its small prompt_token_count is misleading — 6,232 on the 30-min
+    clip against a 603,782 total. Any saving presumably only appears near the
+    hour-plus ceiling where flat sampling stops fitting the context window at
+    all; well past anything a 30s phone clip or a Ring recording will hit.
+
+    So: standard processing, and if a genuinely long video ever needs analysing,
+    re-measure at that length rather than assuming the 88% figure applies.
 
     Backends are tried in order:
       1. Vertex AI  — billed to the GCP project, so it draws on ordinary GCP
