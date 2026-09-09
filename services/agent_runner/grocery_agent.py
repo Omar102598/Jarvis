@@ -25,6 +25,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional
 import aiohttp
 import redis as redis_lib
@@ -48,6 +49,10 @@ MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
 # ---------------------------------------------------------------------------
 # Store configurations
 # ---------------------------------------------------------------------------
+# Must match nutrition.py's USER_TZ: Sage keys its rollups by local date, so a
+# different zone here reads the wrong day near midnight.
+USER_TZ = os.environ.get("USER_TZ", "America/Chicago")
+
 STORES = {
     "amazon": {
         "name": "Amazon Fresh",
@@ -193,6 +198,51 @@ def _load_recent_health(r: redis_lib.Redis) -> dict:
     return out
 
 
+def _load_recent_nutrition(r: redis_lib.Redis, days: int = 7) -> dict:
+    """Average of what the user ACTUALLY ate, from Sage's daily rollups.
+
+    Sage (llm_agent/tools/nutrition.py) writes nutrition:totals:{day} whenever a
+    meal is logged — including from a photo, since the brain estimates macros
+    from the image directly. Atlas already reads these; Remy never did, so the
+    plan was built purely from computed targets and had no idea whether they
+    were being hit. Buying to a 180g protein target while consistently eating
+    120g means restocking the same shortfall every week.
+
+    Only days with a logged meal count. Averaging over silent days would report
+    a fake shortfall on any day the user simply didn't log, which would push the
+    list toward protein for no reason.
+    """
+    from datetime import timedelta
+    tz_today = datetime.now(ZoneInfo(USER_TZ)).date()
+    cals, prots, logged_days = [], [], 0
+    for offset in range(days):
+        day = (tz_today - timedelta(days=offset)).strftime("%Y-%m-%d")
+        try:
+            totals = r.hgetall(f"nutrition:totals:{day}") or {}
+        except Exception:
+            continue
+        if not totals:
+            continue
+        try:
+            cal = float(totals.get("calories", 0) or 0)
+            pro = float(totals.get("protein_g", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if cal <= 0 and pro <= 0:
+            continue
+        cals.append(cal)
+        prots.append(pro)
+        logged_days += 1
+
+    if not logged_days:
+        return {}
+    return {
+        "days_logged":      logged_days,
+        "avg_calories":     round(sum(cals) / logged_days),
+        "avg_protein_g":    round(sum(prots) / logged_days),
+    }
+
+
 # ---------------------------------------------------------------------------
 # TDEE + macro calculation (Mifflin-St Jeor)
 # ---------------------------------------------------------------------------
@@ -225,10 +275,23 @@ def _calculate_targets(profile: dict) -> dict:
         target_cal = tdee - 500
     elif goal == "bulking":
         target_cal = tdee + 300
+    elif goal in ("recomp", "recomposition", "body_recomp"):
+        # Body recomposition — losing fat and gaining muscle at once — is not a
+        # cut. A 500 kcal deficit makes it a cut with extra protein and gives up
+        # the muscle gain; maintenance alone gives up the fat loss. The shape
+        # that actually works is a small deficit with protein pushed up, so it
+        # gets its own goal rather than being approximated by the other two.
+        target_cal = tdee - 200
     else:
         target_cal = tdee
 
-    protein_g = float(profile["weight_lbs"]) * float(profile.get("protein_goal_g_per_lb", 1.0))
+    protein_per_lb = float(profile.get("protein_goal_g_per_lb", 1.0))
+    if goal in ("recomp", "recomposition", "body_recomp"):
+        # Protein is what makes a recomp work at all — it is the difference
+        # between losing fat with muscle and losing fat and muscle together.
+        # Raise the floor without lowering a deliberately higher setting.
+        protein_per_lb = max(protein_per_lb, 1.1)
+    protein_g = float(profile["weight_lbs"]) * protein_per_lb
     fiber_g   = int(profile.get("fiber_goal_g", 35))
 
     return {
@@ -238,6 +301,8 @@ def _calculate_targets(profile: dict) -> dict:
         "target_calories": round(target_cal),
         "deficit":         round(tdee - target_cal),
         "protein_g":       round(protein_g),
+        "protein_per_lb":  round(protein_per_lb, 2),
+        "goal":            goal,
         "fiber_g":         fiber_g,
     }
 
@@ -881,13 +946,21 @@ def _load_usual_order(r: redis_lib.Redis) -> list[dict]:
 # ---------------------------------------------------------------------------
 async def _generate_smart_list(
     past_purchases: list[str], profile: dict, targets: dict,
-    usual_order: list[dict] | None = None,
-) -> tuple[list[dict], list[str]]:
+    usual_order: list[dict] | None = None, intake: dict | None = None,
+) -> tuple[list[dict], list[str], dict[str, int]]:
     """Plan a cohesive week of meals, then derive the consolidated shopping list.
 
-    Returns (meals, grocery_list):
-      meals        — [{"name", "kind": breakfast|lunch|dinner|snack, "ingredients": [...]}]
+    Returns (meals, grocery_list, qty_map):
+      meals        — [{"name", "kind": breakfast|lunch|dinner|snack, "servings_per_week",
+                       "ingredients": [...]}]
       grocery_list — deduped ingredient/staple strings to actually shop for
+      qty_map      — item -> retail units to buy for the week
+
+    Quantity is kept OUT of the item name and carried here instead. The name has
+    to stay a bare product string because it is fed to each store's search box,
+    where "chicken tenderloins 4 lbs" matches nothing; but without a separate
+    quantity every line was added once, so a week's plan arrived as one pack of
+    each and ran out midweek.
 
     Planning meals FIRST (with deliberately overlapping ingredients) is what makes the
     items cohesive — everything bought maps to real meals instead of a random pile.
@@ -922,6 +995,28 @@ async def _generate_smart_list(
     if avoid:
         pref_block += f"AVOID / substitute these (use the preferred alternative instead): {', '.join(avoid)}.\n"
 
+    # What the user actually ate, from Sage's logs. Only mentioned when there is
+    # a real gap: telling the model "you are on target" every week is noise that
+    # dilutes the instructions that matter.
+    intake_block = ""
+    if intake and intake.get("days_logged"):
+        avg_p = intake["avg_protein_g"]
+        target_p = targets["protein_g"]
+        if target_p and avg_p < target_p * 0.85:
+            intake_block = (
+                f"LOGGED INTAKE: over the last {intake['days_logged']} logged day(s) the user "
+                f"averaged {avg_p}g protein against a {target_p}g target, and "
+                f"{intake['avg_calories']} kcal against {targets['target_calories']}. They are "
+                f"consistently UNDER on protein — weight this week's meals and quantities "
+                f"toward easy, high-protein items they will actually eat.\n"
+            )
+        elif target_p and avg_p > target_p * 1.15:
+            intake_block = (
+                f"LOGGED INTAKE: the user averaged {avg_p}g protein against a {target_p}g "
+                f"target over {intake['days_logged']} logged day(s) — already comfortably "
+                f"over. Do not add more protein at the expense of vegetables and fibre.\n"
+            )
+
     system_prompt = (
         f"You are JARVIS, a British AI assistant planning a week of meals for {goal}.\n"
         f"User stats: {profile['weight_lbs']} lbs, {profile['height_in']} in, "
@@ -929,23 +1024,31 @@ async def _generate_smart_list(
         f"Daily targets: {targets['target_calories']} cal, {targets['protein_g']}g protein, "
         f"{targets['fiber_g']}g fiber. Dietary preferences: {', '.join(prefs)}. "
         f"Weekly budget: ${budget:.0f}.\n\n"
-        f"{pref_block}\n"
+        f"{pref_block}{intake_block}\n"
         "Plan a COHESIVE week of simple, repeatable meals whose ingredients deliberately "
         "OVERLAP so the shop is efficient and nothing is wasted. Build the week AROUND the "
         "user's favourite meals above, then add complementary meals reusing those ingredients. "
         "THEN output the consolidated shopping list of exactly the ingredients those meals "
         "require, plus any breakfast/snack staples.\n"
-        "Rules: 5-7 meals across breakfast/lunch/dinner/snack; high protein-per-dollar "
-        "proteins; high-fibre veg/fruit; reuse ingredients across meals; stay within budget; "
-        "favour items the user has bought before. Every grocery_list item must be used by at "
-        "least one meal.\n"
-        "CRITICAL — grocery_list items MUST be plain product names a store search box can find: "
-        "NO quantities, sizes, weights, or counts (write 'chicken tenderloins', NOT "
-        "'chicken tenderloins 4 lbs'; 'basmati rice', NOT 'basmati rice 5 lb bag').\n\n"
+        "Rules: 6-9 distinct meals across breakfast/lunch/dinner/snack, REPEATED to cover "
+        "a full 7 days (~21 eating occasions) — say how many servings of each meal the week "
+        "needs; high protein-per-dollar proteins; high-fibre veg/fruit; reuse ingredients "
+        "across meals; spend most of the budget; favour items the user has bought before. "
+        "Every grocery_list item must be used by at least one meal.\n"
+        "QUANTITY IS CRITICAL. Work out how much of each ingredient 7 DAYS of those servings "
+        "actually needs, then set qty to the number of retail units to buy (one pack, bag, "
+        "carton or bunch = 1). A week of chicken for one adult is several packs, not one. "
+        "A single unit of everything is the most common failure here and leaves the user out "
+        "of food by midweek — if in doubt, round UP.\n"
+        "The item name MUST stay a plain product name a store search box can find, with NO "
+        "quantity, size or weight in the NAME (write 'chicken tenderloins' with qty 3, NOT "
+        "'chicken tenderloins 4 lbs'). The amount goes in qty, never in the name.\n\n"
         "Return ONLY valid JSON, no markdown:\n"
         '{"meals": [{"name": "Basmati ground beef bowl with roasted veggies", "kind": "dinner", '
+        '"servings_per_week": 4, '
         '"ingredients": ["ground beef", "basmati rice", "bell peppers", "herdez guacamole salsa"]}], '
-        '"grocery_list": ["ground beef", "basmati rice", "bell peppers", "herdez guacamole salsa"]}'
+        '"grocery_list": [{"item": "ground beef", "qty": 3}, {"item": "basmati rice", "qty": 1}, '
+        '{"item": "bell peppers", "qty": 2}, {"item": "herdez guacamole salsa", "qty": 1}]}'
     )
 
     user_msg = (
@@ -961,11 +1064,32 @@ async def _generate_smart_list(
             data = json.loads(match.group())
             if isinstance(data, dict):
                 meals = [m for m in data.get("meals", [])
-                         if isinstance(m, dict) and m.get("name")][:8]
-                glist = [str(i) for i in data.get("grocery_list", []) if i][:16]
+                         if isinstance(m, dict) and m.get("name")][:10]
+                # Items arrive as {"item": name, "qty": n}. Plain strings are
+                # still accepted so an older-format reply (or a model that
+                # ignores the schema) degrades to qty 1 rather than a parse
+                # failure that drops the whole plan onto fallback staples.
+                glist, qty_map = [], {}
+                for entry in data.get("grocery_list", [])[:24]:
+                    if isinstance(entry, dict):
+                        name = str(entry.get("item") or entry.get("name") or "").strip()
+                        try:
+                            qty = int(entry.get("qty", 1) or 1)
+                        except (TypeError, ValueError):
+                            qty = 1
+                    else:
+                        name, qty = str(entry).strip(), 1
+                    if not name:
+                        continue
+                    # Cap per item: a hallucinated qty of 40 would blow the
+                    # budget on one line before anything else got bought.
+                    glist.append(name)
+                    qty_map[name] = max(1, min(qty, 6))
                 if glist:
-                    _log(f"  ✓ Planned {len(meals)} meals, {len(glist)} grocery items.")
-                    return meals, glist
+                    units = sum(qty_map.values())
+                    _log(f"  ✓ Planned {len(meals)} meals, {len(glist)} grocery items "
+                         f"({units} units for the week).")
+                    return meals, glist, qty_map
     except (json.JSONDecodeError, AttributeError):
         pass
 
@@ -976,7 +1100,7 @@ async def _generate_smart_list(
         "broccoli", "spinach", "sweet potato", "brown rice", "oatmeal rolled oats",
         "almonds", "blueberries", "olive oil",
     ]
-    return [], fallback
+    return [], fallback, {item: 1 for item in fallback}
 
 
 # ---------------------------------------------------------------------------
@@ -1060,9 +1184,18 @@ def _add_to_cart_js(store_key: str) -> str:
 
 
 async def _add_product_to_cart(
-    session: aiohttp.ClientSession, product: PriceResult
+    session: aiohttp.ClientSession, product: PriceResult, quantity: int = 1
 ) -> tuple[str, str]:
-    """Navigate to the resolved product page and click Add-to-Cart."""
+    """Navigate to the resolved product page and add it to the cart.
+
+    ``quantity`` is the number of retail units the week's plan needs. It is
+    added by clicking Add-to-Cart repeatedly rather than by driving each store's
+    quantity widget: the widget is a different control on every store (select,
+    stepper, text input) and silently does nothing when mis-targeted, whereas
+    the add button is the one control already proven to work per store. Slower,
+    but a wrong quantity here is the difference between a week of food and two
+    days of it, and a silent failure would look exactly like success.
+    """
     store = STORES[product.store]
     if not product.href:
         return "not_found", "No resolved product URL to add."
@@ -1081,12 +1214,28 @@ async def _add_product_to_cart(
         return "error", f"Navigation failed: {nav['error']}"
     await asyncio.sleep(4)
 
-    res = await _bridge_post(session, "/browser/js",
-                             {"script": _add_to_cart_js(product.store)}, timeout=15)
-    val = str(res.get("result", "")).lower()
-    if "clicked" in val:
-        return "added", f"Added to {store['name']}."
-    return "not_found", f"No Add-to-Cart button found ({val})."
+    want = max(1, min(int(quantity or 1), 6))
+    added = 0
+    for attempt in range(want):
+        if attempt:
+            # The button re-renders after an add ("Added to cart", stepper
+            # appears), so give the page a moment before clicking again.
+            await asyncio.sleep(2)
+        res = await _bridge_post(session, "/browser/js",
+                                 {"script": _add_to_cart_js(product.store)}, timeout=15)
+        val = str(res.get("result", "")).lower()
+        if "clicked" not in val:
+            if added == 0:
+                return "not_found", f"No Add-to-Cart button found ({val})."
+            # Partial success is reported honestly rather than as "added": the
+            # plan assumed a week's worth and the cart has less than that.
+            return "added", (f"Added {added} of {want} to {store['name']} "
+                             f"(button stopped responding after {added}).")
+        added += 1
+
+    if want > 1:
+        return "added", f"Added {added}x to {store['name']}."
+    return "added", f"Added to {store['name']}."
 
 
 async def _verify_cart(session: aiohttp.ClientSession, store_key: str) -> dict:
@@ -1585,8 +1734,12 @@ class GroceryAgent(BaseAgent):
             usual_order = _load_usual_order(self.r)
             if usual_order:
                 _log(f"  Using learned usual order ({len(usual_order)} staples).")
-            meals, grocery_list = await _generate_smart_list(
-                past_purchases, profile, targets, usual_order
+            intake = _load_recent_nutrition(self.r)
+            if intake:
+                _log(f"  Sage: {intake['days_logged']} logged day(s), avg "
+                     f"{intake['avg_protein_g']}g protein / {intake['avg_calories']} kcal.")
+            meals, grocery_list, qty_map = await _generate_smart_list(
+                past_purchases, profile, targets, usual_order, intake
             )
             _log(f"  {len(meals)} meals planned; grocery list ({len(grocery_list)} items): {grocery_list}")
 
@@ -1629,19 +1782,30 @@ class GroceryAgent(BaseAgent):
                     ))
                     continue
 
-                if total_spend >= budget:
+                # Check the FULL cost of this line, not just whether the budget
+                # is already blown. A 3-unit line used to pass this guard on its
+                # first unit and then spend three times what was checked.
+                units_wanted = max(1, min(int(qty_map.get(item, 1) or 1), 6))
+                line_cost = (assigned_pr.price or 0) * units_wanted
+                if total_spend >= budget or (total_spend + line_cost) > budget:
                     order_results.append(OrderResult(
                         item=item, assigned_store=assigned,
                         assigned_store_name=STORES[assigned]["name"],
                         best_price=assigned_pr.price, status="budget_exceeded",
-                        note=f"Budget ${budget:.0f} reached.", all_prices=prices,
+                        note=(f"Budget ${budget:.0f} reached "
+                              f"({units_wanted}x @ ${assigned_pr.price:.2f} "
+                              f"would take it to ${total_spend + line_cost:.2f})."),
+                        all_prices=prices,
                         title=assigned_pr.title, href=assigned_pr.href,
                     ))
                     continue
 
-                status, note = await _add_product_to_cart(session, assigned_pr)
+                status, note = await _add_product_to_cart(
+                    session, assigned_pr, units_wanted)
                 if status == "added":
-                    total_spend += assigned_pr.price
+                    # Budget tracks what the cart actually costs, so a
+                    # multi-unit line has to count all of its units.
+                    total_spend += line_cost
 
                 order_results.append(OrderResult(
                     item=item, assigned_store=assigned,
