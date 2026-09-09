@@ -397,26 +397,89 @@ def _rebuild_graph() -> None:
 r = redis.Redis(host=REDIS_HOST, decode_responses=True)
 
 
-# Tools that spend money, send things on the user's behalf, or execute code —
-# mirrored onto the bus (jarvis/audit/tool) so synapse persists them in the
-# durable event stream (domain "audit"): a replayable "what did Jarvis
-# send/spend/execute, and when". Matching is prefix-based to catch MCP
-# purchase tools (uber_eats_*, doordash_*, resy_*).
-_AUDIT_TOOLS = {
-    "send_email", "send_sms", "make_call", "run_shell", "run_python",
-    "mac_shell", "mac_applescript", "approve_grocery_order", "book_class",
-    "self_modify",
+# Action audit — what Jarvis actually DID, as opposed to what it looked at.
+#
+# This was an allowlist of nine hand-written tool names. That is the same
+# opt-in problem the approval inbox has: a tool is audited only if someone
+# remembered to add it, so every new sending/spending tool ships unaudited by
+# default and nobody finds out until they go looking for a record that was
+# never written. Of 132 registered tools, 9 were listed.
+#
+# So the default is inverted. Everything is audited unless it is recognisably a
+# read, which means a new tool is covered the day it is added and the failure
+# mode becomes a harmless extra row rather than a silent gap. Reads are the
+# overwhelming majority of calls and are what would make the log unreadable,
+# so they are filtered by name — the one thing every tool reliably has.
+# Classification is by VERB TOKEN, not prefix. Prefix matching misreads the
+# dev_*/jarvis_* families — dev_read_file and jarvis_grep_code are plainly
+# reads but start with a namespace, so a prefix rule audits them and buries the
+# real actions in noise. Splitting on "_" and looking for a verb anywhere in
+# the name handles both naming styles with one rule.
+_READ_VERBS = {
+    "get", "list", "search", "find", "read", "check", "fetch", "lookup",
+    "query", "show", "view", "describe", "summarize", "grep", "recall",
+    "status", "report", "today", "history",
 }
-_AUDIT_PREFIXES = ("uber_eats", "doordash", "resy", "opentable")
+# An action verb anywhere overrides a read verb: get_and_send_report sends.
+_ACTION_VERBS = {
+    "send", "write", "delete", "remove", "run", "exec", "shell", "install",
+    "buy", "order", "book", "approve", "add", "set", "create", "update",
+    "modify", "control", "launch", "stop", "post", "publish", "pay",
+    "cancel", "clear", "forget", "spawn", "click", "fill", "press",
+    "navigate", "js", "arrive", "depart",
+}
+
+# Money, messages, code execution, or anything touching a logged-in session.
+# Named explicitly because the consequences justify not relying on a heuristic.
+_HIGH_RISK = {
+    "send_email", "send_sms", "make_call", "run_shell", "run_python",
+    "mac_shell", "mac_applescript", "self_modify", "approve_grocery_order",
+    "amazon_add_to_cart", "book_class", "dev_shell", "dev_write_file",
+    "install_mcp_server", "install_plugin",
+    # Self-modification: Jarvis editing and restarting its own code is the
+    # highest-consequence category here, so it is never merely "normal".
+    "jarvis_write_code", "jarvis_rebuild", "jarvis_restart_safe",
+}
+_HIGH_RISK_PREFIXES = (
+    "uber_eats", "doordash", "resy", "opentable", "browser_click",
+    "browser_fill", "browser_press", "browser_js", "browser_navigate",
+)
+
+
+def _classify_action(tool: str) -> tuple[bool, str]:
+    """(should_audit, risk) for a tool name. risk is "high", "normal" or "read".
+
+    Unknown names are audited. An unrecognised tool is exactly the one worth a
+    record, and a spurious row is cheap next to a missing one.
+    """
+    name = (tool or "").strip()
+    lower = name.lower()
+    if name in _HIGH_RISK or lower.startswith(_HIGH_RISK_PREFIXES):
+        return True, "high"
+
+    tokens = set(re.split(r"[_\-]+", lower))
+    if tokens & _ACTION_VERBS:
+        return True, "normal"
+    if tokens & _READ_VERBS:
+        return False, "read"
+    return True, "normal"
 
 
 def _audit_tool_call(tool: str, args_preview: str) -> None:
-    if tool not in _AUDIT_TOOLS and not tool.startswith(_AUDIT_PREFIXES):
+    """Mirror a consequential tool call onto the bus for the durable audit trail.
+
+    Published to jarvis/audit/tool, which synapse persists under the "audit"
+    domain — a replayable record of what Jarvis sent, spent, or executed.
+    Best-effort: losing an audit row must never fail the action itself.
+    """
+    should_audit, risk = _classify_action(tool)
+    if not should_audit:
         return
     try:
         import paho.mqtt.publish as _mqtt_pub
         _mqtt_pub.single("jarvis/audit/tool", json.dumps({
             "tool": tool,
+            "risk": risk,
             "args_preview": args_preview[:300],
             "ts": datetime.now(timezone.utc).isoformat(),
         }), hostname=os.environ.get("MQTT_HOST", "localhost"),
