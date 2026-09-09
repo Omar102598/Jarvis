@@ -294,9 +294,31 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    // MARK: Media prompts
+
+    /// Asked about a photo when the user typed nothing alongside it.
+    static let defaultImagePrompt = "What am I looking at?"
+    /// Asked about a clip when the user typed nothing alongside it.
+    static let defaultVideoPrompt = "What is happening in this video?"
+
+    /// Whatever the user typed becomes the question about the media; the
+    /// generic prompt is only a fallback for when they typed nothing.
+    ///
+    /// These prompts used to be hardcoded defaults with no way to override them
+    /// from the UI, so every photo asked "What am I looking at?" regardless of
+    /// what the user actually wanted to know — and a specific question had to be
+    /// a second turn, by which point the model had already answered the generic
+    /// one and the follow-up was reasoning over its own description rather than
+    /// the image.
+    private static func resolvedPrompt(_ prompt: String?, fallback: String) -> String {
+        let typed = (prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return typed.isEmpty ? fallback : typed
+    }
+
     // MARK: Image query (from camera button)
 
-    func sendImage(_ imageData: Data, prompt: String = "What am I looking at?") async {
+    func sendImage(_ imageData: Data, prompt: String? = nil) async {
+        let prompt = Self.resolvedPrompt(prompt, fallback: Self.defaultImagePrompt)
         append(.user, text: prompt)
         let loadingId = appendLoading()
         await glassesManager?.send(.thinking)
@@ -351,7 +373,8 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: Video query (phone camera roll)
 
-    func sendVideo(_ videoData: Data, prompt: String = "What is happening in this video?") async {
+    func sendVideo(_ videoData: Data, prompt: String? = nil) async {
+        let prompt = Self.resolvedPrompt(prompt, fallback: Self.defaultVideoPrompt)
         let mb = Double(videoData.count) / 1_048_576.0
         guard mb <= 40 else {
             append(.jarvis, text: "That clip is \(String(format: "%.0f", mb))MB — too large to send. "

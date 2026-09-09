@@ -161,6 +161,21 @@ struct ChatView: View {
         .overlay(Rectangle().frame(height: 1).foregroundColor(.jBorder), alignment: .top)
     }
 
+    // MARK: - Media prompt
+
+    /// Takes whatever the user typed so it can be asked about the photo/clip
+    /// they're attaching, and clears the field the way sending a text turn does.
+    ///
+    /// Attaching media used to ignore the composer entirely, so a typed question
+    /// would sit there unsent while the media was analysed against a generic
+    /// prompt. nil means they typed nothing and the view model's default applies.
+    private func consumeTypedPrompt() -> String? {
+        let typed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty else { return nil }
+        inputText = ""
+        return typed
+    }
+
     // MARK: - Input bar
 
     private var inputBar: some View {
@@ -172,9 +187,10 @@ struct ChatView: View {
                 // which made image/video analysis unreachable on the phone.
                 Button {
                     if glassesManager.isConnected {
+                        let prompt = consumeTypedPrompt()
                         Task {
                             if let photoData = try? await glassesManager.capturePhoto() {
-                                await chatViewModel.sendImage(photoData)
+                                await chatViewModel.sendImage(photoData, prompt: prompt)
                             }
                         }
                     } else {
@@ -200,10 +216,11 @@ struct ChatView: View {
                 }
                 .fullScreenCover(isPresented: $showCamera) {
                     CameraPicker { capture in
+                        let prompt = consumeTypedPrompt()
                         Task {
                             switch capture {
-                            case .image(let data): await chatViewModel.sendImage(data)
-                            case .video(let data): await chatViewModel.sendVideo(data)
+                            case .image(let data): await chatViewModel.sendImage(data, prompt: prompt)
+                            case .video(let data): await chatViewModel.sendVideo(data, prompt: prompt)
                             }
                         }
                     }
@@ -211,15 +228,16 @@ struct ChatView: View {
                 }
                 .onChange(of: mediaItem) { _, item in
                     guard let item else { return }
+                    let prompt = consumeTypedPrompt()
                     Task {
                         defer { mediaItem = nil }
                         guard let data = try? await item.loadTransferable(type: Data.self) else { return }
                         // A video's frames get sampled server-side (or handed to
                         // Gemini); an image goes down the existing image path.
                         if item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }) {
-                            await chatViewModel.sendVideo(data)
+                            await chatViewModel.sendVideo(data, prompt: prompt)
                         } else {
-                            await chatViewModel.sendImage(data)
+                            await chatViewModel.sendImage(data, prompt: prompt)
                         }
                     }
                 }
