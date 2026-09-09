@@ -35,6 +35,21 @@ OUTPUT_TOKENS_PER_SECOND = 20.0
 
 # Off unless explicitly switched on: this is the expensive path.
 ENABLED = os.environ.get("REALTIME_VOICE_ENABLED", "").strip().lower() in ("1", "true", "yes")
+
+# Which surfaces may use realtime, comma-separated. Empty means "any surface",
+# which is almost never what you want: the phone and the desktop already have a
+# tolerable pipeline, and every second spent there is billed at the realtime
+# rate for latency the user was not complaining about. Scoping by surface is
+# the cheapest possible cost control — it stops the expensive path being used
+# where the cheap one is good enough, without needing a budget to intervene.
+#
+# Prefix match, because surface ids carry an instance suffix (glasses-<id>,
+# mobile-<uuid>): "glasses" matches every pair of glasses, not one.
+ALLOWED_SURFACES = tuple(
+    s.strip().lower()
+    for s in os.environ.get("REALTIME_SURFACES", "glasses").split(",")
+    if s.strip()
+)
 DAILY_BUDGET_USD = float(os.environ.get("REALTIME_DAILY_USD", "1.00"))
 MAX_SESSION_SECONDS = float(os.environ.get("REALTIME_MAX_SESSION_S", "120"))
 
@@ -79,7 +94,23 @@ def record_session(r, seconds_in: float, seconds_out: float) -> float:
     return cost
 
 
-def should_use_realtime(r, *, has_api_key: bool | None = None) -> tuple[bool, str]:
+def surface_allowed(surface: str | None) -> bool:
+    """True when this surface may use realtime at all.
+
+    An unknown/absent surface is NOT allowed: falling back is always safe, while
+    guessing "probably fine" bills the expensive path for a caller that never
+    asked for it.
+    """
+    if not ALLOWED_SURFACES:
+        return True
+    name = (surface or "").strip().lower()
+    if not name:
+        return False
+    return name.startswith(ALLOWED_SURFACES)
+
+
+def should_use_realtime(r, *, surface: str | None = None,
+                        has_api_key: bool | None = None) -> tuple[bool, str]:
     """(use_realtime, reason). False always means 'fall back', never 'fail'.
 
     The reason is returned for both outcomes so the decision shows up in logs
@@ -88,6 +119,10 @@ def should_use_realtime(r, *, has_api_key: bool | None = None) -> tuple[bool, st
     """
     if not ENABLED:
         return False, "realtime disabled (REALTIME_VOICE_ENABLED unset)"
+
+    if not surface_allowed(surface):
+        return False, (f"surface {surface or '<unknown>'!r} not in "
+                       f"REALTIME_SURFACES={','.join(ALLOWED_SURFACES) or '<any>'}")
 
     if has_api_key is None:
         has_api_key = bool(os.environ.get("OPENAI_API_KEY", "").strip())
