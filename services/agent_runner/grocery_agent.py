@@ -493,10 +493,120 @@ def _clean_query(item: str) -> str:
     return q or item
 
 
+# ---------------------------------------------------------------------------
+# Read path — Firecrawl first, browser as the fallback
+#
+# Remy's reads and writes have completely different requirements and only the
+# writes actually need the logged-in browser. Price comparison and product
+# matching are PUBLIC pages: no session, no cart, nothing personal. Routing
+# them through the one headful Chromium made them share every one of its
+# failure modes — the wedged browser that took Remy out for six weeks, and
+# HEB's bot protection, which blocks price reads that need no login at all.
+# When HEB reads fail, Amazon wins the >=60% coverage rule by default, which
+# is a large part of why every order has been Amazon Fresh.
+#
+# Firecrawl runs from its own infrastructure with anti-bot handling as its
+# product, so it is not subject to either. Cart writes stay on the browser
+# because they need the session.
+#
+# Every failure falls back to the browser, so the worst case is exactly the
+# behaviour we have today.
+# ---------------------------------------------------------------------------
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "").strip()
+FIRECRAWL_URL = os.environ.get("FIRECRAWL_URL", "https://api.firecrawl.dev").rstrip("/")
+# Opt out without removing the key.
+FIRECRAWL_READS = os.environ.get("GROCERY_FIRECRAWL_READS", "1").strip().lower() not in ("0", "false", "no")
+# After this many consecutive failures, stop trying for the rest of the run.
+# Without it, a bad key or an outage costs a failed request per item BEFORE
+# each browser fallback — 24 items of pure added latency to reach the same
+# place. Reset on any success, so one blip does not disable the whole run.
+_FIRECRAWL_MAX_STRIKES = 2
+_firecrawl_strikes = 0
+
+
+def _firecrawl_ready() -> bool:
+    return bool(FIRECRAWL_API_KEY) and FIRECRAWL_READS and _firecrawl_strikes < _FIRECRAWL_MAX_STRIKES
+
+
+async def _firecrawl_candidates(
+    session: aiohttp.ClientSession, item: str, store_key: str
+) -> list[dict]:
+    """Candidate products for one item at one store, via Firecrawl.
+
+    Returns [] on ANY failure — the caller then uses the browser. Structured
+    extraction is used rather than markdown parsing so this does not need a
+    bespoke parser per store, and so a store redesign does not silently return
+    junk the way a selector would.
+    """
+    global _firecrawl_strikes
+    store = STORES[store_key]
+    url = store["search_url"].format(query=_clean_query(item).replace(" ", "+"))
+    body = {
+        "url": url,
+        "onlyMainContent": True,
+        "formats": ["json"],
+        "jsonOptions": {
+            "prompt": (f"Extract up to 8 grocery products from these search "
+                       f"results for '{item}'. Skip sponsored results."),
+            "schema": {"type": "object", "properties": {"products": {
+                "type": "array", "items": {"type": "object", "properties": {
+                    "title": {"type": "string"},
+                    "price": {"type": "number"},
+                    "url": {"type": "string"},
+                }, "required": ["title", "price"]}}}, "required": ["products"]},
+        },
+    }
+    try:
+        async with session.post(
+                f"{FIRECRAWL_URL}/v1/scrape",
+                headers={"Authorization": f"Bearer {FIRECRAWL_API_KEY}",
+                         "Content-Type": "application/json"},
+                json=body, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            if resp.status != 200:
+                detail = (await resp.text())[:120].replace("\n", " ")
+                _firecrawl_strikes += 1
+                _log(f"  ⚠ Firecrawl {resp.status} for {store['name']} "
+                     f"({detail}) — using the browser", "warn")
+                return []
+            payload = await resp.json()
+    except Exception as exc:
+        _firecrawl_strikes += 1
+        _log(f"  ⚠ Firecrawl error for {store['name']} ({str(exc)[:80]}) — using the browser", "warn")
+        return []
+
+    products = ((payload.get("data") or {}).get("json") or {}).get("products") or []
+    out = []
+    for p in products:
+        title = str(p.get("title") or "").strip()
+        href = str(p.get("url") or "").strip()
+        try:
+            price = float(p.get("price"))
+        except (TypeError, ValueError):
+            continue
+        # A candidate with no product URL cannot be added to a cart later, so
+        # it is useless here even though it has a title and a price.
+        if not title or not href or price <= 0:
+            continue
+        out.append({"href": href, "title": title, "price": price})
+
+    if out:
+        _firecrawl_strikes = 0          # a success clears earlier blips
+    return out
+
+
 async def _extract_candidates(
     session: aiohttp.ClientSession, item: str, store_key: str
 ) -> list[dict]:
-    """Search the store (logged-in visible browser) and return candidate products."""
+    """Candidate products for one item at one store.
+
+    Firecrawl first (public read, no session needed), browser as the fallback.
+    """
+    if _firecrawl_ready():
+        cands = await _firecrawl_candidates(session, item, store_key)
+        if cands:
+            _log(f"  ✓ {STORES[store_key]['name']}: {len(cands)} candidates via Firecrawl")
+            return cands
+
     store = STORES[store_key]
     url = store["search_url"].format(query=_clean_query(item).replace(" ", "+"))
     nav = await _bridge_post(session, "/browser/navigate", {"url": url}, timeout=40)
