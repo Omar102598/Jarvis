@@ -1138,8 +1138,12 @@ _STORE_ADD_SELECTORS = {
         '[data-test="addToCartButton"]',
         '[data-test="chooseOptionsButton"]',
     ],
+    # Verified against the live page 2026-09-09: HEB's attribute is
+    # data-qe-id="addToCart". The old "addToCartButton" value matched NOTHING,
+    # so every HEB add fell through to the generic text fallback below.
     "heb": [
-        'button[data-qe-id="addToCartButton"]',
+        'button[data-qe-id="addToCart"]',
+        'button[data-qe-id="addToCartButton"]',      # kept in case it returns
         'button[data-qa-automation="addToCart"]',
         'button[aria-label*="Add to cart" i]',
         'button[class*="AddToCart"]',
@@ -1149,7 +1153,12 @@ _STORE_ADD_SELECTORS = {
 
 # Stores where a generic "add to cart" text match is DANGEROUS rather than a
 # helpful fallback — on Amazon those pages carry the retail control too.
-_NO_TEXT_FALLBACK = {"amazon", "whole_foods"}
+# HEB joins these for the same reason Amazon is here. A product page carries
+# FOUR "Add to cart" buttons — the real one, a hidden duplicate, and one per
+# recommendation card ("Add to cart, Fresh Bunch of Organic Bananas", "Add to
+# cart, Dole Fresh Mini Bananas"). The text fallback takes the first match, so
+# it can silently add a DIFFERENT product than the one whose price was compared.
+_NO_TEXT_FALLBACK = {"amazon", "whole_foods", "heb"}
 
 
 def _add_to_cart_js(store_key: str) -> str:
