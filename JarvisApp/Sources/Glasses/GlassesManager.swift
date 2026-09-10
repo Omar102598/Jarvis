@@ -98,6 +98,13 @@ final class GlassesManager: ObservableObject {
             wearables: wearables,
             filter: { $0.supportsDisplay() }
         )
+        // Same race as the mock hit: AutoDeviceSelector resolves from
+        // devicesStream(), so creating the session before any device is visible
+        // throws noEligibleDevice. On real glasses this is the difference
+        // between connecting and reporting a failure the moment the app opens
+        // slightly before Bluetooth settles.
+        for await ids in wearables.devicesStream() where !ids.isEmpty { break }
+
         let newSession = try wearables.createSession(deviceSelector: selector)
         self.session = newSession
 

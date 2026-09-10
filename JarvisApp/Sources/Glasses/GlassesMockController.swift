@@ -67,6 +67,24 @@ enum GlassesMockController {
             print("[GlassesMockController] Already registered (mock) — continuing.")
         }
 
+        // Wait for the mock device to actually surface before creating the
+        // session. AutoDeviceSelector resolves from devicesStream(), and pairing
+        // a mock does not make it instantly visible — createSession() against an
+        // empty device list throws DeviceSessionError.noEligibleDevice, which is
+        // exactly what the first run on a real phone reported.
+        var appeared = false
+        for await ids in wearables.devicesStream() {
+            if !ids.isEmpty {
+                appeared = true
+                print("[GlassesMockController] Device visible to the SDK (\(ids.count)).")
+                break
+            }
+        }
+        guard appeared else {
+            print("[GlassesMockController] Smoke test FAILED: no device ever appeared.")
+            return
+        }
+
         // No supportsDisplay() filter here — see the type doc above.
         let selector = AutoDeviceSelector(wearables: wearables)
         let session = try wearables.createSession(deviceSelector: selector)
