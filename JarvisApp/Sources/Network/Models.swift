@@ -68,9 +68,14 @@ struct HealthSnapshot: Encodable {
 /// The next upcoming calendar event, pushed so the ambient agent can warn the
 /// user before it starts.
 struct NextCalendarEvent: Encodable {
-    let title: String
-    let start: String        // ISO-8601
+    // Optional so the app can say "nothing upcoming" explicitly. Staying silent
+    // was indistinguishable from a failed sync, and the backend key had no TTL,
+    // so the last event pushed stayed there indefinitely.
+    let title: String?
+    let start: String?       // ISO-8601
     let location: String?
+
+    static let none = NextCalendarEvent(title: nil, start: nil, location: nil)
 }
 
 // MARK: - Response types

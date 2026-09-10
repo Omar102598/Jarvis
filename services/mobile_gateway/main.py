@@ -1507,8 +1507,12 @@ async def inbound_webhook(source: str, request: Request, secret: str = "",
 # ---------------------------------------------------------------------------
 
 class NextCalendarEventRequest(BaseModel):
-    title: str
-    start: str                       # ISO-8601
+    # Optional so the phone can report "nothing coming up" rather than staying
+    # silent. Silence was indistinguishable from a failed sync, and because the
+    # key has no TTL, whatever was last pushed stayed there forever — a flight
+    # from six days earlier was still being served as the next event.
+    title: Optional[str] = None
+    start: Optional[str] = None      # ISO-8601
     location: Optional[str] = None
 
 
@@ -1520,11 +1524,21 @@ async def calendar_next_event(req: NextCalendarEventRequest, x_api_key: str = He
     """
     _check_api_key(x_api_key)
     try:
+        if not (req.title and req.start):
+            # An explicit "nothing upcoming". Clearing beats leaving a stale
+            # event in place: no answer is correct, and a wrong one is not.
+            _redis.delete("jarvis:calendar:next_event")
+            return {"ok": True, "cleared": True}
+
+        # A TTL as a backstop for the phone going quiet entirely (deleted app,
+        # revoked permission, dead battery). Long enough not to expire a
+        # legitimately distant event that the phone keeps refreshing, short
+        # enough that a silent phone does not leave stale data indefinitely.
         _redis.set("jarvis:calendar:next_event", json.dumps({
             "title": req.title,
             "start": req.start,
             "location": req.location or "",
-        }))
+        }), ex=int(os.environ.get("CALENDAR_EVENT_TTL_S", str(48 * 3600))))
     except Exception as exc:
         raise HTTPException(503, f"Redis unavailable: {exc}")
     return {"ok": True}
