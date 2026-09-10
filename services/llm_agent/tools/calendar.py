@@ -18,9 +18,29 @@ def _eventkit_fallback(status: int) -> str:
         raw = r.get("jarvis:calendar:next_event")
         if raw:
             e = _json.loads(raw)
+            where = f", {e['location']}" if e.get("location") else ""
+            title = e.get("title", "?")
+            start = e.get("start", "?")
+
+            # The key is written with no TTL, so whatever the phone last pushed
+            # sits here indefinitely — and the phone only pushes on launch and
+            # foreground. Reporting it as "next" regardless is how a flight that
+            # already departed gets announced as upcoming. Check it against the
+            # clock and say plainly that the sync is stale instead.
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                when = _dt.fromisoformat(str(start).replace("Z", "+00:00"))
+                if when < _dt.now(_tz.utc):
+                    age_days = (_dt.now(_tz.utc) - when).days
+                    return (f"(HA calendar unavailable, {status}) The last event the "
+                            f"iPhone synced was {title} at {start}{where} — that was "
+                            f"{age_days} day(s) ago, so this is stale, not upcoming. "
+                            f"Open the Jarvis app to resync.")
+            except (ValueError, TypeError):
+                pass
+
             return (f"(HA calendar unavailable, {status} — from the iPhone instead) "
-                    f"Next event: {e.get('title','?')} at {e.get('start','?')}"
-                    + (f", {e['location']}" if e.get("location") else ""))
+                    f"Next event: {title} at {start}{where}")
     except Exception:
         pass
     return ("No calendar events available — Home Assistant has no calendars "
