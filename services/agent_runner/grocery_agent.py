@@ -1192,6 +1192,86 @@ def _add_to_cart_js(store_key: str) -> str:
     )
 
 
+# HEB's own add-to-cart GraphQL mutation, captured from the live site while a
+# human clicked the button. Clicking is what does not work: the button fires
+# analytics but never issues a cart request (see the note in
+# _add_product_to_cart), so the UI path silently no-ops behind Incapsula.
+# Calling the mutation directly, from inside the page so it carries the
+# logged-in cookies and same-origin headers, does work.
+#
+# quantity is ABSOLUTE — it SETS the line to N rather than adding N. Verified:
+# a hand-click made it 1, then quantity:2 produced "quantity: 2 eachs" and
+# $2.44, not 3. So this is called once per item, never in a loop.
+_HEB_ADD_QUERY_HASH = "740b6637fc54740a4cb3e0e734845c66727b1c5b89af7c95a0695bb6eb89b4d9"
+
+_HEB_IDS_JS = """(function(){
+  var out = {productId: (location.pathname.match(/\\/(\\d+)(?:\\?|$)/)||[])[1] || null, skuId: null};
+  var el = document.getElementById("__NEXT_DATA__");
+  if (el) {
+    var m = el.textContent.match(/"SKUs"\\s*:\\s*\\[\\s*\\{\\s*"id"\\s*:\\s*"([^"]+)"/);
+    if (m) out.skuId = m[1];
+  }
+  return out;
+})()"""
+
+
+def _heb_add_js(product_id: str, sku_id: str, quantity: int) -> str:
+    """In-page fetch of HEB's cart mutation, so it inherits the session."""
+    payload = json.dumps({
+        "operationName": "cartItemV2",
+        "variables": {
+            "userIsLoggedIn": True,
+            "productId": str(product_id),
+            "skuId": str(sku_id),
+            "purchasePreferenceId": "default",
+            "quantity": int(quantity),
+        },
+        "extensions": {"persistedQuery": {"version": 1,
+                                          "sha256Hash": _HEB_ADD_QUERY_HASH}},
+    })
+    return (
+        "(function(){return fetch('https://www.heb.com/graphql',{method:'POST',"
+        "credentials:'include',headers:{'Content-Type':'application/json'},"
+        f"body:JSON.stringify({payload})"
+        "}).then(function(r){return r.text().then(function(t){"
+        "return {status:r.status, body:t.slice(0,300)};});})"
+        ".catch(function(e){return {status:0, body:String(e).slice(0,200)};});})()"
+    )
+
+
+async def _add_heb_via_graphql(
+    session: aiohttp.ClientSession, quantity: int
+) -> tuple[bool, str]:
+    """Add the CURRENTLY OPEN HEB product page to the cart via its own API.
+
+    Assumes the caller has already navigated to the product page, because both
+    ids come from that page: productId from the URL and skuId from the Next.js
+    payload.
+
+    Returns (ok, note). Never raises — any failure hands back to the click path,
+    which is no worse than where we started.
+    """
+    ids = await _bridge_post(session, "/browser/js", {"script": _HEB_IDS_JS}, timeout=20)
+    got = ids.get("result") or {}
+    product_id, sku_id = got.get("productId"), got.get("skuId")
+    if not product_id or not sku_id:
+        return False, f"could not read HEB ids from the page (got {got})"
+
+    res = await _bridge_post(session, "/browser/js",
+                             {"script": _heb_add_js(product_id, sku_id, quantity)},
+                             timeout=30)
+    out = res.get("result") or {}
+    body = str(out.get("body") or "")
+    if out.get("status") == 200 and "addItemToCartV2" in body:
+        return True, f"Added {quantity}x to HEB via API (sku {sku_id})."
+    # PersistedQueryNotFound means HEB redeployed and the hash moved on. Worth
+    # naming explicitly: it is the one failure that is expected eventually, and
+    # the fix is to re-capture the hash rather than to debug the request.
+    if "PersistedQueryNotFound" in body:
+        return False, "HEB persisted-query hash is stale — re-capture it"
+    return False, f"HEB API add failed (status {out.get('status')}): {body[:120]}"
+
+
 async def _add_product_to_cart(
     session: aiohttp.ClientSession, product: PriceResult, quantity: int = 1
 ) -> tuple[str, str]:
@@ -1224,6 +1304,17 @@ async def _add_product_to_cart(
     await asyncio.sleep(4)
 
     want = max(1, min(int(quantity or 1), 6))
+
+    # HEB: use its own cart API. Clicking does not work there at all — the
+    # button fires analytics and never issues a cart request — so the click
+    # loop below would report success against an unchanged cart. The API also
+    # takes quantity directly, so a week's worth is one call rather than N.
+    if product.store == "heb":
+        ok, note = await _add_heb_via_graphql(session, want)
+        if ok:
+            return "added", note
+        _log(f"  ⚠ HEB API add failed ({note}) — falling back to clicking", "warn")
+
     added = 0
     for attempt in range(want):
         if attempt:
