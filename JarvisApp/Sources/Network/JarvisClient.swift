@@ -5,7 +5,15 @@ import Foundation
 struct JarvisConfig {
     static var serverURL: String {
         get {
-            let raw = UserDefaults.group.string(forKey: "serverURL") ?? "http://192.168.1.100:8080"
+            // The tailnet name, not a LAN IP. The core stack moved to GCP, so the
+            // old 192.168.1.100 default has pointed at nothing since — and it is
+            // the value a FRESH INSTALL gets, because deleting the app clears
+            // this UserDefaults entry. Every reinstall therefore silently
+            // reverted to a dead address until Settings was edited by hand.
+            // A tailnet host resolves from anywhere on the tailnet, so it stays
+            // correct on cellular as well as at home.
+            let raw = UserDefaults.group.string(forKey: "serverURL")
+                ?? "http://jarvis-core.tail7e74a7.ts.net:8080"
             return Self.normalized(raw)
         }
         set { UserDefaults.group.set(newValue, forKey: "serverURL") }

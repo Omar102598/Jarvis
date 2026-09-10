@@ -23,7 +23,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 28) {
                         sectionHeader("CONNECTION")
                         fieldRow(label: "SERVER URL") {
-                            TextField("http://192.168.1.100:8080", text: $serverURL)
+                            TextField("http://jarvis-core.tail7e74a7.ts.net:8080", text: $serverURL)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .keyboardType(.URL)
