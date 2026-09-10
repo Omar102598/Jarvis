@@ -10,6 +10,7 @@ import os
 
 import aiohttp
 
+import firecrawl_client
 from base_agent import BaseAgent
 from llm_helper import complete
 
@@ -22,8 +23,51 @@ _JOB_SITES = (
 _SYSTEM_PROMPT = (
     "You are JARVIS. Summarise these new job listings for your user. "
     "For each listing include: job title, company (if known), location/remote status, "
-    "and one sentence on why it looks interesting. Use bullet points. Be concise."
+    "and one sentence on why it looks interesting. Use bullet points. Be concise. "
+    "Some listings carry extra details read from the posting itself (salary, "
+    "requirements) — lead with pay when it is known, since that is the thing a "
+    "search snippet never says."
 )
+
+
+_JOB_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "company": {"type": "string"},
+        "salary": {"type": "string"},
+        "location": {"type": "string"},
+        "remote": {"type": "string"},
+        "requirements": {"type": "string"},
+    },
+}
+
+# Enrichment costs a scrape per listing, so it is capped. The summary is more
+# useful for five well-described roles than for twenty title-only ones, and an
+# unbounded run would scrape every result of every keyword.
+_MAX_ENRICH = int(os.environ.get("JOB_MONITOR_ENRICH_MAX", "5"))
+
+
+async def _enrich(listing: dict, session: aiohttp.ClientSession) -> dict:
+    """Add salary/location/requirements by reading the actual posting.
+
+    Search results carry a ~250 character snippet, which is usually the first
+    lines of a description and rarely says what the job pays or whether it is
+    genuinely remote — the two things that decide whether a listing is worth
+    opening. Reading the page gets those. Failure just leaves the listing as it
+    was, which is what the agent reported before this existed.
+    """
+    if not listing.get("url"):
+        return listing
+    data = await firecrawl_client.extract(
+        listing["url"],
+        "Extract the hiring company, salary or pay range, location, whether the "
+        "role is remote/hybrid/onsite, and the key requirements from this job posting.",
+        _JOB_SCHEMA,
+        session=session,
+    )
+    if data:
+        listing["details"] = {k: v for k, v in data.items() if v}
+    return listing
 
 
 class JobMonitorAgent(BaseAgent):
@@ -73,13 +117,25 @@ class JobMonitorAgent(BaseAgent):
                         {"title": f"Search error: {exc}", "url": "", "snippet": ""}
                     )
 
+            # Enrich the newest listings with what the search snippet leaves out.
+            if firecrawl_client.available() and new_listings:
+                for listing in new_listings[:_MAX_ENRICH]:
+                    if listing.get("url"):
+                        await _enrich(listing, session)
+
         if not new_listings:
             return "Job monitor: No new listings found since the last check."
 
-        listing_text = "\n\n".join(
-            f"- **{j['title']}**\n  {j['snippet']}\n  {j['url']}"
-            for j in new_listings
-        )
+        def _fmt(j: dict) -> str:
+            out = f"- **{j['title']}**\n  {j['snippet']}\n  {j['url']}"
+            # Without this the enrichment would be scraped, stored, and never
+            # seen by the model writing the summary.
+            details = j.get("details") or {}
+            if details:
+                out += "\n  " + " | ".join(f"{k}: {v}" for k, v in details.items())
+            return out
+
+        listing_text = "\n\n".join(_fmt(j) for j in new_listings)
 
         return await complete(
             system=_SYSTEM_PROMPT,
