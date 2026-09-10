@@ -59,7 +59,13 @@ enum GlassesMockController {
         print("[GlassesMockController] Paired + donned a mock Ray-Ban Meta.")
 
         let wearables = Wearables.shared
-        try await wearables.startRegistration()
+        do {
+            try await wearables.startRegistration()
+        } catch RegistrationError.alreadyRegistered {
+            // MockDeviceKitConfig defaults to initiallyRegistered: true, so the
+            // mock is registered the moment it is enabled and this always throws.
+            print("[GlassesMockController] Already registered (mock) — continuing.")
+        }
 
         // No supportsDisplay() filter here — see the type doc above.
         let selector = AutoDeviceSelector(wearables: wearables)

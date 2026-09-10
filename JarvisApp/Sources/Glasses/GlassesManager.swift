@@ -51,7 +51,15 @@ final class GlassesManager: ObservableObject {
 
     func start() async {
         do {
-            try await wearables.startRegistration()
+            do {
+                try await wearables.startRegistration()
+            } catch RegistrationError.alreadyRegistered {
+                // Registration persists across launches, so every launch after
+                // the first one throws here. Treating that as a failure aborted
+                // start() before it ever reached the session — the glasses would
+                // connect exactly once, on the install that registered them, and
+                // silently never again. Already registered is the good case.
+            }
             let status = try await wearables.requestPermission(.camera)
             guard status == .granted else {
                 errorMessage = "Camera permission denied by user."

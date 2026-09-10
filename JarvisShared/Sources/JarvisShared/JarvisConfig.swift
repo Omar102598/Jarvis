@@ -2,7 +2,11 @@ import Foundation
 
 public struct JarvisConfig {
     public static var serverURL: String {
-        get { normalized(store.string(forKey: "serverURL") ?? "http://192.168.1.100:8080") }
+        // Must match JarvisApp's default — see the note there. The LAN IP has
+        // pointed at nothing since the core moved to GCP, and this copy backs
+        // the Siri intent and widgets, which fail silently when it is wrong.
+        get { normalized(store.string(forKey: "serverURL")
+                         ?? "http://jarvis-core.tail7e74a7.ts.net:8080") }
         set { store.set(newValue, forKey: "serverURL") }
     }
 
