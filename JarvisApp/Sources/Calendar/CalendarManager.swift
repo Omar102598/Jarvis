@@ -35,21 +35,36 @@ final class CalendarManager: ObservableObject {
     /// app foreground.
     func syncOnLaunch() async {
         if !authorized { await requestAuthorization() }
-        guard authorized else { return }
+        guard authorized else {
+            // Reinstalling the app revokes calendar permission, and this used to
+            // return in silence — so the backend kept serving whatever it had
+            // last been told, with nothing anywhere indicating why it never
+            // changed. Say so at least once.
+            print("[Calendar] Not authorized — no events will sync. "
+                  + "Grant calendar access in Settings > Jarvis.")
+            return
+        }
         await pushNextEvent()
     }
 
     // MARK: - Next event
 
     func pushNextEvent() async {
-        guard let event = nextEvent() else { return }
-
-        let iso = ISO8601DateFormatter()
-        let payload = NextCalendarEvent(
-            title: event.title ?? "Untitled event",
-            start: iso.string(from: event.startDate),
-            location: event.location
-        )
+        let payload: NextCalendarEvent
+        if let event = nextEvent() {
+            let iso = ISO8601DateFormatter()
+            payload = NextCalendarEvent(
+                title: event.title ?? "Untitled event",
+                start: iso.string(from: event.startDate),
+                location: event.location
+            )
+        } else {
+            // Explicitly "nothing upcoming" rather than returning early. The old
+            // silence left the previous event in place forever: with a 24-hour
+            // window and no event tomorrow, the backend was never contacted at
+            // all, so a six-day-old flight stayed as the answer.
+            payload = .none
+        }
 
         do {
             try await JarvisClient.shared.pushNextCalendarEvent(payload)
@@ -61,7 +76,11 @@ final class CalendarManager: ObservableObject {
     /// The soonest event starting within the next 24 hours.
     private func nextEvent() -> EKEvent? {
         let now = Date()
-        let end = now.addingTimeInterval(24 * 3600)
+        // A week, not a day. The ambient countdown only cares about the next
+        // few hours, but "what's on my calendar?" does not — and with a 24-hour
+        // window anything further out simply did not exist as far as the
+        // backend was concerned.
+        let end = now.addingTimeInterval(7 * 24 * 3600)
         let predicate = store.predicateForEvents(withStart: now, end: end, calendars: nil)
         let events = store.events(matching: predicate)
             .filter { !$0.isAllDay && $0.startDate > now }
