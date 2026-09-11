@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import UIKit
 import MWDATCamera
 import MWDATCore
 import MWDATMockDevice
@@ -56,6 +57,28 @@ enum GlassesMockController {
             } catch {
                 print("[GlassesMockController] Smoke test FAILED: \(error)")
             }
+        }
+    }
+
+    /// A small JPEG on disk for the mock camera to "capture".
+    ///
+    /// Generated rather than bundled so there is no asset to keep in sync, and
+    /// written to the temp directory so it cleans itself up.
+    private static func makeFixtureImage() -> URL? {
+        let size = CGSize(width: 64, height: 64)
+        let image = UIGraphicsImageRenderer(size: size).image { ctx in
+            UIColor.systemTeal.setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+        }
+        guard let data = image.jpegData(compressionQuality: 0.8) else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("jarvis-mock-capture.jpg")
+        do {
+            try data.write(to: url)
+            return url
+        } catch {
+            print("[GlassesMockController] fixture write failed: \(error)")
+            return nil
         }
     }
 
@@ -119,7 +142,22 @@ enum GlassesMockController {
             session.stop()
             return
         }
-        await mock.services.camera.setCameraFeed(cameraFacing: .front)
+        // Feed a generated image, NOT the phone's camera.
+        //
+        // setCameraFeed(cameraFacing:) drives the real camera, which needs
+        // camera permission and a working capture session. Reinstalling revokes
+        // that permission, and this runs at app init before any UI could prompt
+        // for it — which is what produced "FigCaptureSourceRemote err=-17281"
+        // and a capture that never returned an image. A smoke test should not
+        // depend on hardware or a permission dialog anyway: the point is to
+        // prove the DAT pipeline carries bytes end to end, and a known file
+        // does that deterministically.
+        guard let fixture = Self.makeFixtureImage() else {
+            print("[GlassesMockController] Smoke test FAILED: could not write the fixture image.")
+            session.stop()
+            return
+        }
+        mock.services.camera.setCapturedImage(fileURL: fixture)
         await stream.start()
 
         // Same trap as GlassesManager had: `_ = token` releases the listener
