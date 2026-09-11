@@ -67,26 +67,25 @@ enum GlassesMockController {
             print("[GlassesMockController] Already registered (mock) — continuing.")
         }
 
-        // Wait for the mock device to actually surface before creating the
-        // session. AutoDeviceSelector resolves from devicesStream(), and pairing
-        // a mock does not make it instantly visible — createSession() against an
-        // empty device list throws DeviceSessionError.noEligibleDevice, which is
-        // exactly what the first run on a real phone reported.
-        var appeared = false
-        for await ids in wearables.devicesStream() {
-            if !ids.isEmpty {
-                appeared = true
-                print("[GlassesMockController] Device visible to the SDK (\(ids.count)).")
-                break
-            }
+        // No supportsDisplay() filter here — see the type doc above.
+        let selector = AutoDeviceSelector(wearables: wearables)
+
+        // Wait on the SELECTOR's activeDeviceStream, not wearables.devicesStream.
+        // devicesStream reports what the SDK can SEE; activeDeviceStream reports
+        // what this selector has actually CHOSEN. A device shows up in the first
+        // while the second is still nil, which is why an earlier attempt logged
+        // "Device visible to the SDK (1)" and then still threw noEligibleDevice.
+        var selected = false
+        for await device in selector.activeDeviceStream() where device != nil {
+            selected = true
+            print("[GlassesMockController] Selector picked a device.")
+            break
         }
-        guard appeared else {
-            print("[GlassesMockController] Smoke test FAILED: no device ever appeared.")
+        guard selected else {
+            print("[GlassesMockController] Smoke test FAILED: selector never chose a device.")
             return
         }
 
-        // No supportsDisplay() filter here — see the type doc above.
-        let selector = AutoDeviceSelector(wearables: wearables)
         let session = try wearables.createSession(deviceSelector: selector)
         try session.start()
 
