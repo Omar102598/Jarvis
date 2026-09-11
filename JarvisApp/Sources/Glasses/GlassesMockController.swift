@@ -19,6 +19,25 @@ import MWDATMockDevice
 /// registration, session lifecycle, and camera streaming — the pieces that
 /// CAN be simulated — and does not attempt Display. HUDRenderer/GlassesManager's
 /// Display path stays untestable until real Ray-Ban Display hardware arrives.
+/// Resumes a non-throwing continuation exactly once, from any thread — the
+/// photo callback and the timeout race each other, and a double resume is a
+/// crash rather than a warning.
+private final class MockResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        guard let c = continuation else { return }
+        continuation = nil
+        c.resume(returning: value)
+    }
+}
+
 enum GlassesMockController {
 
     /// Opt-in only: add `--mock-glasses` to the scheme's launch arguments
@@ -103,16 +122,24 @@ enum GlassesMockController {
         await mock.services.camera.setCameraFeed(cameraFacing: .front)
         await stream.start()
 
+        // Same trap as GlassesManager had: `_ = token` releases the listener
+        // immediately, so the callback never fires and the continuation leaks —
+        // which is exactly what "runSmokeTest() leaked its continuation" was
+        // reporting. Hold it in a local that outlives the continuation, and time
+        // out rather than hanging the test forever.
+        var photoToken: (any AnyListenerToken)?
         let captured: Bool = await withCheckedContinuation { continuation in
-            var resumed = false
-            let token = stream.photoDataPublisher.listen { photo in
-                guard !resumed else { return }
-                resumed = true
-                continuation.resume(returning: !photo.data.isEmpty)
+            let state = MockResumeOnce(continuation)
+            photoToken = stream.photoDataPublisher.listen { photo in
+                state.resume(!photo.data.isEmpty)
             }
-            _ = token
             stream.capturePhoto(format: .jpeg)
+            Task {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                state.resume(false)
+            }
         }
+        photoToken = nil
         print(captured
               ? "[GlassesMockController] Smoke test PASSED — registration, session, and camera capture all worked against the mock."
               : "[GlassesMockController] Smoke test FAILED — capturePhoto returned no data.")

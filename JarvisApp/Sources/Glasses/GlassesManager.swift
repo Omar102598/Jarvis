@@ -183,18 +183,34 @@ final class GlassesManager: ObservableObject {
 
     // MARK: Camera
 
+    /// Token for the in-flight photo listener.
+    ///
+    /// Held as a property deliberately. `_ = token` inside the continuation did
+    /// NOT keep it alive — discarding to `_` releases immediately, the SDK drops
+    /// the listener, the callback never fires, and the continuation is left
+    /// suspended forever. The old comment claimed the opposite of what the line
+    /// did, and the symptom was a camera button that simply never returned.
+    private var photoToken: (any AnyListenerToken)?
+
     func capturePhoto() async throws -> Data {
         guard let stream = cameraStream else { throw GlassesError.notConnected }
 
         return try await withCheckedThrowingContinuation { continuation in
-            var resumed = false
-            let token = stream.photoDataPublisher.listen { photo in
-                guard !resumed else { return }
-                resumed = true
-                continuation.resume(returning: photo.data)
+            let box = ResumeOnce(continuation)
+            photoToken = stream.photoDataPublisher.listen { photo in
+                box.resume(returning: photo.data)
             }
-            _ = token  // keep token alive until callback fires
             stream.capturePhoto(format: .jpeg)
+
+            // A capture that never calls back must fail rather than hang. The
+            // glasses can be doffed, folded, or out of range between the request
+            // and the response, and none of those produce a photo event.
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                if box.resume(throwing: GlassesError.captureTimedOut) {
+                    await MainActor.run { self?.photoToken = nil }
+                }
+            }
         }
     }
 }
@@ -203,11 +219,46 @@ final class GlassesManager: ObservableObject {
 
 enum GlassesError: LocalizedError {
     case notConnected
+    case captureTimedOut
 
     var errorDescription: String? {
         switch self {
         case .notConnected: return "Glasses not connected or camera stream unavailable."
+        case .captureTimedOut: return "The glasses didn't return a photo in time."
         }
+    }
+}
+
+/// Resumes a continuation exactly once, from any thread.
+///
+/// Both the photo callback and the timeout can fire, and resuming a checked
+/// continuation twice is a crash rather than a warning. The previous `var
+/// resumed = false` captured in a closure was not safe across threads.
+private final class ResumeOnce<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+
+    init(_ continuation: CheckedContinuation<T, Error>) {
+        self.continuation = continuation
+    }
+
+    /// Returns true if this call is the one that resumed it.
+    @discardableResult
+    func resume(returning value: T) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let c = continuation else { return false }
+        continuation = nil
+        c.resume(returning: value)
+        return true
+    }
+
+    @discardableResult
+    func resume(throwing error: Error) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let c = continuation else { return false }
+        continuation = nil
+        c.resume(throwing: error)
+        return true
     }
 }
 
