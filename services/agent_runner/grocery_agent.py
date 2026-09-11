@@ -1382,6 +1382,82 @@ async def _add_heb_via_graphql(
     return False, f"HEB API add failed (status {out.get('status')}): {body[:120]}"
 
 
+# Target's own cart API, captured the same way HEB's was: watch the traffic
+# while a human clicks Add to cart once, then replay it.
+#
+#   POST https://carts.target.com/web_checkouts/v1/cart_items?key=…
+#   {"cart_item":{"item_channel_id":"10","tcin":"15013944","quantity":1},
+#    "fulfillment":{"type":"PICKUP","location_id":2550,"ship_method":"STORE_PICKUP"},
+#    "cart_type":"REGULAR","channel_id":"10","shopping_context":"DIGITAL"}
+#   -> 201 {"cart_id":…,"cart_item_id":…,"total_cart_item_quantity":2}
+#
+# QUANTITY IS ADDITIVE HERE, and that is the opposite of HEB. Verified rather
+# than assumed: a line already at 1 plus a replay of quantity:2 came back as
+# quantity 3, where the same move on HEB SETS the line to 2. Sending the week's
+# figure to both stores therefore means two different things, so neither can be
+# treated as the general case. Remy builds a cart from empty, where additive and
+# absolute agree — but a retry, or an item already in the cart, is exactly where
+# they diverge, and Target would silently double.
+#
+# Success is 201 Created, not 200.
+#
+# The tcin is the number in the product URL (/A-15013944), so it needs no page
+# scraping the way HEB's skuId did. The key is Target's public web API key,
+# visible in every request the site makes; it identifies the client, not the
+# user — the SESSION is what authenticates, which is why this has to run inside
+# the logged-in page.
+_TARGET_CART_URL = ("https://carts.target.com/web_checkouts/v1/cart_items"
+                    "?field_groups=CART%2CCART_ITEMS%2CSUMMARY&key=")
+_TARGET_WEB_KEY = os.environ.get(
+    "TARGET_WEB_API_KEY", "9f36aeafbe60771e321a7cc95a78140772ab3e96").strip()
+# Store to fulfil from. Captured from a real add; override per household.
+_TARGET_STORE_ID = int(os.environ.get("TARGET_STORE_ID", "2550"))
+
+
+def _target_tcin(href: str) -> str:
+    """The TCIN out of a Target product URL (…/-/A-15013944)."""
+    m = re.search(r"/A-(\d+)", href or "")
+    return m.group(1) if m else ""
+
+
+def _target_add_js(tcin: str, quantity: int) -> str:
+    """In-page fetch of Target's cart API, inheriting the logged-in session."""
+    payload = json.dumps({
+        "cart_item": {"item_channel_id": "10", "tcin": str(tcin),
+                      "quantity": int(quantity)},
+        "fulfillment": {"type": "PICKUP", "location_id": _TARGET_STORE_ID,
+                        "ship_method": "STORE_PICKUP"},
+        "cart_type": "REGULAR", "channel_id": "10", "shopping_context": "DIGITAL",
+    })
+    url = _TARGET_CART_URL + _TARGET_WEB_KEY
+    return (
+        "(function(){return fetch('" + url + "',{method:'POST',"
+        "credentials:'include',headers:{'Content-Type':'application/json'},"
+        f"body:JSON.stringify({payload})"
+        "}).then(function(r){return r.text().then(function(t){"
+        "return {status:r.status, body:t.slice(0,300)};});})"
+        ".catch(function(e){return {status:0, body:String(e).slice(0,200)};});})()"
+    )
+
+
+async def _add_target_via_api(
+    session: aiohttp.ClientSession, product: PriceResult, quantity: int
+) -> tuple[bool, str]:
+    """Add a Target item via its cart API. Never raises; False hands back to clicking."""
+    tcin = _target_tcin(product.href or "")
+    if not tcin:
+        return False, f"no TCIN in Target URL ({str(product.href)[:60]})"
+
+    res = await _bridge_post(session, "/browser/js",
+                             {"script": _target_add_js(tcin, quantity)}, timeout=30)
+    out = res.get("result") or {}
+    body = str(out.get("body") or "")
+    # 201 Created is the success here, not 200.
+    if out.get("status") in (200, 201) and "cart_item_id" in body:
+        return True, f"Added {quantity}x to Target via API (tcin {tcin})."
+    return False, f"Target API add failed (status {out.get('status')}): {body[:120]}"
+
+
 async def _add_product_to_cart(
     session: aiohttp.ClientSession, product: PriceResult, quantity: int = 1
 ) -> tuple[str, str]:
@@ -1424,6 +1500,13 @@ async def _add_product_to_cart(
         if ok:
             return "added", note
         _log(f"  ⚠ HEB API add failed ({note}) — falling back to clicking", "warn")
+
+    # Target: same reasoning as HEB — its own API, with quantity in one call.
+    if product.store == "target":
+        ok, note = await _add_target_via_api(session, product, want)
+        if ok:
+            return "added", note
+        _log(f"  ⚠ Target API add failed ({note}) — falling back to clicking", "warn")
 
     added = 0
     for attempt in range(want):
