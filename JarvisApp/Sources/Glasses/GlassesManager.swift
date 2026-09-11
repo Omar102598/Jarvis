@@ -50,6 +50,20 @@ final class GlassesManager: ObservableObject {
     // MARK: Lifecycle
 
     func start() async {
+        #if DEBUG
+        // With --mock-glasses the only device is a displayless MockRaybanMeta,
+        // which can never satisfy this manager's supportsDisplay() filter. Before
+        // the selector wait that surfaced as a confusing "Start error:
+        // noEligibleDevice" next to the smoke test's own output; now it would
+        // block on activeDeviceStream indefinitely, since the selector will
+        // never choose a device it has filtered out. Stand down and let the
+        // smoke test own the SDK for that run.
+        if GlassesMockController.isRequested {
+            print("[GlassesManager] --mock-glasses set — standing down "
+                  + "(a displayless mock cannot satisfy supportsDisplay()).")
+            return
+        }
+        #endif
         do {
             do {
                 try await wearables.startRegistration()
@@ -98,12 +112,12 @@ final class GlassesManager: ObservableObject {
             wearables: wearables,
             filter: { $0.supportsDisplay() }
         )
-        // Same race as the mock hit: AutoDeviceSelector resolves from
-        // devicesStream(), so creating the session before any device is visible
-        // throws noEligibleDevice. On real glasses this is the difference
-        // between connecting and reporting a failure the moment the app opens
-        // slightly before Bluetooth settles.
-        for await ids in wearables.devicesStream() where !ids.isEmpty { break }
+        // Wait until the selector has actually chosen a device. devicesStream
+        // (what the SDK can see) is not the same as activeDeviceStream (what
+        // this selector picked) — and only the latter means createSession will
+        // succeed. On real glasses this is the difference between connecting
+        // and failing when the app opens just before Bluetooth settles.
+        for await device in selector.activeDeviceStream() where device != nil { break }
 
         let newSession = try wearables.createSession(deviceSelector: selector)
         self.session = newSession
