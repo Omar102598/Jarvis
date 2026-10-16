@@ -696,8 +696,23 @@ def _build_system_prompt(room: str) -> list[dict]:
     )
 
     return [
-        # Static portion — eligible for Anthropic prompt caching (>= 1024 tokens for Sonnet/Opus)
-        {"type": "text", "text": _BASE_PROMPT, "cache_control": {"type": "ephemeral"}},
+        # Static portion — eligible for Anthropic prompt caching (>= 1024 tokens
+        # for Sonnet/Opus). Explicitly a ONE HOUR ttl, not the 5-minute default.
+        #
+        # Measured: 37% of the brain's daily input tokens were cache WRITES
+        # (209,793 of 573,725 on 2026-09-12, near-identical the day before), and
+        # writes bill at a premium while reads bill at 10%. The prefix carries
+        # ~260 tool schemas, so each rewrite is expensive, and a 5-minute window
+        # means any gap longer than a coffee break starts the next turn with a
+        # full miss. Usage here is sporadic rather than continuous — roughly 20
+        # rewrites a day — which is close to the worst case that default serves.
+        #
+        # A 1h write costs more per write (2x base input vs 1.25x), so this is a
+        # bet on far fewer of them, not a free upgrade. Watch brain:cache_write
+        # against brain:cache_read after this lands: if writes do not fall by
+        # more than the multiplier rises, revert it.
+        {"type": "text", "text": _BASE_PROMPT,
+         "cache_control": {"type": "ephemeral", "ttl": "1h"}},
         # Dynamic portion — changes every request, not cached
         {"type": "text", "text": dynamic},
     ]
