@@ -33,7 +33,7 @@ MAC_BRIDGE_URL = os.environ.get("MAC_BRIDGE_URL") or (
     f":{os.environ.get('MAC_BRIDGE_PORT') or '7777'}")
 MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
-SENTRY_MODEL = os.environ.get("SENTRY_MODEL", "claude-haiku-4-5-20251001")
+SENTRY_MODEL = os.environ.get("SENTRY_MODEL", "claude-haiku-5-5")
 # Public (tailnet) gateway base URL — used to attach snapshot images to pushes
 GATEWAY_PUBLIC_URL = os.environ.get("GATEWAY_PUBLIC_URL", "").rstrip("/")
 MOBILE_API_KEY = os.environ.get("MOBILE_API_KEY", "")

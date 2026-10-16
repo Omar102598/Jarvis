@@ -125,7 +125,7 @@ services:
       - TWILIO_FROM_NUMBER=${TWILIO_FROM_NUMBER:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
+      - LLM_MODEL=${LLM_MODEL:-claude-haiku-5-5}
       - HA_URL=${HA_URL:-http://homeassistant:8123}
       - HA_TOKEN=${HA_TOKEN:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
@@ -287,7 +287,7 @@ services:
       - REDIS_HOST=redis
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
+      - LLM_MODEL=${LLM_MODEL:-claude-haiku-5-5}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
       # Scout (web_monitor): Firecrawl for URL-watch scrape+schema-extraction.
       # Set FIRECRAWL_API_KEY to use it; unset = local scraper + LLM fallback.
@@ -303,7 +303,7 @@ services:
       # Developer agent (Forge) — file/shell access via mac_bridge on the host
       - MAC_BRIDGE_HOST=${MAC_BRIDGE_HOST:-host.docker.internal}
       - MAC_BRIDGE_PORT=${MAC_BRIDGE_PORT:-7777}
-      - DEV_LLM_MODEL=${DEV_LLM_MODEL:-claude-opus-4-8}
+      - DEV_LLM_MODEL=${DEV_LLM_MODEL:-claude-opus-5-5}
       # Forge prefers the Claude Code CLI on the host (Pro-plan billing, not
       # API credits); API tool-loop is the fallback. See developer_agent.py.
       - DEV_PREFER_CLI=${DEV_PREFER_CLI:-true}
@@ -332,7 +332,7 @@ services:
       # Native web search (Anthropic server-side tool) — replaces Tavily for
       # Ada/Jeeves/Walter. Needs a search-capable model: the dynamic-filtering
       # variant requires Opus 4.6+ / Sonnet 4.6+ (haiku gets the basic one).
-      - SEARCH_LLM_MODEL=${SEARCH_LLM_MODEL:-claude-sonnet-5}
+      - SEARCH_LLM_MODEL=${SEARCH_LLM_MODEL:-claude-sonnet-5-5}
       - SEARCH_MAX_USES=${SEARCH_MAX_USES:-5}
       - RESEARCH_MAX_SEARCHES=${RESEARCH_MAX_SEARCHES:-8}
       # Walter runs daily, so his native-search bill recurs — off by default

@@ -31,7 +31,7 @@ MAC_BRIDGE_PORT = int(os.environ.get("MAC_BRIDGE_PORT", "7777"))
 _BASE = f"http://{MAC_BRIDGE_HOST}:{MAC_BRIDGE_PORT}"
 
 # Coding is the one place the powerful tier earns its cost. On-demand only.
-DEV_MODEL = os.environ.get("DEV_LLM_MODEL", "claude-opus-4-8")
+DEV_MODEL = os.environ.get("DEV_LLM_MODEL", "claude-opus-5-5")
 MAX_STEPS = int(os.environ.get("DEV_AGENT_MAX_STEPS", "40"))
 
 # Prefer the Claude Code CLI on the host (billed to the user's Claude PRO

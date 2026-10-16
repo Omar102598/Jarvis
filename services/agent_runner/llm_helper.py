@@ -3,7 +3,7 @@
 Mirrors the llm_agent's provider selection but uses the raw SDKs (the
 agent_runner doesn't depend on LangChain). Supports Anthropic and OpenAI.
 
-    LLM_MODEL=claude-haiku-4-5  ->  Anthropic
+    LLM_MODEL=claude-haiku-5-5  ->  Anthropic
     LLM_MODEL=gpt-4o-mini       ->  OpenAI
     unset                       ->  Claude haiku if only ANTHROPIC_API_KEY set
 """
@@ -16,7 +16,7 @@ def _resolve_model() -> str:
     if model:
         return model
     if os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
-        return "claude-haiku-4-5"
+        return "claude-haiku-5-5"
     return "gpt-4o-mini"
 
 
@@ -135,7 +135,7 @@ async def tavily_search(query: str, max_results: int = 5, depth: str = "basic") 
 # so every call caps searches via the tool's own max_uses.
 # ---------------------------------------------------------------------------
 
-SEARCH_LLM_MODEL = os.environ.get("SEARCH_LLM_MODEL", "claude-sonnet-5").strip()
+SEARCH_LLM_MODEL = os.environ.get("SEARCH_LLM_MODEL", "claude-sonnet-5-5").strip()
 SEARCH_MAX_USES = int(os.environ.get("SEARCH_MAX_USES", "5"))
 # Guard against a runaway server-side loop (each pause_turn is another request).
 _SEARCH_MAX_CONTINUATIONS = 5
@@ -143,6 +143,11 @@ _SEARCH_MAX_CONTINUATIONS = 5
 # Models with the dynamic-filtering search tool. Anything else gets the basic
 # variant, which still works — it just pastes more into context.
 _MODERN_SEARCH_MODELS = (
+    # The 5.5 ids are listed explicitly rather than left to substring matching.
+    # They would match anyway ("claude-opus-5" is inside "claude-opus-5-5"), but
+    # relying on that means a future rename silently downgrades the search tool
+    # instead of failing visibly.
+    "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1",
     "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
     "claude-sonnet-5", "claude-sonnet-4-6", "claude-fable-5", "claude-mythos-5",
 )
