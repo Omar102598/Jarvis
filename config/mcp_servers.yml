@@ -61,7 +61,12 @@ servers:
   # GitHub's maintained server is the hosted remote below (PAT via headers).
   # ---------------------------------------------------------------------------
   github:
-    enabled: true
+    # Disabled 2026-10-16: 46 tools, the single largest block in the prompt,
+    # and ZERO calls in the last 200 tool events. The developer agent is also
+    # disabled and code work happens in Claude Code, so the voice brain was
+    # paying to re-send issue/PR/merge schemas on every turn to reach them
+    # never. Re-enable if the developer agent comes back.
+    enabled: false
     transport: streamable_http
     url: "https://api.githubcopilot.com/mcp/"
     headers:
@@ -76,7 +81,12 @@ servers:
   # persistent: one live browser keeps page state across tool calls.
   # ---------------------------------------------------------------------------
   playwright:
-    enabled: true
+    # Disabled 2026-10-16: 24 tools, zero calls in the last 200 events. Every
+    # browser job that matters (Remy's carts, Scout, ClassPass) goes through
+    # mac_bridge instead, because those need the logged-in session this
+    # headless container cannot have. It was costing prompt space to offer a
+    # browser nothing chooses.
+    enabled: false
     persistent: true
     transport: stdio
     command: npx
@@ -105,7 +115,11 @@ servers:
   # with the user first.
   # ---------------------------------------------------------------------------
   chrome:
-    enabled: true
+    # Disabled 2026-10-16: fails to load ("Could not load server") and
+    # contributes 0 tools, so this capability does not exist today
+    # regardless of this flag. Left configured, not deleted — re-enable
+    # after authorising it, rather than assuming it works.
+    enabled: false
     transport: streamable_http
     url: "http://host.docker.internal:12306/mcp"
     description: "MCP Chrome (mcp-chrome) — the user's real signed-in browser; confirm before transactional actions"
@@ -315,7 +329,11 @@ servers:
   # Skips gracefully until authorized.
   # ---------------------------------------------------------------------------
   gmail:
-    enabled: true
+    # Disabled 2026-10-16: fails to load ("Could not load server") and
+    # contributes 0 tools, so this capability does not exist today
+    # regardless of this flag. Left configured, not deleted — re-enable
+    # after authorising it, rather than assuming it works.
+    enabled: false
     transport: stdio
     command: npx
     args:
@@ -337,7 +355,11 @@ servers:
   # script as gmail. Skips gracefully until authorized.
   # ---------------------------------------------------------------------------
   google_calendar:
-    enabled: true
+    # Disabled 2026-10-16: fails to load ("Could not load server") and
+    # contributes 0 tools, so this capability does not exist today
+    # regardless of this flag. Left configured, not deleted — re-enable
+    # after authorising it, rather than assuming it works.
+    enabled: false
     transport: stdio
     command: npx
     args:
@@ -383,7 +405,11 @@ servers:
   # Needs RESY_EMAIL + RESY_PASSWORD in .env (compose passthrough wired).
   # ---------------------------------------------------------------------------
   resy:
-    enabled: true
+    # Disabled 2026-10-16: fails to load ("Could not load server") and
+    # contributes 0 tools, so this capability does not exist today
+    # regardless of this flag. Left configured, not deleted — re-enable
+    # after authorising it, rather than assuming it works.
+    enabled: false
     transport: stdio
     command: npx
     args:
@@ -423,7 +449,11 @@ servers:
   # always confirm with the user before placing any order.
   # ---------------------------------------------------------------------------
   uber_eats:
-    enabled: true
+    # Disabled 2026-10-16: fails to load ("Could not load server") and
+    # contributes 0 tools, so this capability does not exist today
+    # regardless of this flag. Left configured, not deleted — re-enable
+    # after authorising it, rather than assuming it works.
+    enabled: false
     transport: stdio
     command: npx
     args:
@@ -442,7 +472,11 @@ servers:
   # Same rule: Jarvis must confirm with the user before placing any order.
   # ---------------------------------------------------------------------------
   doordash:
-    enabled: true
+    # Disabled 2026-10-16: fails to load ("Could not load server") and
+    # contributes 0 tools, so this capability does not exist today
+    # regardless of this flag. Left configured, not deleted — re-enable
+    # after authorising it, rather than assuming it works.
+    enabled: false
     transport: stdio
     command: npx
     args:
