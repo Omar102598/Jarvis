@@ -697,6 +697,47 @@ Round 2 (2026-07-18):
 
 ---
 
+## Month 7 — Market Research & Paper Trading  📋 Proposed (2026-10-19)
+
+Interest in an agent that trades. Scoped deliberately in stages, because the
+risk profile is unlike anything else in Jarvis: a grocery agent that silently
+fails costs a missed delivery, whereas a trading agent that silently fails
+loses money every minute it runs, and reports fine the whole time.
+
+Tooling is mature — Alpaca ships an official MCP server (v2, Sept 2026) for
+stocks/ETFs/crypto/options with first-class **paper trading**; community
+wrappers exist for IBKR, TradeStation and Tradier; SnapTrade aggregates
+brokers. Market data is already reachable: Alexandria carries Benzinga,
+Fiscal.ai, Coinbase and DeFiLlama, and `finance_agent` already speaks MCP to
+BankSync.
+
+### 7a. Research agent (no execution)
+- Watchlist monitoring, earnings dates, unusual moves, surfaced as a report.
+- Reuses Brad's plumbing and the Alexandria finance providers.
+- **Useful on its own merits whether or not later stages happen**, and proves
+  whether the data path is trustworthy before anything rides on it.
+
+### 7b. Paper execution
+- Alpaca paper account: real prices, real market hours, fake money.
+- Full loop end to end, so a strategy meets reality before capital does.
+
+### 7c. Guardrails — prerequisite for anything live
+- Per-trade cap, daily loss limit, kill switch.
+- **Position verification after every order**, confirming the broker's actual
+  position rather than trusting the order response. This is the direct lesson
+  from HEB returning `status="added"` against a cart that never changed, and
+  from `price_monitor` storing $35.00 scraped off a bot-challenge page.
+- Audit-by-default already covers the tool calls (see the `_classify_action`
+  work); trading tools should be high-risk by name.
+
+### 7d. Honest framing
+- Retail algorithmic trading overwhelmingly loses money over time. This is the
+  highest-variance item on this roadmap and is not an income plan.
+- Jarvis will not place live orders autonomously. Stages 7a-7b carry no
+  execution risk; anything beyond needs 7c first and a deliberate decision.
+
+---
+
 ## LLM Strategy
 
 **Recommended: Hybrid (API + local), defer fine-tuning**
