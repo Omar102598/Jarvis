@@ -136,8 +136,13 @@ enum GlassesMockController {
         }
         print("[GlassesMockController] Session started against the mock device.")
 
-        let config = StreamConfiguration(videoCodec: .raw, resolution: .low, frameRate: 15)
-        guard let stream = try session.addStream(config: config) else {
+        // The SDK's own default configuration, not a hand-picked one. Asking for
+        // .raw/.low/15 produced "MediaStreamSession::_handleStartErrorCode -
+        // error: 2, category: ProtoSerializerError" and the stream never
+        // started — a combination the mock could not serialise. The no-arg
+        // initialiser is whatever the SDK considers valid, which is the right
+        // thing for a test whose subject is the pipeline, not the codec.
+        guard let stream = try session.addStream(config: StreamConfiguration()) else {
             print("[GlassesMockController] Smoke test FAILED: addStream returned nil.")
             session.stop()
             return
@@ -158,7 +163,35 @@ enum GlassesMockController {
             return
         }
         mock.services.camera.setCapturedImage(fileURL: fixture)
-        await stream.start()
+
+        // Wait for the stream to actually REACH .streaming before capturing.
+        // Previously this called start() and went straight to capturePhoto, so
+        // when start failed the capture ran against a dead stream — the SDK
+        // logged "MediaStreamClient - not started!" and the test reported "no
+        // data", which named the symptom and hid the cause. A start failure
+        // should say start failed.
+        var streamToken: (any AnyListenerToken)?
+        let streaming: Bool = await withCheckedContinuation { continuation in
+            let state = MockResumeOnce(continuation)
+            streamToken = stream.statePublisher.listen { s in
+                if s == .streaming { state.resume(true) }
+            }
+            // start() is async on this SDK version, so it cannot be called
+            // directly from the continuation body.
+            Task { await stream.start() }
+            Task {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                state.resume(false)
+            }
+        }
+        streamToken = nil
+        guard streaming else {
+            print("[GlassesMockController] Smoke test FAILED: stream never reached "
+                  + ".streaming (state is \(stream.state)). Capture not attempted.")
+            session.stop()
+            return
+        }
+        print("[GlassesMockController] Stream is live.")
 
         // Same trap as GlassesManager had: `_ = token` releases the listener
         // immediately, so the callback never fires and the continuation leaks —
