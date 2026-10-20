@@ -37,8 +37,14 @@ PRICES: dict[str, tuple[float, float]] = {
 _DEFAULT_PRICE = (1.00, 3.00)
 
 # Anthropic prompt-caching rates, relative to the input price.
+# Writes are priced by TTL: the 5-minute default is cheaper per write, the 1-hour
+# one costs more per write but is written far less often. The brain asks for 1h
+# (see the cache_control note in main.py), so both are tracked separately —
+# charging a 1h write at the 5m rate would under-report by 60% and hide exactly
+# the number that decides whether that trade was worth making.
 CACHE_READ_MULTIPLIER = 0.10
-CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_WRITE_MULTIPLIER = 1.25        # 5-minute TTL
+CACHE_WRITE_1H_MULTIPLIER = 2.00     # 1-hour TTL
 
 _r = redis.Redis(host=REDIS_HOST, decode_responses=True)
 
@@ -80,15 +86,21 @@ def record_response(response) -> None:
         cache_read = int(details.get("cache_read", 0) or 0)
         # Writes appear as cache_creation on some responses and as the
         # ephemeral_* buckets on others — the live probe showed the latter.
-        cache_write = (int(details.get("cache_creation", 0) or 0)
-                       or int(details.get("ephemeral_5m_input_tokens", 0) or 0)
-                       + int(details.get("ephemeral_1h_input_tokens", 0) or 0))
+        write_5m = int(details.get("ephemeral_5m_input_tokens", 0) or 0)
+        write_1h = int(details.get("ephemeral_1h_input_tokens", 0) or 0)
+        # Some responses report a single cache_creation total instead of the
+        # per-TTL buckets. Attribute that to whichever TTL was requested rather
+        # than assuming the cheaper one.
+        if not (write_5m or write_1h):
+            write_1h = int(details.get("cache_creation", 0) or 0)
+        cache_write = write_5m + write_1h
         fresh_in = max(in_tok - cache_read - cache_write, 0)
 
         cost = (
             (fresh_in / 1_000_000) * pin
             + (cache_read / 1_000_000) * pin * CACHE_READ_MULTIPLIER
-            + (cache_write / 1_000_000) * pin * CACHE_WRITE_MULTIPLIER
+            + (write_5m / 1_000_000) * pin * CACHE_WRITE_MULTIPLIER
+            + (write_1h / 1_000_000) * pin * CACHE_WRITE_1H_MULTIPLIER
             + (out_tok / 1_000_000) * pout
         )
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -97,6 +109,9 @@ def record_response(response) -> None:
         pipe.hincrby(key, "brain:in", in_tok)
         pipe.hincrby(key, "brain:cache_read", cache_read)
         pipe.hincrby(key, "brain:fresh_in", fresh_in)
+        # Recorded so the TTL change can be judged on evidence rather than hope.
+        pipe.hincrby(key, "brain:cache_write_5m", write_5m)
+        pipe.hincrby(key, "brain:cache_write_1h", write_1h)
         pipe.hincrby(key, "brain:out", out_tok)
         pipe.hincrbyfloat(key, "brain:cost", float(cost))
         pipe.hincrbyfloat(key, "_total:cost", float(cost))
