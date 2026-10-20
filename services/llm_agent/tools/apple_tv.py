@@ -246,12 +246,48 @@ async def apple_tv(action: str, name: str = "", app: str = "", command: str = ""
                     return (f"FAILED — could not open {target_app} on {friendly}. "
                             "Do NOT claim it was opened.")
                 _set_media_flag()   # TV audio incoming — mute the follow-up mic
-                # NOTE: this Apple TV only reports app_name during ACTIVE playback,
-                # so an app sitting at its menu reads app='none' — absence of
-                # confirmation is NOT failure (user-verified: Netflix visibly opened
-                # while the entity said none). Send once, report confidently.
+
+                # Report what the evidence supports, and no more.
+                #
+                # tvOS only reports app_name during ACTIVE playback, so an app
+                # sitting at its own menu reads none. That is a limitation of the
+                # device, not of Home Assistant — pyatv, which HA uses underneath,
+                # carries the same blind spot, and Meta's own Apple TV skill warns
+                # that the reported app "is generally the now-playing app, not
+                # proof of which app is currently in the foreground".
+                #
+                # The previous version drew the wrong conclusion from that. Because
+                # absence of confirmation is not failure, it claimed "it's on the
+                # screen" — asserting the one thing the API cannot establish. That
+                # is the same failure as a grocery cart returning "added" against an
+                # unchanged cart: a confident sentence covering an unknown.
+                #
+                # So: poll briefly for real confirmation, and when it does not
+                # arrive, say the command was accepted rather than that the app is
+                # showing.
+                confirmed_app = ""
+                import asyncio as _asyncio
+                for _ in range(3):
+                    await _asyncio.sleep(1.5)
+                    await _refresh(session, eid)
+                    fresh = await _get_state(session, eid) or {}
+                    reported = (fresh.get("attributes", {}).get("app_name") or "").strip()
+                    if reported and reported.lower() not in ("none", "unknown"):
+                        confirmed_app = reported
+                        break
+
+                if confirmed_app:
+                    if confirmed_app.lower() == target_app.lower():
+                        return f"{target_app} is now playing on {friendly}."
+                    # Worth surfacing rather than smoothing over: the TV is telling
+                    # us something different opened.
+                    return (f"Sent {target_app} to {friendly}, but it reports "
+                            f"'{confirmed_app}' playing instead — worth a look.")
+
                 if choice:
-                    return f"{target_app} launched on {friendly} — it's on the screen."
+                    return (f"Sent {target_app} to {friendly} — it accepted the command. "
+                            f"It can't confirm the app is on screen until something "
+                            f"starts playing, so check the TV if you need certainty.")
                 return (f"Sent the {target_app} launch to {friendly}. (App list wasn't "
                         "available to validate the name — if the screen doesn't show "
                         f"it, the app may be called something other than '{target_app}'.)")
