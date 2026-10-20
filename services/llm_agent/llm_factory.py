@@ -6,9 +6,9 @@ that needs an LLM all build models the same way.
     LLM_MODEL=claude-sonnet-4-6 | claude-opus-4-8 | gpt-4.1 | gpt-4o-mini ...
 
 Tiers (Anthropic only):
-  haiku  → claude-haiku-4-5-20251001   fast/cheap  — simple commands & device control
-  sonnet → claude-sonnet-4-6           default     — conversational & moderate tool use
-  opus   → claude-opus-4-8             powerful    — complex reasoning, code, research
+  haiku  → claude-haiku-5-5            fast/cheap  — simple commands & device control
+  sonnet → claude-sonnet-5-5           default     — conversational & moderate tool use
+  opus   → claude-opus-5-5             powerful    — complex reasoning, code, research
 
 Prompt caching is enabled for Anthropic models via the beta header.
 """
@@ -17,9 +17,12 @@ import os
 
 # Canonical model IDs per tier
 TIER_MODELS = {
-    "haiku":  "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-5",
-    "opus":   "claude-opus-4-8",
+    # Upgraded to the 5.5 family 2026-10-16, verified against /v1/models rather
+    # than assumed to exist. Cheaper as well as newer: haiku input drops ~90%
+    # ($1 -> $0.10), sonnet ~33% ($3 -> $2), opus ~20% ($5 -> $4).
+    "haiku":  "claude-haiku-5-5",
+    "sonnet": "claude-sonnet-5-5",
+    "opus":   "claude-opus-5-5",
 }
 
 # Local (on-device) tier — Month 3. When OLLAMA_BASE_URL is set, the "local"

@@ -66,7 +66,7 @@ services:
       - TWILIO_FROM_NUMBER=${TWILIO_FROM_NUMBER:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
+      - LLM_MODEL=${LLM_MODEL:-claude-haiku-5-5}
       # HA stays on the Mac (it talks to LAN devices) — point across the tailnet
       - HA_URL=${HA_URL}
       - HA_TOKEN=${HA_TOKEN:-}
@@ -159,7 +159,7 @@ services:
       - REDIS_HOST=redis
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - LLM_MODEL=${LLM_MODEL:-claude-haiku-4-5}
+      - LLM_MODEL=${LLM_MODEL:-claude-haiku-5-5}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
       - FIRECRAWL_URL=${FIRECRAWL_URL:-https://api.firecrawl.dev}
@@ -173,7 +173,7 @@ services:
       # bridge — that continues to work from the VPS unchanged.
       - MAC_BRIDGE_HOST=${MAC_HOST:-host.docker.internal}
       - MAC_BRIDGE_PORT=${MAC_BRIDGE_PORT:-7777}
-      - DEV_LLM_MODEL=${DEV_LLM_MODEL:-claude-opus-4-8}
+      - DEV_LLM_MODEL=${DEV_LLM_MODEL:-claude-opus-5-5}
       - DEV_PREFER_CLI=${DEV_PREFER_CLI:-true}
       - DEV_CLI_BIN=${DEV_CLI_BIN:-/usr/local/bin/claude}
       - DEV_CLI_TIMEOUT_S=${DEV_CLI_TIMEOUT_S:-900}
@@ -193,7 +193,7 @@ services:
       # Native web search (Anthropic server-side tool) — replaces Tavily for
       # Ada/Jeeves/Walter. Needs a search-capable model: the dynamic-filtering
       # variant requires Opus 4.6+ / Sonnet 4.6+ (haiku gets the basic one).
-      - SEARCH_LLM_MODEL=${SEARCH_LLM_MODEL:-claude-sonnet-5}
+      - SEARCH_LLM_MODEL=${SEARCH_LLM_MODEL:-claude-sonnet-5-5}
       - SEARCH_MAX_USES=${SEARCH_MAX_USES:-5}
       - RESEARCH_MAX_SEARCHES=${RESEARCH_MAX_SEARCHES:-8}
       # Walter runs daily, so his native-search bill recurs — off by default

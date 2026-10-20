@@ -25,10 +25,20 @@ from datetime import datetime, timezone
 
 # USD per 1,000,000 tokens: (input, output). Unknown models fall back to _DEFAULT.
 PRICES: dict[str, tuple[float, float]] = {
-    "claude-opus-4-8":     (15.00, 75.00),
+    # ORDER MATTERS. _price_for does substring matching, and "claude-sonnet-5"
+    # is a substring of "claude-sonnet-5-5" — so the 5.5 entries must come
+    # first or every 5.5 call would silently be priced as its predecessor.
+    "claude-haiku-5-5":    (0.10,   0.50),
+    "claude-sonnet-5-5":   (2.00,  10.00),
+    "claude-opus-5-5":     (4.00,  20.00),
+    "claude-fable-5-1":    (3.00,  15.00),
+    "claude-opus-5":       (5.00,  25.00),
     "claude-sonnet-5":     (3.00,  15.00),
-    "claude-haiku-4-5":    (0.80,   4.00),
     "claude-fable-5":      (3.00,  15.00),
+    # Corrected 2026-10-16: this read (15.00, 75.00), roughly 3x the real rate,
+    # so every opus turn was over-reported.
+    "claude-opus-4-8":     (5.00,  25.00),
+    "claude-haiku-4-5":    (1.00,   5.00),
     "gpt-4o-mini":         (0.15,   0.60),
     "gpt-4o":              (2.50,  10.00),
 }

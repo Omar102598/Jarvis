@@ -465,7 +465,7 @@ agents:
   # Jarvis dispatches it via spawn_task(task, agent="developer").
   #
   # Runs a full tool-use loop (read/write/shell/rebuild via mac_bridge) on the
-  # powerful model tier (DEV_LLM_MODEL, default claude-opus-4-8). On-demand
+  # powerful model tier (DEV_LLM_MODEL, default claude-opus-5-5). On-demand
   # only — zero idle token cost. Watch progress: Redis agent:developer:progress.
   # ---------------------------------------------------------------------------
   - name: developer
