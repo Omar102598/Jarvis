@@ -113,7 +113,7 @@ agents:
       specific URLs for new available units. Currently watching the Austin
       apartment search: Luca Apartments (A2 plan is the priority target) and
       The Met Austin, prioritising 1st-floor / patio / yard units.
-    enabled: true
+    enabled: false   # OFF 2026-10-21: Firecrawl out of credits; Omar does not need Scout for now (flip to true after a top-up)
     schedule: "0 */2 * * *"   # Every 2 hours
     params:
       queries: []
