@@ -19,13 +19,27 @@ def _headers():
 
 @tool
 async def control_device(entity_id: str, action: str, params: dict = None) -> str:
-    """Control a smart home device (light, switch, fan, etc.).
+    """Control a smart home device (light, switch, fan, thermostat, etc.).
+
+    Dispatches to HA as POST /api/services/{domain}/{action}, so `action` is
+    any service the entity's domain registers -- not just power actions.
 
     Args:
-        entity_id: The device entity ID, e.g. 'light.bedroom_govee', 'switch.office_fan'
-        action: One of 'turn_on', 'turn_off', 'toggle'
-        params: Optional dict with brightness (0-255), rgb_color ([r,g,b]),
-                color_temp_kelvin (2000-9000), effect name
+        entity_id: The device entity ID, e.g. 'light.bedroom_govee',
+                   'switch.office_fan', 'climate.home'
+        action: 'turn_on', 'turn_off', or 'toggle' for most domains.
+                For climate.* (the Resideo T6 thermostat, entity 'climate.home')
+                also: 'set_temperature', 'set_hvac_mode', 'set_fan_mode'.
+        params: Optional dict. Lights: brightness (0-255), rgb_color ([r,g,b]),
+                color_temp_kelvin (2000-9000), effect name.
+                climate.set_temperature: {"temperature": 70} in FAHRENHEIT.
+                climate.set_hvac_mode:   {"hvac_mode": "cool"|"heat"|"off"}.
+                climate.set_fan_mode:    {"fan_mode": "auto"|"on"|"Circulate"}.
+
+    Thermostat notes: 'climate.home' is the house thermostat despite the
+    generic name. Read its current/target temperature with get_device_states
+    before changing it, and only change what was asked -- set_temperature does
+    not alter the hvac mode, and set_hvac_mode does not alter the setpoint.
     """
     domain = entity_id.split(".")[0]
     payload = {"entity_id": entity_id}
