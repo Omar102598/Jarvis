@@ -6,6 +6,7 @@ On detection, publishes an event to MQTT so downstream services can begin proces
 
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -43,11 +44,31 @@ def main():
         mqtt_client.connect(MQTT_HOST, MQTT_PORT)
     except Exception as exc:
         # The mic is the point of this process — start listening even if the
-        # broker is down, and let loop_start reconnect underneath us. Exiting
-        # here is how the whole voice stack used to stay dead after an outage.
+        # broker is down, and let the supervisor below reconnect underneath us.
+        # Exiting here is how the whole voice stack used to stay dead after an
+        # outage.
         print(f"[WakeWord] MQTT unavailable at startup ({exc}) — will keep retrying",
               flush=True)
-    mqtt_client.loop_start()
+
+    # Supervise the network loop instead of calling loop_start() and trusting it.
+    # reconnect_delay_set only covers a clean disconnect; when a read times out
+    # mid-packet the exception escapes paho's loop thread and that thread simply
+    # dies. The process stays alive and the mic keeps detecting, so nothing looks
+    # broken — but every publish lands on a dead client and the rest of the voice
+    # stack never hears a wake word. That is exactly what happened on
+    # 2026-10-20: "TimeoutError: [Errno 60] Operation timed out" in _sock_recv,
+    # after which wake_word.log kept logging detections for 14 hours while STT
+    # recorded nothing. Same supervised-retry shape STT already uses.
+    def _mqtt_supervisor():
+        while True:
+            try:
+                mqtt_client.loop_forever(retry_first_connection=True)
+            except Exception as exc:
+                print(f"[WakeWord] MQTT loop died ({exc}) — retrying in 5s",
+                      flush=True)
+                time.sleep(5)
+
+    threading.Thread(target=_mqtt_supervisor, daemon=True).start()
 
     audio = pyaudio.PyAudio()
     stream = audio.open(
@@ -113,7 +134,6 @@ def main():
         except OSError:
             pass
         audio.terminate()
-        mqtt_client.loop_stop()
         mqtt_client.disconnect()
 
 
