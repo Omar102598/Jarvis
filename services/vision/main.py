@@ -75,6 +75,9 @@ class VisionProcessor:
                                        self._on_enroll_image)
         self.mqtt.message_callback_add("jarvis/vision/enroll_finalize",
                                        self._on_enroll_finalize)
+        self.mqtt.message_callback_add("jarvis/vision/analyze",
+                                       self._on_mqtt_analyze)
+        self.mqtt.reconnect_delay_set(min_delay=1, max_delay=60)
         self.mqtt.connect(MQTT_HOST, MQTT_PORT, 60)
         self.mqtt.loop_start()
 
@@ -85,6 +88,7 @@ class VisionProcessor:
         client.subscribe("jarvis/vision/enroll")
         client.subscribe("jarvis/vision/enroll_image")
         client.subscribe("jarvis/vision/enroll_finalize")
+        client.subscribe("jarvis/vision/analyze")
         print("[Vision] MQTT connected — watching Ring snapshots")
 
     # ------------------------------------------------------------------
@@ -275,9 +279,8 @@ class VisionProcessor:
 
         if not caps:
             print("[Vision] No cameras available. Waiting for MQTT commands...")
-            self.mqtt.subscribe("jarvis/vision/analyze")
-            self.mqtt.on_message = self._on_mqtt_analyze
-            self.mqtt.loop_forever()
+            while True:
+                time.sleep(60)
             return
 
         print(f"[Vision] Processing {len(caps)} camera(s) every {DETECTION_INTERVAL}s")
