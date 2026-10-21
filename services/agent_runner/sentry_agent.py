@@ -492,7 +492,7 @@ class SentryAgent(BaseAgent):
             client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
             resp = await client.messages.create(
                 model=SENTRY_MODEL,
-                max_tokens=300,
+                max_tokens=700,
                 messages=[{
                     "role": "user",
                     "content": [
@@ -510,7 +510,17 @@ class SentryAgent(BaseAgent):
             )
             text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
             start, end = text.find("{"), text.rfind("}") + 1
-            return json.loads(text[start:end]) if start >= 0 else None
+            # A reply containing '{' but no closing '}' made rfind return -1, so
+            # end became 0 and text[start:0] sliced to "" -- json.loads then
+            # raised "Expecting value: line 1 column 1 (char 0)", which named the
+            # JSON library instead of the real cause: the response was cut off
+            # mid-object. Check the slice and report what actually came back.
+            if start < 0 or end <= start:
+                print(f"[Sentry] vision returned no parsable JSON "
+                      f"(stop_reason={getattr(resp, 'stop_reason', None)!r}): "
+                      f"{text[:200]!r}")
+                return None
+            return json.loads(text[start:end])
         except Exception as exc:
             print(f"[Sentry] vision error: {exc}")
             return None
