@@ -160,8 +160,28 @@ async def get_device_states(area: str = None) -> str:
                     effects = attrs.get("effect_list")
                     if effects:
                         info += f" | effects: {', '.join(effects[:60])}"
-                    relevant.append(info)
-            return "\n".join(relevant[:30]) or "No devices found."
+                    relevant.append((eid, info))
+
+            # Order by how actionable the domain is, THEN truncate. The cap used
+            # to slice HA's arbitrary ordering, and with 163 entities (most of
+            # them sensors) the thermostat fell outside the first 30 -- so
+            # climate.home was invisible to the model no matter how well
+            # control_device documented it. Sensors are the bulk and the least
+            # actionable, so they lose the race instead of the devices someone
+            # might actually ask to change.
+            _PRIORITY = {"climate": 0, "media_player": 1, "switch": 2,
+                         "light": 3, "sensor": 4}
+            relevant.sort(key=lambda t: _PRIORITY.get(t[0].split(".")[0], 5))
+
+            shown = [info for _, info in relevant[:30]]
+            if not shown:
+                return "No devices found."
+            # Say so when the list is cut, rather than letting the model treat a
+            # truncated list as the complete inventory.
+            if len(relevant) > len(shown):
+                shown.append(f"... and {len(relevant) - len(shown)} more "
+                             "(mostly sensors; pass `area` to narrow this down).")
+            return "\n".join(shown)
 
 
 @tool
