@@ -26,9 +26,9 @@ async def control_device(entity_id: str, action: str, params: dict = None) -> st
 
     Args:
         entity_id: The device entity ID, e.g. 'light.bedroom_govee',
-                   'switch.office_fan', 'climate.home'
+                   'switch.office_fan', 'climate.thermostat'
         action: 'turn_on', 'turn_off', or 'toggle' for most domains.
-                For climate.* (the Resideo T6 thermostat, entity 'climate.home')
+                For climate.* (the Resideo T6 thermostat, entity 'climate.thermostat')
                 also: 'set_temperature', 'set_hvac_mode', 'set_fan_mode'.
         params: Optional dict. Lights: brightness (0-255), rgb_color ([r,g,b]),
                 color_temp_kelvin (2000-9000), effect name.
@@ -36,8 +36,9 @@ async def control_device(entity_id: str, action: str, params: dict = None) -> st
                 climate.set_hvac_mode:   {"hvac_mode": "cool"|"heat"|"off"}.
                 climate.set_fan_mode:    {"fan_mode": "auto"|"on"|"Circulate"}.
 
-    Thermostat notes: 'climate.home' is the house thermostat despite the
-    generic name. Read its current/target temperature with get_device_states
+    Thermostat notes: the house thermostat is 'climate.thermostat'
+    (renamed from climate.home on 2026-10-21). Read its current/target
+    temperature with get_device_states
     before changing it, and only change what was asked -- set_temperature does
     not alter the hvac mode, and set_hvac_mode does not alter the setpoint.
     """
@@ -165,7 +166,7 @@ async def get_device_states(area: str = None) -> str:
             # Order by how actionable the domain is, THEN truncate. The cap used
             # to slice HA's arbitrary ordering, and with 163 entities (most of
             # them sensors) the thermostat fell outside the first 30 -- so
-            # climate.home was invisible to the model no matter how well
+            # the thermostat was invisible to the model no matter how well
             # control_device documented it. Sensors are the bulk and the least
             # actionable, so they lose the race instead of the devices someone
             # might actually ask to change.
