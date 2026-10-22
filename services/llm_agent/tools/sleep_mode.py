@@ -43,6 +43,8 @@ SLEEP_MINUTES = int(os.environ.get("SLEEP_MUSIC_MINUTES", "45"))
 SLEEP_TRACK = os.environ.get("SLEEP_TRACK", "")        # set this to your loop song
 SLEEP_DEVICE = os.environ.get("SLEEP_SPOTIFY_DEVICE", "MacBook")
 SLEEP_VOLUME = int(os.environ.get("SLEEP_VOLUME", "25"))
+# Spoken aloud, so never read the raw spotify: URI back to the user.
+SLEEP_TRACK_NAME = os.environ.get("SLEEP_TRACK_NAME", "") or SLEEP_TRACK
 
 _STOP_KEY = "jarvis:sleep:stop_at"
 
@@ -133,9 +135,17 @@ async def _start_music(minutes: int) -> str:
                 "the song you want looped")
 
     out = []
-    r1 = await call(action="search_play", query=SLEEP_TRACK, device=SLEEP_DEVICE)
+    if SLEEP_TRACK.strip().startswith("spotify:"):
+        # Play the exact URI rather than searching. "twilight zone" returns two
+        # near-identical Ariana Grande entries from different album editions, so
+        # a search would pick whichever ranked first that night -- fine most of
+        # the time, wrong silently the rest. A pinned URI cannot drift.
+        r1 = await _play_uri(SLEEP_TRACK.strip())
+    else:
+        r1 = await call(action="search_play", query=SLEEP_TRACK, device=SLEEP_DEVICE)
     out.append(str(r1))
-    if "couldn't" in str(r1).lower() or "no spotify device" in str(r1).lower():
+    if str(r1).startswith("✗") or "couldn't" in str(r1).lower() \
+            or "no spotify device" in str(r1).lower():
         return "✗ music: " + str(r1)
 
     await asyncio.sleep(2)
@@ -144,8 +154,36 @@ async def _start_music(minutes: int) -> str:
     out.append(str(r2))
 
     _arm_timer(minutes)
-    return (f"✓ music → '{SLEEP_TRACK}' looping at {SLEEP_VOLUME}%, "
+    return (f"✓ music → '{SLEEP_TRACK_NAME}' looping at {SLEEP_VOLUME}%, "
             f"stops in {minutes} min")
+
+
+async def _play_uri(uri: str) -> str:
+    """Start an exact track/playlist URI on the sleep device."""
+    from .spotify import (_API, _access_token, _get_devices, _match_device,
+                          _set_media_flag)
+    async with aiohttp.ClientSession() as session:
+        token = await _access_token(session)
+        if not token:
+            return "✗ Spotify auth failed"
+        headers = {"Authorization": f"Bearer {token}"}
+        devices = await _get_devices(session, headers)
+        target = _match_device(devices, SLEEP_DEVICE) if SLEEP_DEVICE else None
+        if SLEEP_DEVICE and target is None:
+            names = ", ".join(d.get("name", "?") for d in devices) or "none"
+            return (f"✗ no Spotify device matching '{SLEEP_DEVICE}' "
+                    f"(available: {names}) — open Spotify on the Mac first")
+        params = {"device_id": target["id"]} if target else {}
+        body = ({"context_uri": uri} if ":playlist:" in uri or ":album:" in uri
+                else {"uris": [uri]})
+        async with session.put(f"{_API}/me/player/play", headers=headers,
+                               params=params, json=body,
+                               timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            if resp.status in (200, 204):
+                _set_media_flag(True)
+                where = f" on {target['name']}" if target else ""
+                return f"started{where}"
+            return f"✗ play failed (HTTP {resp.status})"
 
 
 def _arm_timer(minutes: int) -> None:
