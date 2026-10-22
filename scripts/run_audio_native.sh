@@ -47,18 +47,40 @@ export MODEL_DIR="$REPO_DIR/models/speaker_model"
 # stop
 # =============================================================================
 cmd_stop() {
-  if [ ! -f "$PIDS_FILE" ]; then
-    echo "[audio] Not running (no PID file)."
-    return
-  fi
   echo "[audio] Stopping audio services..."
-  while IFS=: read -r name pid; do
-    if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" && echo "  stopped $name (pid $pid)"
-    fi
-  done < "$PIDS_FILE"
-  rm -f "$PIDS_FILE"
-  echo "[audio] Done."
+
+  # Pidfile first, when we have one.
+  if [ -f "$PIDS_FILE" ]; then
+    while IFS=: read -r name pid; do
+      if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" && echo "  stopped $name (pid $pid)"
+      fi
+    done < "$PIDS_FILE"
+    rm -f "$PIDS_FILE"
+  fi
+
+  # Then sweep by pattern regardless. "No PID file" used to mean "return
+  # immediately", which left orphans from an earlier run alive and invisible --
+  # and a surviving speaker_verify silently doubles every voice request (see
+  # the note in cmd_start). Stop must mean stopped, pidfile or not.
+  for _svc in wake_word stt speaker_verify tts_mac audio_player; do
+    for _pid in $(pgrep -f "services/${_svc}/main.py" 2>/dev/null || true); do
+      kill "$_pid" 2>/dev/null && echo "  stopped orphan $_svc (pid $_pid)"
+    done
+  done
+
+  sleep 1
+  _left=""
+  for _svc in wake_word stt speaker_verify tts_mac audio_player; do
+    _p=$(pgrep -f "services/${_svc}/main.py" 2>/dev/null | tr '\n' ' ' || true)
+    [ -n "${_p// /}" ] && _left="${_left}  ${_svc}: ${_p}\n"
+  done
+  if [ -n "$_left" ]; then
+    echo "[audio] STILL RUNNING after SIGTERM (send SIGKILL yourself if stuck):"
+    printf "$_left"
+  else
+    echo "[audio] Done — all audio services stopped."
+  fi
 }
 
 # =============================================================================
@@ -85,6 +107,29 @@ cmd_status() {
 cmd_start() {
   if [ -f "$PIDS_FILE" ]; then
     echo "[audio] Already running. Use './scripts/run_audio_native.sh stop' first."
+    exit 1
+  fi
+
+  # The pidfile check above is not enough on its own: it trusts a FILE rather
+  # than the process table, so a stale/removed .audio_pids (or a service left
+  # over from an older run that this file never knew about) lets us launch a
+  # SECOND copy of something already running.
+  #
+  # That is not a harmless duplicate. speaker_verify is what forwards speech to
+  # jarvis/llm/request, so two of them turn one utterance into two brain
+  # requests -- Jarvis answers everything twice and bills every turn twice.
+  # On 2026-10-21 a speaker_verify from Sep 1 survived a manual restart exactly
+  # this way and did precisely that.
+  _already=""
+  for _svc in wake_word stt speaker_verify tts_mac audio_player; do
+    _pids=$(pgrep -f "services/${_svc}/main.py" 2>/dev/null | tr '\n' ' ' || true)
+    [ -n "${_pids// /}" ] && _already="${_already}  ${_svc}: ${_pids}\n"
+  done
+  if [ -n "$_already" ]; then
+    echo "[audio] These services are ALREADY running:"
+    printf "$_already"
+    echo "[audio] Run './scripts/run_audio_native.sh stop' first (it kills by"
+    echo "        pattern, so it catches these even without a pidfile)."
     exit 1
   fi
 
