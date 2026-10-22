@@ -207,3 +207,59 @@ if [[ ${#healed[@]} -gt 0 ]]; then
 else
   log "all healthy"
 fi
+
+# -----------------------------------------------------------------------------
+# Sleep-mode music timer (durable backstop)
+# -----------------------------------------------------------------------------
+# sleep_mode arms an in-process asyncio task to pause Spotify at the deadline.
+# That is precise but dies with the llm_agent container, so the deadline also
+# lives in Redis and is enforced here. Worst case the music runs to the next
+# 5-minute tick instead of all night.
+#
+# Redis is reached over the network, NOT via "docker exec jarvis-redis": on this
+# machine ROLE=edge and the core (with Redis) lives on the GCP VM, so the
+# docker-exec pattern used elsewhere in this script is a no-op here.
+SLEEP_PY="$REPO_DIR/.venv-audio/bin/python"
+[[ -x "$SLEEP_PY" ]] || SLEEP_PY="$(command -v python3)"
+if [[ -n "$SLEEP_PY" ]]; then
+  sleep_due="$("$SLEEP_PY" - "$REPO_DIR" <<'PYEOF' 2>/dev/null || true
+import datetime, os, sys
+repo = sys.argv[1]
+env = {}
+try:
+    for line in open(os.path.join(repo, ".env"), encoding="utf-8"):
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.rstrip("\n").split("=", 1)
+            env[k] = v.strip().strip('"')
+except Exception:
+    sys.exit(0)
+try:
+    import redis
+    r = redis.Redis(host=env.get("REDIS_HOST", "localhost"),
+                    port=int(env.get("REDIS_PORT", 6379)),
+                    decode_responses=True, socket_timeout=5)
+    raw = r.get("jarvis:sleep:stop_at")
+    if not raw:
+        sys.exit(0)
+    if datetime.datetime.fromisoformat(raw) <= datetime.datetime.now(datetime.timezone.utc):
+        r.delete("jarvis:sleep:stop_at")
+        print("due")
+except Exception:
+    pass
+PYEOF
+)"
+  if [[ "$sleep_due" == "due" ]]; then
+    log "sleep timer elapsed — pausing Spotify"
+    CID="$(grep -E '^SPOTIFY_CLIENT_ID=' "$REPO_DIR/.env" | cut -d= -f2- | tr -d ' \r"')"
+    CS="$(grep -E '^SPOTIFY_CLIENT_SECRET=' "$REPO_DIR/.env" | cut -d= -f2- | tr -d ' \r"')"
+    RT="$(grep -E '^SPOTIFY_REFRESH_TOKEN=' "$REPO_DIR/.env" | cut -d= -f2- | tr -d ' \r"')"
+    if [[ -n "$CID" && -n "$RT" ]]; then
+      AT="$(curl -s -m 20 -X POST https://accounts.spotify.com/api/token \
+            -H 'Content-Type: application/x-www-form-urlencoded' -u "$CID:$CS" \
+            -d "grant_type=refresh_token&refresh_token=$RT" \
+            | "$SLEEP_PY" -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null)"
+      [[ -n "$AT" ]] && curl -s -m 15 -X PUT https://api.spotify.com/v1/me/player/pause \
+        -H "Authorization: Bearer $AT" >/dev/null 2>&1
+    fi
+  fi
+fi

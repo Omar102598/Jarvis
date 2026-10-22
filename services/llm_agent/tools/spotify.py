@@ -104,7 +104,9 @@ async def spotify_control(action: str, query: str = "", device: str = "") -> str
     Args:
         action: 'play', 'pause', 'next', 'previous', 'search_play', 'devices'
             (list available speakers/devices), 'transfer' (move current playback
-            to a device), or 'volume' (set volume; put the percent in query).
+            to a device), 'volume' (set volume; put the percent in query), or
+            'repeat' (put 'track', 'context' or 'off' in query -- 'track' loops
+            the current song, which is what sleep mode uses).
         query: For 'search_play': what to play — a track/artist ('Daft Punk'),
             or include the word 'playlist' to search playlists ('workout
             playlist'). For 'volume': the percent, e.g. '40'.
@@ -148,6 +150,18 @@ async def spotify_control(action: str, query: str = "", device: str = "") -> str
                         _set_media_flag(True)
                         return f"Moved playback to {target['name']}."
                     return f"Couldn't transfer playback ({resp.status})."
+
+            if action == "repeat":
+                mode = (query or "track").strip().lower()
+                if mode not in ("track", "context", "off"):
+                    return "Repeat mode must be 'track', 'context' or 'off'."
+                async with session.put(
+                    f"{_API}/me/player/repeat", headers=headers,
+                    params={"state": mode, **dev_params},
+                ) as resp:
+                    if resp.status in (200, 204):
+                        return f"Repeat set to {mode}."
+                    return f"Couldn't set repeat ({resp.status}) — is a device active?"
 
             if action == "volume":
                 try:

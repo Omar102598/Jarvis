@@ -57,6 +57,7 @@ from .smart_home import control_device, get_device_states, get_presence, set_sce
 from .scenes import manage_scenes
 from .email_drafts import get_email_drafts
 from .focus import focus_mode
+from .sleep_mode import sleep_mode
 from .spotify import spotify_control
 from .spotify_desktop import spotify_desktop
 from .self_modify import (
@@ -128,6 +129,7 @@ __all__ = [
     "set_reminder",
     "set_scene",
     "spawn_task",
+    "sleep_mode",
     "spotify_control",
     "spotify_desktop",
     "toggle_feeding_plan",
