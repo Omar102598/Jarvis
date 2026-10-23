@@ -20,15 +20,22 @@ FIRECRAWL_URL = os.environ.get("FIRECRAWL_URL", "https://api.firecrawl.dev").rst
 
 @tool
 async def scrape_page(url: str, extract: str = "") -> str:
-    """Fetch a web page as clean readable text via Firecrawl (renders JS, clears
-    anti-bot). Optionally pull out specific info.
+    """Render a JavaScript-heavy page with Firecrawl. SECOND choice.
 
-    Use for JS-heavy or bot-protected pages, or to extract a fact/table.
+    Try `web_fetch` first -- it is free beyond tokens and filters content
+    before it hits context. Come here when web_fetch cannot do the job, which
+    in practice means one thing: the page is rendered with JavaScript (the
+    web_fetch docs state it does not support those), or it blocks plain HTTP
+    the way apartments.com returns 403.
+
+    Firecrawl is a paid, metered service -- a run that exhausts the credits
+    returns "Insufficient credits" and every caller fails at once, which is
+    how the apartment watches went dark. Do not use it for pages that plain
+    fetching already handles.
 
     Args:
-        url: the page to fetch.
-        extract: optional — what to pull out (e.g. "the price and availability",
-            "the list of speakers"). Empty = return the page's clean text.
+        url: The full URL to render.
+        extract: Optional description of the fields to pull out.
     """
     if not FIRECRAWL_API_KEY:
         return "Firecrawl isn't configured (set FIRECRAWL_API_KEY) — try fetch_url instead."

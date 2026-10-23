@@ -358,17 +358,74 @@ def _call_model(llm_ref, state):
     return {"messages": [_strip_thinking_blocks(response)]}
 
 
+# ---------------------------------------------------------------------------
+# Anthropic server tools (run on Anthropic's infrastructure, not ours)
+# ---------------------------------------------------------------------------
+# Versions matter: web_fetch_20260209 and later add dynamic filtering, where
+# Claude writes code to filter a fetched page before it enters context. That is
+# the whole cost argument for preferring these over our own fetchers.
+#
+# max_content_tokens caps what a single fetch can drag in -- a large doc is
+# ~25k tokens and a PDF can be 125k, which would dwarf a voice turn.
+_SERVER_TOOLS: list[dict] = [
+    {
+        "type": "web_fetch_20260318",
+        "name": "web_fetch",
+        "max_uses": int(os.environ.get("WEB_FETCH_MAX_USES", "5")),
+        "max_content_tokens": int(os.environ.get("WEB_FETCH_MAX_TOKENS", "20000")),
+        "citations": {"enabled": True},
+    },
+    {
+        "type": "web_search_20260209",
+        "name": "web_search",
+        "max_uses": int(os.environ.get("WEB_SEARCH_MAX_USES", "5")),
+    },
+]
+if os.environ.get("ANTHROPIC_SERVER_TOOLS", "1").strip().lower() in ("0", "false", "no"):
+    _SERVER_TOOLS = []
+
+
 def _rebuild_graph() -> None:
     """Recompile one LangGraph agent per model tier sharing the same tool set."""
     global _agents, llm, tool_node, agent
 
     mcp_tools = load_mcp_tools()
     all_tools = _core_tools + _registry.get_all_tools() + mcp_tools
+
+    # Anthropic SERVER tools run on Anthropic's side: they are declared in the
+    # request and resolved before the response comes back, so they belong in
+    # bind_tools but NOT in ToolNode -- our executor never dispatches them and
+    # should_continue never sees them as pending tool_calls.
+    #
+    # They go first because they are the better default: web_fetch costs only
+    # the tokens of what it returns (no Firecrawl subscription), and its dynamic
+    # filtering writes code to trim a page BEFORE it reaches context. Our own
+    # fetch_url pulls the whole page and then pays an LLM call to read it.
+    # firecrawl.scrape_page stays as the fallback for what web_fetch explicitly
+    # cannot do -- JavaScript-rendered pages -- and fetch_url is the last resort.
     new_tool_node = ToolNode(all_tools)
+
+    # Our Tavily tool is also called "web_search". Two tools with one name is a
+    # 400 from the API, so when the server tools are on, the server version wins
+    # and ours is dropped from what the model can see. ToolNode still holds it,
+    # which costs nothing and keeps the import honest.
+    _server_names = {t["name"] for t in _SERVER_TOOLS}
+    _kept, _dropped = [], []
+    for t in all_tools:
+        name = getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
+        (_dropped if name in _server_names else _kept).append(name or "?")
+    bound_tools = _SERVER_TOOLS + [
+        t for t in all_tools
+        if (getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None))
+        not in _server_names
+    ]
+    if _dropped:
+        print(f"[LLM] Server tools take precedence over: {', '.join(_dropped)}",
+              flush=True)
     new_agents: dict[str, object] = {}
 
     for tier in ("haiku", "sonnet", "opus"):
-        new_llm  = build_llm(model=tier, temperature=0.3).bind_tools(all_tools)
+        new_llm  = build_llm(model=tier, temperature=0.3).bind_tools(bound_tools)
         new_call = functools.partial(_call_model, new_llm)
 
         workflow = StateGraph(AgentState)

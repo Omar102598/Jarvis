@@ -40,10 +40,19 @@ def _html_to_text(html: str) -> str:
 
 @tool
 async def fetch_url(url: str, question: str = "Summarize this page.") -> str:
-    """Fetch a web page and answer a question about its content.
+    """LAST RESORT page reader. Prefer `web_fetch`, then `scrape_page`.
 
-    Use this to read a specific article, check a page, or extract details
-    from a URL the user mentions or that web_search returned.
+    Reading a page has three tiers, in this order:
+
+    1. `web_fetch` (Anthropic server tool) -- the default. Costs only the
+       tokens it returns, and filters the page before it reaches context.
+    2. `scrape_page` (Firecrawl) -- when web_fetch fails because the page is
+       rendered with JavaScript, which web_fetch explicitly does not support.
+    3. this tool -- only when both are unavailable. It does a plain HTTP GET
+       with no JS rendering, pulls the WHOLE page into memory, and then spends
+       a second LLM call to answer the question. Strictly worse on cost and
+       capability; it exists so a missing API key cannot leave JARVIS unable
+       to read anything at all.
 
     Args:
         url: The full URL to fetch (must start with http:// or https://).
