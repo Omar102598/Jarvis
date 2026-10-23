@@ -41,12 +41,29 @@ MAX_STEPS = int(os.environ.get("DEV_AGENT_MAX_STEPS", "40"))
 DEV_PREFER_CLI = os.environ.get("DEV_PREFER_CLI", "true").lower() == "true"
 DEV_CLI_BIN = os.environ.get("DEV_CLI_BIN", "/usr/local/bin/claude")
 DEV_CLI_TIMEOUT_S = int(os.environ.get("DEV_CLI_TIMEOUT_S", "1800"))
+# The CLI ships Read/Write/Edit/Glob/Grep/WebFetch/WebSearch/TodoWrite and more,
+# but --allowedTools is an ALLOWLIST: anything unlisted needs approval that never
+# comes in headless -p mode. The old list named only Bash variants, so Forge was
+# shelling out to sed and cat for edits the Edit tool does properly, and could
+# not search the web at all.
+#
+# Verified against the CLI actually installed here (2.1.201) by asking a headless
+# run to enumerate its own tools.
+#
+# NOT available headless: the Chrome/browser tools. Those come from the Claude
+# Code Chrome extension, which attaches to an interactive session and does not
+# exist under -p. Forge sees pages through mac_bridge instead -- see the
+# screenshot loop in the system prompt below.
 DEV_CLI_ARGS = os.environ.get(
     "DEV_CLI_ARGS",
     '--permission-mode acceptEdits '
-    '--allowedTools "Bash(git:*)" "Bash(python3:*)" "Bash(python:*)" '
+    # Anthropic's own file + web tools first: they handle encodings, partial
+    # edits and images correctly, which hand-rolled Bash equivalents do not.
+    '--allowedTools "Read" "Write" "Edit" "Glob" "Grep" "TodoWrite" '
+    '"WebFetch" "WebSearch" "Task" '
+    '"Bash(git:*)" "Bash(python3:*)" "Bash(python:*)" '
     '"Bash(npm:*)" "Bash(pytest:*)" "Bash(docker:*)" "Bash(ls:*)" "Bash(grep:*)" '
-    '"Bash(xcodebuild:*)" "Bash(xcodegen:*)" "Bash(curl:*)"',
+    '"Bash(xcodebuild:*)" "Bash(xcodegen:*)" "Bash(curl:*)" "Bash(base64:*)"',
 )
 _TOOL_RESULT_LIMIT = 20_000  # chars per tool result kept in context
 
@@ -63,6 +80,28 @@ Mac by absolute or ~ path.
 llm_agent, dashboard, agent_runner, mobile_gateway; native: stt, tts_mac, wake_word, \
 speaker_verify, mac_bridge). Plugins in services/llm_agent/plugins/ hot-reload — no \
 rebuild needed.
+- Prefer Anthropic's built-in tools over shelling out: Read/Write/Edit for files \
+(Edit does partial edits properly; sed and cat do not), Grep/Glob for search, \
+WebFetch/WebSearch for anything on the internet. Use Bash for git, builds, tests \
+and curl.
+
+SEEING A WEB PAGE (you have no browser tools — this is how you get eyes):
+You cannot use Chrome directly; those tools only exist in an interactive session. \
+To look at a page, drive the Mac's browser through mac_bridge on port 7777 and then \
+READ the image:
+  1. curl -s -m 30 -X POST http://localhost:7777/browser/navigate \
+       -H 'Content-Type: application/json' -d '{"url":"<URL>"}'
+  2. sleep 4   (let it render)
+  3. curl -s -m 30 http://localhost:7777/browser/screenshot -o /tmp/shot.json
+  4. extract the base64 and decode it:
+       python3 -c "import json,base64;d=json.load(open('/tmp/shot.json'));\
+open('/tmp/shot.png','wb').write(base64.b64decode(d['image_base64'].split(',')[-1]))"
+  5. use the Read tool on /tmp/shot.png — you WILL see the rendered page.
+Iterate: change the markup, re-screenshot, look again. Judge layout by looking, \
+not by reasoning about the CSS.
+URL TRAP: the dashboard runs on the GCP VM, not this Mac. Use \
+http://jarvis-core.tail7e74a7.ts.net:8888 — http://localhost:8888 from the Mac \
+hits nothing and screenshots a Chrome error page.
 
 Method — follow strictly:
 1. Explore before editing: locate the relevant files and READ them first. Writes \

@@ -1,6 +1,6 @@
 # Scope: split the dashboard into three pages
 
-**Status:** not started · **Suggested owner:** Forge (`spawn_task agent="developer"`)
+**Status:** not started · **Owner:** Forge (`spawn_task agent="developer"`)
 **Written:** 2026-10-22
 
 ## Why
@@ -71,6 +71,25 @@ that. Click-to-speak should speak; typing should not.
    complaint.
 6. No page polls an endpoint it does not display.
 7. Mobile-width viewports stay usable; this gets opened from a phone.
+
+
+## Forge can verify this visually (new, 2026-10-22)
+
+Forge has no Chrome tools — those come from the Claude Code Chrome extension,
+which only attaches to an interactive session, not to headless `-p`. It gets
+eyes a different way, and this was verified working before assigning the task:
+
+1. drive the Mac's browser via `mac_bridge` (`POST :7777/browser/navigate`)
+2. `GET :7777/browser/screenshot` → `image_base64`
+3. decode to a PNG and use the **`Read`** tool on it — a headless run can see
+   images, confirmed by having one describe a screenshot correctly
+
+So "the agent rows are readable" is checkable by Forge, not only by a human.
+Judge the layout by looking at it, then iterate.
+
+**URL trap:** the dashboard runs on the GCP VM. From the Mac use
+`http://jarvis-core.tail7e74a7.ts.net:8888`; `localhost:8888` screenshots a
+Chrome error page.
 
 ## Explicitly out of scope
 
