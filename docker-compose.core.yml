@@ -69,6 +69,19 @@ services:
       - LLM_MODEL=${LLM_MODEL:-claude-haiku-5-5}
       # HA stays on the Mac (it talks to LAN devices) — point across the tailnet
       - HA_URL=${HA_URL}
+      # Sleep mode. Compose only forwards variables named here, so adding them
+      # to .env alone leaves the container seeing none of them -- which is how
+      # sleep_mode ended up loaded with an empty SLEEP_TRACK.
+      - SLEEP_TRACK=${SLEEP_TRACK}
+      - SLEEP_TRACK_NAME=${SLEEP_TRACK_NAME}
+      - SLEEP_TEMP_F=${SLEEP_TEMP_F}
+      - SLEEP_MUSIC_MINUTES=${SLEEP_MUSIC_MINUTES}
+      - SLEEP_LAMP_ENTITY=${SLEEP_LAMP_ENTITY}
+      - SLEEP_LAMP_EFFECT=${SLEEP_LAMP_EFFECT}
+      - SLEEP_LAMP_BRIGHTNESS=${SLEEP_LAMP_BRIGHTNESS}
+      - SLEEP_THERMOSTAT_ENTITY=${SLEEP_THERMOSTAT_ENTITY}
+      - SLEEP_SPOTIFY_DEVICE=${SLEEP_SPOTIFY_DEVICE}
+      - SLEEP_VOLUME=${SLEEP_VOLUME}
       - HA_TOKEN=${HA_TOKEN:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
       - BANKSYNC_API_KEY=${BANKSYNC_API_KEY}
