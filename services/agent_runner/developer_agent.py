@@ -32,7 +32,12 @@ _BASE = f"http://{MAC_BRIDGE_HOST}:{MAC_BRIDGE_PORT}"
 
 # Coding is the one place the powerful tier earns its cost. On-demand only.
 DEV_MODEL = os.environ.get("DEV_LLM_MODEL", "claude-opus-5-5")
-MAX_STEPS = int(os.environ.get("DEV_AGENT_MAX_STEPS", "40"))
+# 40 was far too low for anything with a verify loop. A visual task spends
+# several steps per iteration (edit -> screenshot -> decode -> look), so the
+# dashboard split burned the whole budget before finishing and reported
+# "Step limit reached" with the work half-done. A high ceiling costs nothing
+# when a task finishes early; a low one truncates good work.
+MAX_STEPS = int(os.environ.get("DEV_AGENT_MAX_STEPS", "200"))
 
 # Prefer the Claude Code CLI on the host (billed to the user's Claude PRO
 # subscription, NOT API credits). Falls back to the API tool-loop when the
@@ -40,7 +45,11 @@ MAX_STEPS = int(os.environ.get("DEV_AGENT_MAX_STEPS", "40"))
 # with full repo access and its own tools — it completes the task itself.
 DEV_PREFER_CLI = os.environ.get("DEV_PREFER_CLI", "true").lower() == "true"
 DEV_CLI_BIN = os.environ.get("DEV_CLI_BIN", "/usr/local/bin/claude")
-DEV_CLI_TIMEOUT_S = int(os.environ.get("DEV_CLI_TIMEOUT_S", "1800"))
+# Nothing in the chain requires a particular value: `claude -p` has no timeout
+# of its own, and mac_bridge /dev/shell honours whatever it is told. This is
+# purely a ceiling, so make it generous -- a kill mid-task leaves a
+# half-edited repo and no report, which is worse than a slow success.
+DEV_CLI_TIMEOUT_S = int(os.environ.get("DEV_CLI_TIMEOUT_S", "5400"))
 # The CLI ships Read/Write/Edit/Glob/Grep/WebFetch/WebSearch/TodoWrite and more,
 # but --allowedTools is an ALLOWLIST: anything unlisted needs approval that never
 # comes in headless -p mode. The old list named only Bash variants, so Forge was
@@ -260,6 +269,9 @@ class DeveloperAgent(BaseAgent):
 
     async def run(self) -> str:
         task = (self.params.get("task") or "").strip()
+        # Per-task budget overrides: a one-line fix should not inherit the
+        # ceiling a multi-hour redesign needs, and vice versa.
+        max_steps = int(self.params.get("max_steps") or MAX_STEPS)
         if not task:
             return "Developer agent: no task provided."
 
@@ -292,7 +304,7 @@ class DeveloperAgent(BaseAgent):
         files_touched: list[str] = []
 
         async with aiohttp.ClientSession() as http:
-            for step in range(MAX_STEPS):
+            for step in range(max_steps):
                 resp = await client.messages.create(
                     model=DEV_MODEL,
                     max_tokens=8192,
@@ -314,7 +326,7 @@ class DeveloperAgent(BaseAgent):
                 for block in resp.content:
                     if getattr(block, "type", "") != "tool_use":
                         continue
-                    self._progress(f"[{step + 1}/{MAX_STEPS}] {block.name} {self._preview(block.input)}")
+                    self._progress(f"[{step + 1}/{max_steps}] {block.name} {self._preview(block.input)}")
                     output = await self._exec_tool(http, block.name, block.input or {})
                     if block.name in ("jarvis_write", "dev_write") and not output.startswith("Blocked"):
                         files_touched.append(str((block.input or {}).get("path", "?")))
@@ -328,7 +340,7 @@ class DeveloperAgent(BaseAgent):
         self._progress("Step limit reached.")
         return self._final_report(
             task,
-            f"Stopped after {MAX_STEPS} steps without a final answer — the task may be "
+            f"Stopped after {max_steps} steps without a final answer — the task may be "
             "partially done. Check `git status`/`git diff` in the repo, or re-dispatch "
             "with a narrower task.",
             files_touched,
@@ -371,7 +383,13 @@ class DeveloperAgent(BaseAgent):
         rc = data.get("returncode", 1)
         out = (data.get("output") or "").strip()
         if rc != 0 or not out:
-            self._progress(f"CLI exited rc={rc}: {out[:200]}")
+            # "rc=1" with empty output happened on 2026-10-23 and taught us
+            # nothing -- none of tool names, args, prompt length, embedded
+            # quotes, cwd or the bridge reproduced it. Log enough to actually
+            # diagnose it next time instead of guessing again.
+            self._progress(
+                f"CLI exited rc={rc}, output_len={len(out)}: {out[:400]!r} "
+                f"(cmd_len={len(cmd)}, cwd={cwd})")
             return None
         self._progress("CLI run complete.")
         report = (f"Dev task (via Claude Code CLI — Pro plan, no API tokens): "
