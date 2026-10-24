@@ -189,7 +189,11 @@ services:
       - DEV_LLM_MODEL=${DEV_LLM_MODEL:-claude-opus-5-5}
       - DEV_PREFER_CLI=${DEV_PREFER_CLI:-true}
       - DEV_CLI_BIN=${DEV_CLI_BIN:-/usr/local/bin/claude}
-      - DEV_CLI_TIMEOUT_S=${DEV_CLI_TIMEOUT_S:-900}
+      # 900 here silently overrode the code default and capped Forge at 15
+      # minutes. A ceiling only matters when it is hit, and being killed
+      # mid-task leaves a half-edited repo with no report.
+      - DEV_CLI_TIMEOUT_S=${DEV_CLI_TIMEOUT_S:-5400}
+      - DEV_AGENT_MAX_STEPS=${DEV_AGENT_MAX_STEPS:-200}
       - IMAP_HOST=${IMAP_HOST:-imap.gmail.com}
       - IMAP_USER=${IMAP_USER:-}
       - IMAP_PASSWORD=${IMAP_PASSWORD:-}
@@ -255,6 +259,11 @@ services:
       # the GCP core host, and every log request fails.
       - MAC_BRIDGE_HOST=${MAC_HOST:-host.docker.internal}
       - MAC_BRIDGE_PORT=${MAC_BRIDGE_PORT:-7777}
+      # /chat proxies typed + click-to-speak input to the gateway's existing
+      # /ask/query endpoints; the API key is added server-side so the browser
+      # never holds it.
+      - GATEWAY_INTERNAL_URL=${GATEWAY_INTERNAL_URL:-http://mobile_gateway:8080}
+      - MOBILE_API_KEY=${MOBILE_API_KEY:-}
     volumes:
       - ./services/dashboard/widgets:/app/widgets
       - ./services/dashboard/templates:/app/templates
