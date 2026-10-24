@@ -77,6 +77,7 @@ from tools.shell import run_shell
 from tools.comms import send_email, send_sms
 from tools.dispatch import ACTIVE_ROOM, ask_subagent, spawn_task
 from tools.code_exec import run_python
+from tools.sleep_mode import sleep_mode
 from tools.spotify import spotify_control
 from tools.spotify_desktop import spotify_desktop
 # Read-only code inspection. Writes/builds/rebuilds are NOT core tools —
@@ -253,6 +254,14 @@ _core_tools = [
     # Smart home + manual presence (geofence fallback) + Apple TV
     control_device, get_device_states, set_scene, get_presence, manage_scenes,
     arrive_home, leave_home, apple_tv,
+    # Bedtime routine. Must be listed HERE, not just exported from tools/
+    # __init__: _core_tools is the explicit bind list, and importing a tool
+    # without adding it leaves the model unable to call it. "sleep mode" then
+    # gets improvised from control_device -- on 2026-10-23 that turned every
+    # lamp OFF (including the bedroom one it should have dimmed ON), played no
+    # music, never touched the thermostat, and still answered "Sleep mode is
+    # on, sir."
+    sleep_mode,
     # PetKit pet feeders + water fountains (via Home Assistant)
     feed_pet, get_feeder_status, get_feeding_schedule, toggle_feeding_plan,
     get_fountain_status, list_petkit_devices,

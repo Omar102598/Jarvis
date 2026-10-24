@@ -69,11 +69,26 @@ DEV_CLI_ARGS = os.environ.get(
     # Anthropic's own file + web tools first: they handle encodings, partial
     # edits and images correctly, which hand-rolled Bash equivalents do not.
     '--allowedTools "Read" "Write" "Edit" "Glob" "Grep" "TodoWrite" '
-    '"WebFetch" "WebSearch" "Task" '
-    '"Bash(git:*)" "Bash(python3:*)" "Bash(python:*)" '
-    '"Bash(npm:*)" "Bash(pytest:*)" "Bash(docker:*)" "Bash(ls:*)" "Bash(grep:*)" '
-    '"Bash(xcodebuild:*)" "Bash(xcodegen:*)" "Bash(curl:*)" "Bash(base64:*)"',
+    '"WebFetch" "WebSearch" "Task" "Bash"',
 )
+# Bash is granted whole rather than as a prefix allowlist. The old list named
+# git/python3/npm/pytest/docker/ls/grep/xcodebuild/curl/base64, and every gap in
+# it surfaced mid-task as "requires approval" -- which cannot be answered at all
+# in headless -p mode. On 2026-10-23 Forge read the entire dashboard change,
+# then stalled: `bash scripts/dash_preview.sh` and `sleep 4` were not listed, so
+# it could not start the preview server or screenshot its own work, which was
+# the whole point of the task.
+#
+# Extending the list one command at a time only moves the next stall. It was
+# also close to security theatre: Forge already has unrestricted file writes via
+# jarvis_write/dev_write, so filtering shell command prefixes never bounded what
+# it could actually do.
+#
+# The guards that do real work are kept, and none of them are prefix-based:
+#   * _write_blocked()  -- refuses .env, credentials and keys outright
+#   * the golden-task harness, run after any edit to the Jarvis repo
+#   * "do not commit or push" stated in the dispatched task
+# Narrow it per task by setting DEV_CLI_ARGS if a job ever warrants less.
 _TOOL_RESULT_LIMIT = 20_000  # chars per tool result kept in context
 
 _SYSTEM_PROMPT = """You are Forge, JARVIS's dedicated developer agent. You handle all \
