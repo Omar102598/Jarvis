@@ -176,6 +176,13 @@ services:
       - TAVILY_API_KEY=${TAVILY_API_KEY}
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
       - FIRECRAWL_URL=${FIRECRAWL_URL:-https://api.firecrawl.dev}
+      # HEB prices, stock and carts are all per-STORE and Austin has several, so
+      # a cart built against the wrong location looks entirely normal until
+      # pickup. This was never forwarded, so the grocery agent has been running
+      # with no store set at all.
+      - HEB_STORE=${HEB_STORE:-}
+      - TARGET_STORE_ID=${TARGET_STORE_ID:-}
+      - TARGET_WEB_API_KEY=${TARGET_WEB_API_KEY:-}
       - AGENTS_CONFIG=/config/agents.yml
       - HA_URL=${HA_URL}
       - HA_TOKEN=${HA_TOKEN:-}
