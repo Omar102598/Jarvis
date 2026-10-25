@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}JARVIS{% endblock %}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root {
+      --j-blue:    #00d4ff;
+      --j-blue-d:  #0088aa;
+      --j-blue-dd: #003344;
+      --j-bg:      #030810;
+      --j-card:    #070f1c;
+      --j-border:  #0e2035;
+      --j-gold:    #f0a020;
+      --j-red:     #cc3344;
+      --j-green:   #00aa88;
+      --j-dim:     rgba(0,212,255,0.08);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--j-bg);
+      color: #cdd6e8;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Hex grid background ────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.18;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100'%3E%3Cpolygon points='28,2 54,16 54,44 28,58 2,44 2,16' fill='none' stroke='%2300d4ff' stroke-width='0.5'/%3E%3Cpolygon points='28,52 54,66 54,94 28,108 2,94 2,66' fill='none' stroke='%2300d4ff' stroke-width='0.5'/%3E%3C/svg%3E");
+      background-size: 56px 100px;
+    }
+
+    /* ── Page-wide horizontal scan line ── */
+    .scan-line {
+      position: fixed;
+      top: -2px;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent 0%, rgba(0,212,255,0.6) 40%, rgba(0,212,255,0.9) 50%, rgba(0,212,255,0.6) 60%, transparent 100%);
+      pointer-events: none;
+      z-index: 9000;
+      animation: scan-sweep 8s linear infinite;
+    }
+    @keyframes scan-sweep {
+      0%   { top: -2px; opacity: 0; }
+      2%   { opacity: 1; }
+      98%  { opacity: 1; }
+      100% { top: 100vh; opacity: 0; }
+    }
+
+    /* ══════════════════════════════════════════
+       BOOT OVERLAY
+    ══════════════════════════════════════════ */
+    #boot-overlay {
+      position: fixed;
+      inset: 0;
+      background: #000;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      animation: boot-fade-out 0.6s ease-in 3.6s forwards;
+      pointer-events: none;
+    }
+    @keyframes boot-fade-out {
+      to { opacity: 0; visibility: hidden; }
+    }
+
+    /* Boot scan line that sweeps once */
+    #boot-scan {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, transparent, var(--j-blue), transparent);
+      animation: boot-scan-sweep 1.2s ease-in-out 0.2s forwards;
+      opacity: 0;
+    }
+    @keyframes boot-scan-sweep {
+      0%   { top: 0;    opacity: 0; }
+      5%   { opacity: 1; }
+      95%  { opacity: 1; }
+      100% { top: 100vh; opacity: 0; }
+    }
+
+    #boot-content {
+      text-align: center;
+      max-width: 500px;
+      width: 90%;
+    }
+    #boot-logo {
+      font-size: clamp(2rem, 8vw, 3.5rem);
+      font-weight: 900;
+      letter-spacing: 14px;
+      color: var(--j-blue);
+      text-shadow: 0 0 30px rgba(0,212,255,0.8), 0 0 60px rgba(0,212,255,0.4);
+      animation: boot-appear 0.5s ease-out 0.6s both;
+    }
+    #boot-sub {
+      font-size: 0.6rem;
+      letter-spacing: 5px;
+      color: rgba(0,212,255,0.45);
+      margin-top: 6px;
+      animation: boot-appear 0.5s ease-out 0.9s both;
+    }
+    @keyframes boot-appear {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    #boot-lines {
+      margin-top: 28px;
+      font-size: 0.68rem;
+      letter-spacing: 2px;
+      color: rgba(0,212,255,0.5);
+      font-family: monospace;
+      text-align: left;
+      display: inline-block;
+      min-width: 320px;
+    }
+    .boot-line {
+      opacity: 0;
+      display: block;
+      padding: 1px 0;
+    }
+    .boot-line.ok::after { content: ' [ OK ]'; color: var(--j-green); }
+
+    #boot-bar-wrap {
+      margin-top: 20px;
+      width: 100%;
+      height: 3px;
+      background: rgba(0,212,255,0.1);
+      border-radius: 2px;
+      animation: boot-appear 0.3s ease-out 1.2s both;
+    }
+    #boot-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--j-blue-d), var(--j-blue));
+      border-radius: 2px;
+      box-shadow: 0 0 8px rgba(0,212,255,0.6);
+      animation: boot-progress 2.2s ease-in-out 1.4s forwards;
+    }
+    @keyframes boot-progress { to { width: 100%; } }
+
+    #boot-status {
+      margin-top: 10px;
+      font-size: 0.62rem;
+      letter-spacing: 4px;
+      color: rgba(0,212,255,0.4);
+      font-family: monospace;
+      animation: boot-appear 0.3s ease-out 1.4s both;
+    }
+
+    /* ── Navbar ─────────────────────────────── */
+    .navbar {
+      background: rgba(3,8,16,0.96) !important;
+      border-bottom: 1px solid rgba(0,212,255,0.2);
+      padding: 10px 24px;
+      position: relative;
+      z-index: 100;
+    }
+    .brand-name {
+      color: var(--j-blue);
+      font-weight: 800;
+      letter-spacing: 6px;
+      font-size: 1rem;
+      text-shadow: 0 0 12px rgba(0,212,255,0.4);
+    }
+    .brand-sub {
+      color: #446688;
+      font-size: 0.68rem;
+      letter-spacing: 3px;
+    }
+    .nav-clock {
+      color: #446688;
+      font-size: 0.72rem;
+      letter-spacing: 2px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ══════════════════════════════════════════
+       HERO + HUD
+    ══════════════════════════════════════════ */
+    .hero {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      /* Was 40px/24px with a 300px orb, which pushed the actual workspace
+         below the fold on a 1080p screen — you saw the status ring and had to
+         scroll to reach anything you could act on. */
+      padding: 18px 20px 12px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* HUD corner brackets */
+    .hud-corner {
+      position: absolute;
+      width: 32px;
+      height: 32px;
+      pointer-events: none;
+    }
+    .hud-corner.tl { top: 10px;  left: 16px;  border-top: 1.5px solid var(--j-blue); border-left: 1.5px solid var(--j-blue); }
+    .hud-corner.tr { top: 10px;  right: 16px; border-top: 1.5px solid var(--j-blue); border-right: 1.5px solid var(--j-blue); }
+    .hud-corner.bl { bottom: 0;  left: 16px;  border-bottom: 1.5px solid var(--j-blue); border-left: 1.5px solid var(--j-blue); }
+    .hud-corner.br { bottom: 0;  right: 16px; border-bottom: 1.5px solid var(--j-blue); border-right: 1.5px solid var(--j-blue); }
+    .hud-corner::after {
+      content: '';
+      position: absolute;
+      background: var(--j-blue);
+      opacity: 0.5;
+    }
+    .hud-corner.tl::after, .hud-corner.tr::after { top: -1px; height: 1px; width: 6px; }
+    .hud-corner.tl::after { left: -1px; }
+    .hud-corner.tr::after { right: -1px; }
+    .hud-corner.bl::after, .hud-corner.br::after { bottom: -1px; height: 1px; width: 6px; }
+    .hud-corner.bl::after { left: -1px; }
+    .hud-corner.br::after { right: -1px; }
+
+    /* The orb band ran 1916px wide while using only 820 of it — ~1100px of dead
+       space split either side, with the widgets in a separate band below costing
+       another 255px of height. Three columns (1fr auto 1fr) fill those flanks and
+       keep the orb exactly centred, since equal fr columns balance around it. */
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 24px;
+      width: 100%;
+      max-width: 1800px;
+    }
+    .hero-flank { min-width: 0; }            /* or grid children refuse to shrink */
+    .hero-flank .last-response { max-width: 100%; text-align: left; }
+    .hero-flank .widget-strip { max-width: 100%; padding: 0; }
+    .hero-flank .section-label { text-align: left; }
+    /* Below this the flanks get too narrow to read, so fall back to stacking. */
+    @media (max-width: 1400px) {
+      .hero-grid { grid-template-columns: 1fr; justify-items: center; }
+      .hero-flank .last-response { text-align: center; }
+    }
+
+    /* Hero inner row: side panels + orb */
+    .hero-row {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      width: 100%;
+      max-width: 820px;
+      justify-content: center;
+    }
+    @media (max-height: 900px) { .orb-scene { width: 170px; height: 170px; } }
+
+    /* ── Side data panels ── */
+    .side-panel {
+      flex: 0 0 160px;
+      font-family: monospace;
+      font-size: 0.62rem;
+      letter-spacing: 1px;
+      color: rgba(0,212,255,0.45);
+      line-height: 1.9;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .side-panel.right { text-align: right; }
+    @media (max-width: 640px) { .side-panel { display: none; } }
+
+    .sp-label {
+      font-size: 0.58rem;
+      letter-spacing: 3px;
+      color: rgba(0,212,255,0.25);
+      border-bottom: 1px solid rgba(0,212,255,0.12);
+      padding-bottom: 3px;
+      margin-bottom: 4px;
+    }
+    .sp-row { display: flex; justify-content: space-between; gap: 8px; }
+    .side-panel.right .sp-row { flex-direction: row-reverse; }
+    .sp-key { color: rgba(0,212,255,0.28); }
+    .sp-val { color: rgba(0,212,255,0.65); }
+    .sp-bar {
+      display: inline-block;
+      width: 40px;
+      height: 3px;
+      background: rgba(0,212,255,0.1);
+      vertical-align: middle;
+      position: relative;
+      margin-left: 3px;
+    }
+    .sp-bar-fill {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      background: var(--j-blue);
+      box-shadow: 0 0 4px rgba(0,212,255,0.6);
+      transition: width 0.8s ease;
+    }
+
+    /* ── Orb scene (SVG arcs + canvas + core) ── */
+    .orb-scene {
+      width: 210px;
+      height: 210px;
+      perspective: 800px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    /* SVG arc overlay — positioned over the full orb-scene */
+    .arc-svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      overflow: visible;
+    }
+
+    /* Arc animation groups */
+    .arc-outer { animation: arc-cw  18s linear infinite; transform-origin: center; }
+    .arc-mid   { animation: arc-ccw 12s linear infinite; transform-origin: center; }
+    .arc-inner { animation: arc-cw   7s linear infinite; transform-origin: center; }
+    .arc-dot   { animation: arc-cw  18s linear infinite; transform-origin: center; }
+
+    @keyframes arc-cw  { from { transform: rotate(0deg);   } to { transform: rotate(360deg);  } }
+    @keyframes arc-ccw { from { transform: rotate(0deg);   } to { transform: rotate(-360deg); } }
+
+    /* Pulse arcs on speaking/listening */
+    body.speaking  .arc-outer { animation-duration: 10s; }
+    body.speaking  .arc-mid   { animation-duration: 6s;  }
+    body.speaking  .arc-inner { animation-duration: 3s;  }
+    body.listening .arc-outer { animation-duration: 14s; }
+    body.listening .arc-inner { animation-duration: 5s;  }
+
+    /* Scan sweep line that rotates over the orb during thinking */
+    .arc-sweep {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    body.listening .arc-sweep,
+    body.thinking  .arc-sweep  { opacity: 1; }
+    .arc-sweep-line {
+      animation: sweep-spin 2.5s linear infinite;
+      transform-origin: center;
+    }
+    body.speaking .arc-sweep-line { animation-duration: 1.2s; }
+    @keyframes sweep-spin { to { transform: rotate(360deg); } }
+
+    /* Pulse halos */
+    .halo {
+      position: absolute;
+      border-radius: 50%;
+      border: 1.5px solid var(--j-blue);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .halo:nth-child(1) { width: 200px; height: 200px; }
+    .halo:nth-child(2) { width: 240px; height: 240px; }
+    .halo:nth-child(3) { width: 280px; height: 280px; }
+
+    body.speaking .halo {
+      animation: halo-pulse 2s ease-out infinite;
+      border-color: var(--j-blue);
+    }
+    body.speaking .halo:nth-child(2) { animation-delay: 0.5s; }
+    body.speaking .halo:nth-child(3) { animation-delay: 1.0s; }
+
+    body.listening .halo {
+      animation: halo-pulse 3s ease-out infinite;
+      border-color: var(--j-gold);
+    }
+    body.listening .halo:nth-child(2) { animation-delay: 0.8s; }
+    body.listening .halo:nth-child(3) { animation-delay: 1.6s; }
+
+    @keyframes halo-pulse {
+      0%   { opacity: 0.6; transform: scale(0.85); }
+      100% { opacity: 0;   transform: scale(1.2);  }
+    }
+
+    /* ── Ring waveform canvas ── */
+    #orb-canvas {
+      position: absolute;
+      left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }
+
+    /* ── Status text overlay (sits in the dark void center of the ring) ── */
+    .orb-core {
+      width: 90px;
+      height: 90px;
+      border-radius: 50%;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      pointer-events: none;
+      /* Subtle dark well so text stays readable over the inner glow */
+      background: radial-gradient(circle, rgba(3,8,16,0.6) 40%, transparent 100%);
+    }
+
+    .orb-label {
+      font-size: 0.48rem;
+      letter-spacing: 5px;
+      color: rgba(0,212,255,0.45);
+      margin-bottom: 4px;
+      user-select: none;
+    }
+    .orb-status {
+      font-size: 0.68rem;
+      letter-spacing: 4px;
+      font-weight: 700;
+      color: var(--j-blue);
+      transition: color 0.3s;
+      user-select: none;
+    }
+    body.listening .orb-status { color: var(--j-gold); }
+
+    /* ── Last response ── */
+    .last-response {
+      max-width: 900px;
+      width: 100%;
+      text-align: center;
+      color: #7dc8e8;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      min-height: 0;
+      padding: 0 12px;
+      margin-top: 12px;
+      /* Clamped: this repeats the newest reply, which the conversation feed
+         now shows in full immediately below. Kept as a one-glance line for
+         when the feed is scrolled away, not as a second copy of the answer. */
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      font-style: italic;
+      opacity: 0.8;
+      transition: opacity 0.4s;
+    }
+    .last-response.fresh { opacity: 1; color: #aadeee; }
+
+    /* ── Telemetry bar below hero ── */
+    .hud-bar {
+      width: 100%;
+      max-width: 820px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-family: monospace;
+      font-size: 0.6rem;
+      letter-spacing: 2px;
+      color: rgba(0,212,255,0.28);
+      padding: 8px 20px 0;
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
+    }
+    .hud-bar::before, .hud-bar::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(0,212,255,0.2));
+    }
+    .hud-bar::after {
+      background: linear-gradient(270deg, transparent, rgba(0,212,255,0.2));
+    }
+    .hud-bar-item { color: rgba(0,212,255,0.4); white-space: nowrap; }
+    .hud-bar-item span { color: rgba(0,212,255,0.7); }
+
+    /* ── Conversation ── */
+    .conv-section {
+      max-width: 1100px;
+      width: 100%;
+      margin: 12px auto 28px;
+      padding: 0 20px;
+      position: relative;
+      z-index: 1;
+    }
+    .conv-section-label {
+      font-size: 0.62rem;
+      letter-spacing: 4px;
+      color: #334455;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--j-border);
+      padding-bottom: 6px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .conv-section-label::before {
+      content: '◈';
+      color: rgba(0,212,255,0.3);
+      font-size: 0.7rem;
+    }
+
+    #conv-feed {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      /* Was 240px — shorter than the tool log sitting beneath it,
+         which made the log look more important than the conversation. */
+      max-height: min(56vh, 620px);
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    #conv-feed::-webkit-scrollbar { width: 3px; }
+    #conv-feed::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 2px; }
+
+    /* Inline tool calls reuse the .tl-* timeline treatment below, so a reply's
+       work reads exactly like the TOOL EVENTS panel — same dots, same
+       connecting spine — instead of being a second, different-looking widget. */
+    .tc-list { margin-bottom: 8px; }
+    .tc-list .tl-content { padding-bottom: 8px; cursor: pointer; }
+    .tc-list .tl-entry:last-child .tl-content { padding-bottom: 2px; }
+    .tc-detail { display: none; }
+    .tc-open .tc-detail { display: block; }
+    .conv-row { display: flex; gap: 10px; align-items: flex-start; }
+    .conv-row.user { flex-direction: row-reverse; }
+    .conv-avatar {
+      width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.55rem; font-weight: 700; letter-spacing: 0.5px;
+    }
+    .avatar-j { background: var(--j-blue-dd); border: 1px solid var(--j-blue-d); color: var(--j-blue); }
+    .avatar-u { background: #111f2a; border: 1px solid #224466; color: #6699aa; }
+    .conv-bubble {
+      max-width: 75%; padding: 7px 13px; border-radius: 10px;
+      font-size: 0.8rem; line-height: 1.55;
+    }
+    .bubble-j { background: #06101e; border: 1px solid #0e2a40; color: #8dcce8; border-bottom-left-radius: 3px; }
+    .bubble-u { background: #080e1c; border: 1px solid #152838; color: #99aabb; border-bottom-right-radius: 3px; }
+
+    /* ── Divider ── */
+    .divider {
+      width: 100%; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--j-border), transparent);
+      margin: 0 0 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ── Agents ── */
+    /* Two-column workspace.
+       Everything used to be one long vertical stack, so the conversation, a
+       diagnostic log and the agent grid all competed equally for attention and
+       nothing was visible without scrolling. Now: the conversation is the
+       primary column, and things that need a decision or a glance sit beside it.
+
+       Single column below 1100px — side-by-side stops helping once each column
+       is too narrow to read. */
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
+      gap: 20px;
+      padding: 0 20px 40px;
+      align-items: start;
+      position: relative;
+      z-index: 1;
+    }
+    @media (max-width: 1100px) {
+      .workspace { grid-template-columns: 1fr; }
+    }
+    .workspace .agents-section,
+    .workspace .conv-section,
+    .workspace .timeline-section { padding: 0; }
+    .col-main, .col-side { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+
+    /* Diagnostics are secondary now that tool calls render inline in the
+       conversation — kept for debugging, not given prime space. */
+
+    .agents-section { padding: 0 20px 40px; position: relative; z-index: 1; }
+    .section-label {
+      font-size: 0.62rem; letter-spacing: 4px; color: #334455;
+      text-transform: uppercase; border-bottom: 1px solid var(--j-border);
+      padding-bottom: 6px; margin-bottom: 18px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .section-label::before { content: '◈'; color: rgba(0,212,255,0.25); font-size: 0.68rem; }
+
+    /* A list, not a card wall. Stacked in the side column the verbose cards
+       became a tall ribbon to scroll past; what you want at a glance is which
+       agents exist and what state each is in. Detail is one click away. */
+    /* Widgets are metrics, not a column. Stacked in the side column they were
+       tall enough to consume it and push all 22 agents below the fold. A capped
+       full-width strip keeps them glanceable without costing the workspace. */
+    /* The hero band was 1916px wide using 820 — roughly 1100px of dead space
+       flanking the orb, while the widgets sat in their own band below costing
+       another 255px of height. They now live in that dead space: same glance,
+       no extra band, and the workspace moves up a full screen-quarter. */
+    .widget-strip { width: 100%; max-width: 1500px; padding: 14px 20px 0; }
+    .widget-strip #widget-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px; align-items: start;
+    }
+    .widget-strip #widget-grid > * { max-height: 285px; overflow-y: auto; }
+    .widget-strip #widget-grid > *::-webkit-scrollbar { width: 3px; }
+    .widget-strip #widget-grid > *::-webkit-scrollbar-thumb {
+      background: var(--j-border); border-radius: 2px;
+    }
+    .agents-grid { display: flex; flex-direction: column; gap: 6px; }
+    /* 22 agents is a long list. Capped with its own scroll so it cannot push
+       the widgets and approvals above it off screen — the list is a control
+       surface you consult, not something to scroll past every time. */
+    .col-side .agents-grid { max-height: 62vh; overflow-y: auto; padding-right: 4px; }
+    /* Without this the capped list does not scroll — it CRUSHES.
+       .agents-grid is a flex column, flex children default to flex-shrink: 1,
+       and a max-height on the container makes 22 cards compress to fit rather
+       than overflow. Each row rendered at 22px against a natural 41px, so the
+       names were clipped and the rows visually collided. flex: 0 0 auto keeps
+       each row its own height and lets the container scroll as intended. */
+    .col-side .agents-grid > .agent-card { flex: 0 0 auto; }
+    .col-side .agents-grid::-webkit-scrollbar { width: 3px; }
+    .col-side .agents-grid::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 2px; }
+    .agent-head { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+    .agent-head:hover .agent-name { color: var(--j-blue); }
+    .agent-chev { margin-left: auto; font-size: 0.6rem; color: #2d6a8a; transition: transform .15s; }
+    .agent-card.open .agent-chev { transform: rotate(180deg); }
+    .agent-detail { display: none; margin-top: 10px; }
+    .agent-card.open .agent-detail { display: block; }
+    .agent-card {
+      background: var(--j-card);
+      border: 1px solid var(--j-border); border-radius: 6px;
+      padding: 10px 12px; transition: border-color 0.2s, box-shadow 0.2s;
+      position: relative; overflow: hidden;
+    }
+    .agent-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(0,212,255,0.15), transparent);
+    }
+    .agent-card:hover   { border-color: rgba(0,212,255,0.3); box-shadow: 0 0 12px rgba(0,212,255,0.07); }
+    .agent-card.running { border-color: rgba(240,160,32,0.4); box-shadow: 0 0 10px rgba(240,160,32,0.1); }
+    .agent-card.err     { border-color: var(--j-red); }
+    .agent-name  { color: var(--j-blue); font-weight: 600; font-size: 0.83rem; letter-spacing: 1px; }
+    .persona-name { color: #c792ea; font-style: italic; font-size: 0.78rem; font-weight: 600; }
+    .persona-name::before { content: "“"; opacity: 0.6; }
+    .persona-name::after  { content: "”"; opacity: 0.6; }
+    .kind-badge { font-size: 0.6rem; letter-spacing: 0.5px; padding: 1px 6px; border-radius: 8px; text-transform: uppercase; }
+    .kind-reasoning { background: rgba(199,146,234,0.14); color: #c792ea; border: 1px solid rgba(199,146,234,0.3); }
+    .kind-mechanical{ background: rgba(120,144,160,0.10); color: #6a8296; border: 1px solid rgba(120,144,160,0.25); }
+    .agent-desc  { font-size: 0.76rem; color: #4a6077; margin-top: 2px; }
+    .agent-sched { font-size: 0.68rem; color: #2d4055; font-family: monospace; margin-top: 4px; }
+    .last-run    { font-size: 0.66rem; color: #2d4055; margin-top: 4px; }
+    .preview-text {
+      font-size: 0.73rem; color: #556677; margin-top: 6px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+
+    .sbadge { font-size: 0.63rem; font-weight: 700; letter-spacing: 1px; padding: 2px 7px; border-radius: 10px; }
+    .s-idle    { background: #040e18; color: var(--j-blue);  border: 1px solid var(--j-blue-d); }
+    .s-running { background: #100a00; color: var(--j-gold);  border: 1px solid #5a3800; animation: blink 1.4s infinite; }
+    .s-error   { background: #100006; color: #ff4466;        border: 1px solid #661122; }
+    .s-unknown { background: #080e18; color: #334455;        border: 1px solid #0e1e2a; }
+    .s-on      { background: #041410; color: var(--j-green); border: 1px solid #003a28; font-size: 0.6rem; }
+    .s-off     { background: #0a0a0a; color: #334455;        border: 1px solid #141414; font-size: 0.6rem; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+    .btn-run {
+      background: transparent; border: 1px solid rgba(0,136,170,0.5);
+      color: var(--j-blue); font-size: 0.68rem; letter-spacing: 1px;
+      padding: 3px 10px; border-radius: 4px; cursor: pointer;
+      transition: background 0.2s, box-shadow 0.2s;
+    }
+    .btn-run:hover    { background: rgba(0,212,255,0.07); box-shadow: 0 0 6px rgba(0,212,255,0.2); color: #fff; }
+    .btn-run:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    #toast { font-size: 0.82rem; }
+    ::-webkit-scrollbar       { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--j-border); border-radius: 2px; }
+
+    /* ── Tool event timeline ── */
+    .timeline-section {
+      max-width: 760px;
+      width: 100%;
+      margin: 0 auto 28px;
+      padding: 0 20px;
+      position: relative;
+      z-index: 1;
+    }
+
+
+    .tl-entry {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+    .tl-spine {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 14px;
+      flex-shrink: 0;
+      padding-top: 3px;
+    }
+    .tl-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .tl-dot.done    { background: var(--j-green); box-shadow: 0 0 5px rgba(0,170,136,0.6); }
+    .tl-dot.calling { background: var(--j-gold);  box-shadow: 0 0 5px rgba(240,160,32,0.6); animation: blink 1s infinite; }
+    .tl-dot.error   { background: var(--j-red);   box-shadow: 0 0 5px rgba(204,51,68,0.6); }
+    .tl-line {
+      width: 1px;
+      flex: 1;
+      min-height: 14px;
+      background: var(--j-border);
+    }
+    .tl-content {
+      flex: 1;
+      padding-bottom: 10px;
+    }
+    .tl-tool {
+      font-size: 0.73rem;
+      font-family: monospace;
+      letter-spacing: 1px;
+      font-weight: 600;
+    }
+    .tl-tool.done    { color: var(--j-green); }
+    .tl-tool.calling { color: var(--j-gold); }
+    .tl-args {
+      font-size: 0.63rem;
+      font-family: monospace;
+      color: rgba(0,212,255,0.35);
+      margin-top: 2px;
+      word-break: break-all;
+    }
+    .tl-result {
+      font-size: 0.66rem;
+      color: #4a6c78;
+      margin-top: 3px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .tl-ts {
+      font-size: 0.58rem;
+      color: rgba(0,212,255,0.2);
+      font-family: monospace;
+      margin-top: 2px;
+    }
+
+    /* ── DEV toggle + agent activity panel ── */
+    #dev-toggle {
+      background: none;
+      border: 1px solid var(--j-border);
+      border-radius: 4px;
+      color: rgba(0,212,255,0.45);
+      font-size: 0.62rem;
+      letter-spacing: 3px;
+      padding: 2px 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    #dev-toggle.on {
+      color: var(--j-gold);
+      border-color: var(--j-gold);
+      box-shadow: 0 0 8px rgba(240,160,32,0.35);
+    }
+    .act-entry {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      padding: 5px 0;
+      border-bottom: 1px solid rgba(14,32,53,0.6);
+      font-size: 0.72rem;
+    }
+    .act-ts {
+      font-family: monospace;
+      font-size: 0.6rem;
+      color: rgba(0,212,255,0.25);
+      white-space: nowrap;
+      min-width: 58px;
+    }
+    .act-agent {
+      color: var(--j-gold);
+      font-size: 0.62rem;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      white-space: nowrap;
+      min-width: 80px;
+    }
+    .act-kind {
+      font-size: 0.56rem;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      border: 1px solid;
+      border-radius: 3px;
+      padding: 0 5px;
+      white-space: nowrap;
+    }
+    .act-kind.k-tool     { color: var(--j-blue);  border-color: rgba(0,212,255,0.4); }
+    .act-kind.k-thinking { color: #8899bb;        border-color: rgba(136,153,187,0.4); }
+    .act-kind.k-finding  { color: var(--j-green); border-color: rgba(0,170,136,0.4); }
+    .act-text {
+      flex: 1;
+      color: #cdd6e8;
+      word-break: break-word;
+      line-height: 1.4;
+    }
+    #dev-activity {
+      max-height: 420px;
+      overflow-y: auto;
+    }
+  </style>
+
+  <style>
+    /* ── Persistent three-page nav ── */
+    .page-nav { display: flex; gap: 4px; }
+    .page-link {
+      color: #5a7a92; text-decoration: none; font-size: 0.7rem; letter-spacing: 3px;
+      padding: 4px 12px; border: 1px solid transparent; border-radius: 5px;
+      transition: color .15s, border-color .15s, background .15s; white-space: nowrap;
+    }
+    .page-link:hover  { color: var(--j-blue); border-color: rgba(0,212,255,0.2); }
+    .page-link.active { color: var(--j-blue); border-color: rgba(0,212,255,0.35); background: rgba(0,212,255,0.06); }
+    @media (max-width: 620px) {
+      .navbar { padding: 8px 12px; }
+      .brand-sub-ci { display: none; }
+      .page-link { padding: 4px 9px; letter-spacing: 2px; }
+    }
+  </style>
+  {% block extra_css %}{% endblock %}
+
+</head>
+<body>
+
+<!-- Boot overlay -->
+<div id="boot-overlay">
+  <div id="boot-scan"></div>
+  <div id="boot-content">
+    <div id="boot-logo">J.A.R.V.I.S</div>
+    <div id="boot-sub">JUST A RATHER VERY INTELLIGENT SYSTEM</div>
+    <div id="boot-lines"></div>
+    <div id="boot-bar-wrap"><div id="boot-bar"></div></div>
+    <div id="boot-status">INITIALIZING...</div>
+  </div>
+</div>
+
+<!-- Page-wide scan line -->
+<div class="scan-line"></div>
+
+<!-- ── Navbar (persistent across all three pages) ── -->
+<nav class="navbar navbar-expand-lg">
+  <span class="brand-name">J.A.R.V.I.S</span>
+  <span class="brand-sub ms-3 brand-sub-ci">CONTROL INTERFACE</span>
+  <div class="page-nav ms-4">
+    <a href="/voice" class="page-link {% if active == 'voice' %}active{% endif %}">VOICE</a>
+    <a href="/chat"  class="page-link {% if active == 'chat'  %}active{% endif %}">CHAT</a>
+    <a href="/"      class="page-link {% if active == 'ops'   %}active{% endif %}">OPS</a>
+  </div>
+  <div class="ms-auto d-flex align-items-center gap-3">
+    {% block nav_extra %}{% endblock %}
+    <a href="/logs" class="brand-sub" style="text-decoration:none;">LOGS</a>
+    <span class="nav-clock" id="live-clock"></span>
+  </div>
+</nav>
+
+{% block content %}{% endblock %}
+
+<!-- ── Toast ── -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index:9999">
+  <div id="toast" class="toast align-items-center text-bg-dark border-0" role="alert" aria-live="assertive">
+    <div class="d-flex">
+      <div class="toast-body" id="toast-msg">Done.</div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ══════════════════════════════════════════════════════════
+//  SHARED CHROME  (nav clock, boot sequence, utilities)
+// ══════════════════════════════════════════════════════════
+
+// ── Boot sequence ── plays once per browser session, so hopping between the
+// three pages doesn't replay the 4s animation on every navigation.
+(function () {
+  const overlay = document.getElementById('boot-overlay');
+  if (!overlay) return;
+  if (sessionStorage.getItem('jarvis_booted')) { overlay.style.display = 'none'; return; }
+  sessionStorage.setItem('jarvis_booted', '1');
+
+  const lines = [
+    { t: 1000, text: 'LOADING AI CORE MODULE...',       ok: true },
+    { t: 1350, text: 'INITIALIZING NEURAL NETWORKS...',  ok: true },
+    { t: 1650, text: 'CONNECTING MQTT MESSAGE BUS...',   ok: true },
+    { t: 1900, text: 'ATTACHING VOICE PIPELINE...',      ok: true },
+    { t: 2150, text: 'SEMANTIC MEMORY ONLINE...',        ok: true },
+    { t: 2400, text: 'ALL SYSTEMS NOMINAL',              ok: true },
+  ];
+  const container = document.getElementById('boot-lines');
+  const statusEl  = document.getElementById('boot-status');
+  const statuses  = ['INITIALIZING...', 'LOADING MODULES...', 'CALIBRATING...', 'ONLINE'];
+  let si = 0;
+  const stInt = setInterval(() => {
+    si++;
+    if (si < statuses.length) statusEl.textContent = statuses[si];
+    else clearInterval(stInt);
+  }, 900);
+  lines.forEach(({ t, text, ok }) => {
+    setTimeout(() => {
+      const el = document.createElement('span');
+      el.className = 'boot-line' + (ok ? ' ok' : '');
+      el.textContent = '› ' + text;
+      el.style.animation = 'boot-appear 0.3s ease-out both';
+      container.appendChild(el);
+    }, t);
+  });
+})();
+
+// ── Shared utilities ──
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  document.getElementById('toast-msg').textContent = msg;
+  new bootstrap.Toast(el, { delay: 3500 }).show();
+}
+
+// ── Live clock (nav) ──
+(function tickClock() {
+  const el = document.getElementById('live-clock');
+  if (el) el.textContent = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  setTimeout(tickClock, 1000);
+})();
+</script>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,331 @@
+{% extends "base.html" %}
+{% block title %}JARVIS — Chat{% endblock %}
+
+{% block extra_css %}
+<style>
+  /* Full-height chat column: feed scrolls, the composer is pinned to the bottom.
+     Mirrors the iOS app's chat tab. */
+  .chat-wrap {
+    position: fixed;
+    inset: 54px 0 0 0;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 900px;
+    margin: 0 auto;
+    z-index: 1;
+  }
+  /* Override the shared #conv-feed cap — here the feed owns all the space. */
+  .chat-wrap #conv-feed {
+    flex: 1 1 auto;
+    max-height: none;
+    overflow-y: auto;
+    padding: 18px 18px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  #chat-status {
+    font-size: 0.68rem;
+    letter-spacing: 1px;
+    color: var(--j-gold);
+    padding: 0 20px 6px;
+    min-height: 16px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  #chat-status.on::before {
+    content: '';
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--j-gold); box-shadow: 0 0 6px var(--j-gold);
+    animation: blink 1s infinite;
+  }
+  .chat-input-bar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 12px 16px calc(14px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--j-border);
+    background: rgba(3,8,16,0.92);
+  }
+  #chat-text {
+    flex: 1 1 auto;
+    background: #060e1a;
+    border: 1px solid var(--j-border);
+    border-radius: 11px;
+    color: #cdd6e8;
+    padding: 12px 15px;
+    font-size: 0.9rem;
+    font-family: inherit;
+    outline: none;
+    transition: border-color .15s;
+  }
+  #chat-text:focus { border-color: rgba(0,212,255,0.45); }
+  #chat-text::placeholder { color: #3a5064; }
+  .icon-btn {
+    flex: 0 0 auto;
+    width: 46px; height: 46px;
+    border-radius: 50%;
+    border: 1px solid rgba(0,136,170,0.5);
+    background: transparent;
+    color: var(--j-blue);
+    font-size: 1.1rem;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .2s, box-shadow .2s, border-color .2s;
+  }
+  .icon-btn:hover { background: rgba(0,212,255,0.08); box-shadow: 0 0 8px rgba(0,212,255,0.2); }
+  #speak-btn.recording {
+    border-color: var(--j-gold);
+    color: var(--j-gold);
+    background: rgba(240,160,32,0.12);
+    box-shadow: 0 0 12px rgba(240,160,32,0.5);
+    animation: blink 1.2s infinite;
+  }
+  #send-btn {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid rgba(0,136,170,0.5);
+    color: var(--j-blue);
+    font-size: 0.72rem; letter-spacing: 2px; font-weight: 600;
+    padding: 0 18px; height: 46px;
+    border-radius: 11px; cursor: pointer;
+    transition: background .2s, box-shadow .2s;
+  }
+  #send-btn:hover    { background: rgba(0,212,255,0.08); box-shadow: 0 0 8px rgba(0,212,255,0.2); }
+  #send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .conv-bubble { max-width: 82%; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="chat-wrap">
+  <div id="conv-feed">
+    <div style="font-size:0.82rem;color:#2d4055;text-align:center;margin:auto">No conversation yet…</div>
+  </div>
+  <div id="chat-status"></div>
+  <div class="chat-input-bar">
+    <button id="speak-btn" class="icon-btn" title="Hold-to-talk: records, sends, and speaks the reply"
+            onclick="toggleSpeak()">🎤</button>
+    <input id="chat-text" type="text" autocomplete="off" placeholder="Message JARVIS…"
+           onkeydown="if(event.key==='Enter'){event.preventDefault();sendText();}">
+    <button id="send-btn" onclick="sendText()">SEND</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ══════════════════════════════════════════════════════════
+//  CONVERSATION FEED  (SSE — same stream the old dashboard used)
+// ══════════════════════════════════════════════════════════
+let _convSig = null;
+let _forceScroll = false;
+
+function toolCallsFor(turnId, events) {
+  if (!turnId || !events) return [];
+  const merged = [];
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.turn_id !== turnId) continue;
+    const key = e.call_id || '';
+    const at = key ? merged.findIndex(m => m.call_id === key) : -1;
+    if (at >= 0) { if (e.status === 'done') merged[at] = e; }
+    else merged.push(e);
+  }
+  return merged;
+}
+
+function renderToolCalls(calls) {
+  if (!calls.length) return '';
+  const rows = calls.map((c, idx) => {
+    const isLast = idx === calls.length - 1;
+    const cls = c.status === 'done' ? 'done' : c.status === 'calling' ? 'calling' : 'error';
+    const ts = c.timestamp
+      ? new Date(c.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})
+      : '';
+    return `<div class="tl-entry">
+      <div class="tl-spine"><div class="tl-dot ${cls}"></div>${!isLast ? '<div class="tl-line"></div>' : ''}</div>
+      <div class="tl-content" onclick="this.classList.toggle('tc-open')">
+        <div class="tl-tool ${cls}">${esc(c.tool || 'tool')}</div>
+        <div class="tc-detail">
+          ${c.args_preview ? `<div class="tl-args">${esc(c.args_preview)}</div>` : ''}
+          ${c.result_preview ? `<div class="tl-result">${esc(c.result_preview)}</div>` : ''}
+        </div>
+        ${ts ? `<div class="tl-ts">${ts}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="tc-list">${rows}</div>`;
+}
+
+function renderConversation(msgs, toolEvents) {
+  const te = toolEvents || [];
+  const sig = msgs.length + '|' + (msgs.length ? (msgs[msgs.length-1].role + ':' +
+              String(msgs[msgs.length-1].content).slice(0, 200)) : '') +
+              '|' + te.length + '|' + (te.length ? (te[0].status + te[0].call_id) : '');
+  if (sig === _convSig) return;
+  _convSig = sig;
+
+  const feed = document.getElementById('conv-feed');
+  if (msgs.length === 0) {
+    feed.innerHTML = '<div style="font-size:0.82rem;color:#2d4055;text-align:center;margin:auto">No conversation yet…</div>';
+    return;
+  }
+  const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120;
+  feed.innerHTML = msgs.map(m => {
+    const isJ = m.role === 'assistant';
+    const calls = isJ ? toolCallsFor(m.turn_id, te) : [];
+    return `<div class="conv-row ${isJ ? '' : 'user'}">
+      <div class="conv-avatar ${isJ ? 'avatar-j' : 'avatar-u'}">${isJ ? 'AI' : 'YOU'}</div>
+      <div class="conv-bubble ${isJ ? 'bubble-j' : 'bubble-u'}">${renderToolCalls(calls)}${esc(m.content)}</div>
+    </div>`;
+  }).join('');
+  // A fresh assistant reply means the turn finished — drop the pending pill.
+  if (msgs[msgs.length - 1].role === 'assistant') setPending(false);
+  if (atBottom || _forceScroll) { feed.scrollTop = feed.scrollHeight; _forceScroll = false; }
+}
+
+function connectSSE() {
+  const es = new EventSource('/api/stream');
+  es.onmessage = (e) => {
+    try { const d = JSON.parse(e.data); if (d.messages) renderConversation(d.messages, d.tool_events); }
+    catch (err) { console.warn('SSE parse error', err); }
+  };
+  es.onerror = () => { es.close(); setTimeout(connectSSE, 5000); };
+}
+
+// ══════════════════════════════════════════════════════════
+//  COMPOSER  (text → /api/ask, speak:false · never speaks)
+// ══════════════════════════════════════════════════════════
+function setPending(on, text) {
+  const el = document.getElementById('chat-status');
+  el.classList.toggle('on', !!on);
+  el.textContent = on ? (text || 'Jarvis is thinking…') : '';
+}
+function setSending(on) {
+  document.getElementById('send-btn').disabled = on;
+  document.getElementById('chat-text').disabled = on;
+}
+
+async function sendText() {
+  const input = document.getElementById('chat-text');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  _forceScroll = true;
+  setSending(true);
+  setPending(true, 'Jarvis is thinking…');
+  try {
+    // speak:false is set server-side — a typed message gets a typed reply, so
+    // nothing is synthesised and the browser plays no audio.
+    const r = await fetch('/api/ask', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!r.ok) { showToast('Send failed (' + r.status + ')'); }
+    // The reply (and your message) land in the feed via SSE from Redis.
+  } catch (e) {
+    showToast('Send failed: ' + e);
+  } finally {
+    setPending(false);
+    setSending(false);
+    input.focus();
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  CLICK-TO-SPEAK  (audio → /api/ask/audio · SPEAKS the reply)
+// ══════════════════════════════════════════════════════════
+let mediaStream = null, mediaRecorder = null, chunks = [], recording = false;
+
+function updateSpeakBtn() {
+  const btn = document.getElementById('speak-btn');
+  btn.classList.toggle('recording', recording);
+  btn.textContent = recording ? '⏹' : '🎤';
+  btn.title = recording ? 'Stop and send' : 'Click to speak — records, sends, and speaks the reply';
+}
+
+async function toggleSpeak() {
+  if (recording) { stopRecording(); return; }
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    showToast('Microphone unavailable: ' + e.name);
+    return;
+  }
+  chunks = [];
+  mediaRecorder = new MediaRecorder(mediaStream);
+  mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  mediaRecorder.onstop = onRecordingStop;
+  mediaRecorder.start();
+  recording = true;
+  updateSpeakBtn();
+}
+
+function stopRecording() {
+  if (mediaRecorder && recording) {
+    recording = false;
+    updateSpeakBtn();
+    mediaRecorder.stop();
+  }
+}
+
+async function onRecordingStop() {
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  const blob = new Blob(chunks, { type: (mediaRecorder && mediaRecorder.mimeType) || 'audio/webm' });
+  if (!blob.size) return;
+  _forceScroll = true;
+  setPending(true, 'Transcribing…');
+  let body;
+  try { body = await blobToWav(blob); }   // WAV is the format the gateway expects
+  catch (e) { body = blob; }              // fallback: let faster-whisper sniff it
+  try {
+    const r = await fetch('/api/ask/audio', {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body,
+    });
+    if (!r.ok) { showToast('Voice failed (' + r.status + ')'); setPending(false); return; }
+    const d = await r.json();
+    setPending(false);
+    if (d.audio_b64) playReply(d.audio_b64);   // click-to-speak speaks
+  } catch (e) {
+    showToast('Voice failed: ' + e);
+    setPending(false);
+  }
+}
+
+function playReply(b64) {
+  try { new Audio('data:audio/wav;base64,' + b64).play(); } catch (e) {}
+}
+
+// Decode whatever MediaRecorder produced (webm/opus, mp4…) and re-encode a
+// 16-bit mono WAV, so the gateway's STT gets the format it writes to disk.
+async function blobToWav(blob) {
+  const ab = await blob.arrayBuffer();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC();
+  const decoded = await ctx.decodeAudioData(ab);
+  if (ctx.close) ctx.close();
+  const sr = decoded.sampleRate;
+  const ch0 = decoded.getChannelData(0);
+  const len = ch0.length;
+  const dv = new DataView(new ArrayBuffer(44 + len * 2));
+  let o = 0;
+  const ws  = (s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o++, s.charCodeAt(i)); };
+  const w16 = (v) => { dv.setUint16(o, v, true); o += 2; };
+  const w32 = (v) => { dv.setUint32(o, v, true); o += 4; };
+  ws('RIFF'); w32(36 + len * 2); ws('WAVE'); ws('fmt '); w32(16); w16(1); w16(1);
+  w32(sr); w32(sr * 2); w16(2); w16(16); ws('data'); w32(len * 2);
+  for (let i = 0; i < len; i++) {
+    const s = Math.max(-1, Math.min(1, ch0[i]));
+    dv.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true); o += 2;
+  }
+  return new Blob([dv], { type: 'audio/wav' });
+}
+
+// ── Boot ──
+connectSSE();
+document.getElementById('chat-text').focus();
+</script>
+{% endblock %}

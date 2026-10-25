@@ -42,6 +42,15 @@ MQTT_HOST   = os.environ.get("MQTT_HOST", "mosquitto")
 MQTT_PORT   = int(os.environ.get("MQTT_PORT", "1883"))
 USER_ID     = os.environ.get("JARVIS_USER_ID", "default")
 
+# mobile_gateway owns the only inbound "ask" pipeline (text + audio). The /chat
+# page proxies to it SERVER-SIDE so the browser never holds the gateway API key;
+# the dashboard's own session cookie is what authorises the user.
+GATEWAY_URL     = (os.environ.get("GATEWAY_INTERNAL_URL") or "http://mobile_gateway:8080").rstrip("/")
+MOBILE_API_KEY  = os.environ.get("MOBILE_API_KEY", "")
+# Matches the gateway's own LLM timeout (45s) with headroom — a typed turn runs
+# the full pipeline synchronously before replying.
+GATEWAY_TIMEOUT = int(os.environ.get("MOBILE_LLM_TIMEOUT", "45")) + 15
+
 # ---------------------------------------------------------------------------
 # Clients
 # ---------------------------------------------------------------------------
@@ -361,22 +370,99 @@ async def logout():
     return resp
 
 
+_NOCACHE = {"Cache-Control": "no-cache, must-revalidate"}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
+    """Ops page: widgets, nudges, agent cards. The orb and conversation feed
+    moved to /voice and /chat so the agent rows get the full width they need."""
     agents = _get_all_agents()
     recent_reports = _get_all_recent_reports(limit=20)
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
+            "active": "ops",
             "agents": agents,
             "recent_reports": recent_reports,
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         },
         # Always serve a fresh dashboard shell so template/JS changes take effect
         # without a manual hard-refresh (was serving stale index.html from cache).
-        headers={"Cache-Control": "no-cache, must-revalidate"},
+        headers=_NOCACHE,
     )
+
+
+@app.get("/voice", response_class=HTMLResponse)
+async def voice_page(request: Request):
+    """The voice orb alone, sized to fill the viewport — glanceable from a room."""
+    return templates.TemplateResponse(
+        request=request, name="voice.html",
+        context={"active": "voice"}, headers=_NOCACHE,
+    )
+
+
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_page(request: Request):
+    """Conversation feed + text input + click-to-speak, mirroring the iOS chat tab."""
+    return templates.TemplateResponse(
+        request=request, name="chat.html",
+        context={"active": "chat"}, headers=_NOCACHE,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ask proxy — the one genuinely new piece. The dashboard never accepted user
+# input before; rather than build a second inbound pipeline, these routes relay
+# to mobile_gateway's existing /ask/query (text) and /ask/query/audio (audio),
+# adding the gateway API key server-side.
+# ---------------------------------------------------------------------------
+
+def _gateway_post(path: str, body: bytes, content_type: str) -> dict:
+    """Blocking POST to the gateway (run via asyncio.to_thread by callers)."""
+    req = urllib.request.Request(
+        f"{GATEWAY_URL}{path}", data=body, method="POST",
+        headers={"Content-Type": content_type, "X-API-Key": MOBILE_API_KEY},
+    )
+    with urllib.request.urlopen(req, timeout=GATEWAY_TIMEOUT) as resp:
+        return json.loads(resp.read())
+
+
+@app.post("/api/ask")
+async def api_ask(request: Request):
+    """Typed message → gateway /ask/query with speak=false. A typed turn does
+    NOT speak (your eyes are already on the screen); the reply lands in the feed
+    via the shared conversation + SSE stream."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    text = str(data.get("text", "")).strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text must not be empty")
+    payload = json.dumps({"text": text, "source": "dashboard", "speak": False}).encode()
+    try:
+        return await asyncio.to_thread(_gateway_post, "/ask/query", payload, "application/json")
+    except urllib.error.HTTPError as e:
+        raise HTTPException(e.code, e.read().decode()[:200])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"gateway unreachable: {e}")
+
+
+@app.post("/api/ask/audio")
+async def api_ask_audio(request: Request):
+    """Click-to-speak audio → gateway /ask/query/audio. speak defaults true, so
+    the JSON reply carries audio_b64 and the browser plays it — this one speaks."""
+    audio = await request.body()
+    if not audio:
+        raise HTTPException(status_code=400, detail="empty audio body")
+    try:
+        return await asyncio.to_thread(_gateway_post, "/ask/query/audio", audio, "application/octet-stream")
+    except urllib.error.HTTPError as e:
+        raise HTTPException(e.code, e.read().decode()[:200])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"gateway unreachable: {e}")
 
 
 @app.get("/api/agents")

@@ -1,0 +1,350 @@
+{% extends "base.html" %}
+{% block title %}JARVIS — Voice{% endblock %}
+
+{% block extra_css %}
+<style>
+  /* The orb owns the whole viewport below the nav. Sized off the smaller of
+     width/height so it stays a circle and fills the room-glanceable space. */
+  .voice-stage {
+    position: fixed;
+    inset: 54px 0 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+  }
+  .voice-stage .orb-scene {
+    width:  min(88vw, 88vh);
+    height: min(88vw, 88vh);
+    flex-shrink: 1;
+  }
+  /* Core text scales with the orb so "READY / LISTENING / THINKING…" is legible
+     from across a room. */
+  .voice-stage .orb-core {
+    width: 34%;
+    height: 34%;
+  }
+  .voice-stage .orb-label  { font-size: clamp(0.55rem, 1.6vmin, 1.1rem); letter-spacing: 9px; margin-bottom: 8px; }
+  .voice-stage .orb-status { font-size: clamp(1rem, 3.6vmin, 2.6rem);   letter-spacing: 9px; white-space: nowrap; }
+  /* Halos are decorative pulse rings — make them scale with the big orb instead
+     of staying their original fixed 200–280px (which looked tiny on this page). */
+  .voice-stage .halo { width: auto; height: auto; }
+  .voice-stage .halo:nth-child(1) { inset: 16%; }
+  .voice-stage .halo:nth-child(2) { inset:  8%; }
+  .voice-stage .halo:nth-child(3) { inset:  0%; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="voice-stage">
+  <div class="orb-scene" id="orb-scene">
+
+    <!-- Halo pulse rings -->
+    <div class="halo"></div>
+    <div class="halo"></div>
+    <div class="halo"></div>
+
+    <!-- SVG arc reticles (vector — scales crisply to any size) -->
+    <svg class="arc-svg" viewBox="-150 -150 300 300" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="2.5" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="glow-sm" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="1.5" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+
+      <g class="arc-outer">
+        <circle cx="0" cy="0" r="138" fill="none" stroke="rgba(0,212,255,0.22)" stroke-width="1"
+          stroke-dasharray="180 20 60 20 40 20 80 20"/>
+        <path d="M 0,-138 A 138,138 0 0,1 138,0" fill="none" stroke="rgba(0,212,255,0.55)"
+          stroke-width="1.5" filter="url(#glow-sm)"/>
+        <circle cx="138" cy="0" r="3.5" fill="var(--j-blue)" filter="url(#glow)"/>
+      </g>
+
+      <g class="arc-mid">
+        <circle cx="0" cy="0" r="118" fill="none" stroke="rgba(0,212,255,0.18)" stroke-width="1"
+          stroke-dasharray="12 10 40 10 8 10"/>
+        <circle cx="0" cy="-118" r="2.5" fill="rgba(0,212,255,0.7)" filter="url(#glow-sm)"/>
+      </g>
+
+      <g class="arc-inner">
+        <circle cx="0" cy="0" r="98" fill="none" stroke="rgba(0,212,255,0.12)" stroke-width="0.8"
+          stroke-dasharray="3 22"/>
+        <circle cx="98" cy="0" r="1.8" fill="rgba(0,212,255,0.5)"/>
+      </g>
+
+      <g class="arc-sweep">
+        <g class="arc-sweep-line">
+          <line x1="0" y1="0" x2="0" y2="-130" stroke="url(#sweep-grad)" stroke-width="1.5" opacity="0.6"/>
+          <circle cx="0" cy="-130" r="2" fill="rgba(0,212,255,0.8)"/>
+        </g>
+        <defs>
+          <linearGradient id="sweep-grad" x1="0" y1="1" x2="0" y2="0" gradientUnits="objectBoundingBox">
+            <stop offset="0%"   stop-color="rgba(0,212,255,0)"/>
+            <stop offset="100%" stop-color="rgba(0,212,255,0.7)"/>
+          </linearGradient>
+        </defs>
+      </g>
+
+      <g stroke="rgba(0,212,255,0.3)" stroke-width="1">
+        <line x1="0" y1="-148" x2="0" y2="-138"/>
+        <line x1="0" y1="138"  x2="0" y2="148"/>
+        <line x1="-148" y1="0" x2="-138" y2="0"/>
+        <line x1="138"  y1="0" x2="148"  y2="0"/>
+      </g>
+      <g stroke="rgba(0,212,255,0.15)" stroke-width="0.8">
+        <line x1="95"  y1="-95" x2="100"  y2="-100"/>
+        <line x1="-95" y1="-95" x2="-100" y2="-100"/>
+        <line x1="95"  y1="95"  x2="100"  y2="100"/>
+        <line x1="-95" y1="95"  x2="-100" y2="100"/>
+      </g>
+    </svg>
+
+    <!-- Ring waveform canvas (buffer sized to the box at runtime) -->
+    <canvas id="orb-canvas"></canvas>
+
+    <!-- Core -->
+    <div class="orb-core" id="orb-core">
+      <div class="orb-label">J.A.R.V.I.S</div>
+      <div class="orb-status" id="core-status">READY</div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ══════════════════════════════════════════════════════════
+//  RING WAVEFORM — voice-reactive torus particle field
+//  Size-aware version: the drawing buffer is sized to the orb box and every
+//  spatial constant scales by S = W/290, so the ring fills a huge /voice orb
+//  crisply while staying identical to the original at the 290px reference size.
+// ══════════════════════════════════════════════════════════
+(function () {
+  const canvas = document.getElementById('orb-canvas');
+  const ctx    = canvas.getContext('2d');
+  const scene  = document.getElementById('orb-scene');
+
+  let W = 290, H = 290, cx = 145, cy = 145, S = 1;
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const box = Math.max(Math.min(scene.clientWidth, scene.clientHeight), 120);
+    canvas.width  = Math.round(box * dpr);
+    canvas.height = Math.round(box * dpr);
+    canvas.style.width  = box + 'px';
+    canvas.style.height = box + 'px';
+    W = canvas.width; H = canvas.height; cx = W / 2; cy = H / 2;
+    S = W / 290;                 // 290 = original reference buffer
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  const N_PATH = 320;            // waveform stroke resolution
+  let amplitude = 0.04, targetAmplitude = 0.04;
+  let phaseT = 0;
+  let _state = 'ready';
+
+  window._setOrbState = function (s) {
+    _state = s;
+    targetAmplitude = s === 'speaking'  ? 1.0
+                    : s === 'listening' ? 0.55
+                    : s === 'thinking'  ? 0.3
+                    : 0.04;
+  };
+
+  // Denser field than the ops orb — this one is meant to be stared at.
+  const N_PARTICLES = 1500;
+  const parts = Array.from({ length: N_PARTICLES }, () => {
+    const sparkle = Math.random() < 0.07;
+    return {
+      a:   Math.random() * Math.PI * 2,
+      u:   Math.random() * 2 - 1,
+      v:   Math.random() * 2 - 1,
+      spd: (0.25 + Math.random() * 0.55) * (Math.random() < 0.5 ? 1 : -1),
+      sz:  sparkle ? 1.6 + Math.random() * 1.1 : 0.55 + Math.random() * 0.85,
+      base:sparkle ? 0.55 + Math.random() * 0.4 : 0.18 + Math.random() * 0.38,
+      sparkle,
+    };
+  });
+
+  function wave(angle, t) {
+    return (
+      Math.sin(angle * 5  + t * 1.9)  * 0.38 +
+      Math.sin(angle * 9  + t * 2.7)  * 0.22 +
+      Math.sin(angle * 13 + t * 1.15) * 0.14 +
+      Math.sin(angle * 3  + t * 0.65) * 0.18 +
+      Math.sin(angle * 19 + t * 3.4)  * 0.08
+    );
+  }
+  function _speechEnvelope(t) {
+    const raw = (
+      Math.abs(Math.sin(t * 3.7)) * 0.38 +
+      Math.abs(Math.sin(t * 5.1)) * 0.28 +
+      Math.abs(Math.sin(t * 2.3)) * 0.20 +
+      Math.abs(Math.sin(t * 7.9)) * 0.14
+    );
+    return Math.min(raw, 1.0);
+  }
+
+  let lastTime = 0;
+  function draw(ts) {
+    const dt = Math.min((ts - lastTime) / 16.67, 3);
+    lastTime = ts;
+
+    amplitude += (targetAmplitude - amplitude) * 0.055 * dt;
+    phaseT    += (0.018 + amplitude * 0.052) * dt;
+
+    // Spatial constants scaled to the current buffer size.
+    const BASE_R = 98 * S, TUBE_R = 15 * S, TUBE_H = 9 * S;
+
+    ctx.clearRect(0, 0, W, H);
+
+    const col = _state === 'listening' ? [240, 160, 32] : [0, 212, 255];
+    const [r, g, b] = col;
+
+    let envAmplitude = amplitude;
+    if (_state === 'speaking' && amplitude > 0.2) {
+      const t = ts * 0.001;
+      const env = _speechEnvelope(t);
+      envAmplitude = amplitude * (0.25 + 0.75 * env);
+    }
+
+    const maxD = TUBE_R * 0.45 + envAmplitude * TUBE_R * 2.6;
+
+    // Outer ambient bloom
+    const bloomR = BASE_R + TUBE_R + maxD;
+    const bloom  = ctx.createRadialGradient(cx, cy, BASE_R * 0.35, cx, cy, bloomR * 1.4);
+    bloom.addColorStop(0,    'transparent');
+    bloom.addColorStop(0.45, `rgba(${r},${g},${b},${0.012 + amplitude * 0.028})`);
+    bloom.addColorStop(0.78, `rgba(${r},${g},${b},${0.038 + amplitude * 0.07})`);
+    bloom.addColorStop(1,    'transparent');
+    ctx.fillStyle = bloom;
+    ctx.beginPath();
+    ctx.arc(cx, cy, bloomR * 1.45, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Dark center void
+    const voidR = Math.max(BASE_R - TUBE_R - maxD * 0.25 - 4 * S, 8 * S);
+    const void_ = ctx.createRadialGradient(cx, cy, 0, cx, cy, voidR + 8 * S);
+    void_.addColorStop(0,    'rgba(3,8,16,1)');
+    void_.addColorStop(0.82, 'rgba(3,8,16,0.97)');
+    void_.addColorStop(1,    'rgba(3,8,16,0)');
+    ctx.fillStyle = void_;
+    ctx.beginPath();
+    ctx.arc(cx, cy, voidR + 8 * S, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Ring stroke layers
+    for (let layer = 2; layer >= 0; layer--) {
+      const pOff = layer * 0.65;
+      const rOff = layer * 3.5 * S;
+      const alp  = (0.58 - layer * 0.14) * (0.22 + amplitude * 0.78);
+
+      ctx.beginPath();
+      for (let i = 0; i <= N_PATH; i++) {
+        const ang = (i / N_PATH) * Math.PI * 2;
+        const wv  = wave(ang, phaseT + pOff) * maxD;
+        const rad = BASE_R + TUBE_R * 0.65 + rOff + wv;
+        const x   = cx + rad * Math.cos(ang);
+        const y   = cy + rad * Math.sin(ang) * 0.87;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = `rgba(${r},${g},${b},${alp})`;
+      ctx.lineWidth   = (1.2 + envAmplitude * 0.9) * S;
+      ctx.stroke();
+
+      ctx.beginPath();
+      for (let i = 0; i <= N_PATH; i++) {
+        const ang = (i / N_PATH) * Math.PI * 2;
+        const wv  = wave(ang, phaseT + pOff + 1.1) * maxD * 0.5;
+        const rad = BASE_R - TUBE_R * 0.45 + rOff * 0.4 + wv;
+        if (rad < 4 * S) continue;
+        const x   = cx + rad * Math.cos(ang);
+        const y   = cy + rad * Math.sin(ang) * 0.87;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = `rgba(${r},${g},${b},${alp * 0.42})`;
+      ctx.lineWidth   = 0.75 * S;
+      ctx.stroke();
+    }
+
+    // Particle field
+    for (const p of parts) {
+      p.a += p.spd * 0.001 * (1 + amplitude * 2.8) * dt;
+      const wv  = wave(p.a, phaseT) * maxD;
+      const rad = BASE_R + p.u * TUBE_R + wv;
+      if (rad < 0) continue;
+      const px = cx + rad * Math.cos(p.a);
+      const py = cy + (rad * Math.sin(p.a) + p.v * TUBE_H) * 0.87;
+      const dispFactor = Math.min(Math.abs(wv) / (maxD + 1), 1);
+      const baseBright = p.base * (0.3 + envAmplitude * 0.7);
+      const finalA     = Math.min(baseBright + dispFactor * 0.35 + (p.sparkle ? 0.1 : 0), 0.92);
+      ctx.beginPath();
+      ctx.arc(px, py, p.sz * (0.75 + envAmplitude * 0.45) * S, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${r},${g},${b},${finalA})`;
+      ctx.fill();
+    }
+
+    // Inner-ring glow
+    const igR   = BASE_R - TUBE_R * 0.2;
+    const iglow = ctx.createRadialGradient(cx, cy, igR * 0.55, cx, cy, igR);
+    iglow.addColorStop(0, 'transparent');
+    iglow.addColorStop(1, `rgba(${r},${g},${b},${0.04 + amplitude * 0.08})`);
+    ctx.fillStyle = iglow;
+    ctx.beginPath();
+    ctx.arc(cx, cy, igR, 0, Math.PI * 2);
+    ctx.fill();
+
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+})();
+
+// ══════════════════════════════════════════════════════════
+//  VOICE STATE  (orb only — polled here, nowhere else)
+// ══════════════════════════════════════════════════════════
+const STATE_COLORS = {
+  speaking:  'var(--j-blue)',
+  listening: 'var(--j-gold)',
+  thinking:  'rgba(0,180,255,0.8)',
+  ready:     'rgba(0,212,255,0.5)',
+};
+function setState(state, thinkingWord) {
+  document.body.classList.remove('speaking', 'listening', 'thinking');
+  if (['speaking','listening','thinking'].includes(state)) document.body.classList.add(state);
+  const label = (state === 'thinking' && thinkingWord) ? thinkingWord.toUpperCase() : state.toUpperCase();
+  const el = document.getElementById('core-status');
+  if (el) { el.textContent = label; el.style.color = STATE_COLORS[state] || 'var(--j-blue)'; fitStatus(); }
+  window._setOrbState(state);
+}
+// Thinking words run up to 17 chars ("CROSS-REFERENCING") — at room-legible size
+// they overflow the core onto the ring, so shrink the label to fit when needed.
+function fitStatus() {
+  const el = document.getElementById('core-status');
+  const core = document.getElementById('orb-core');
+  if (!el || !core) return;
+  el.style.fontSize = '';                       // back to the CSS (viewport) size
+  const room = core.clientWidth * 0.92;
+  if (el.scrollWidth > room) {
+    const px = parseFloat(getComputedStyle(el).fontSize);
+    el.style.fontSize = Math.max(10, px * room / el.scrollWidth) + 'px';
+  }
+}
+window.addEventListener('resize', fitStatus);
+async function pollVoiceState() {
+  try {
+    const resp = await fetch('/api/voice-state?room=office');
+    const data = await resp.json();
+    setState(data.state || 'ready', data.thinking_word);
+  } catch (e) { /* transient — keep last state */ }
+}
+pollVoiceState();
+setInterval(pollVoiceState, 1200);
+</script>
+{% endblock %}
