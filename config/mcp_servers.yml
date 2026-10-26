@@ -329,11 +329,25 @@ servers:
   # Skips gracefully until authorized.
   # ---------------------------------------------------------------------------
   gmail:
-    # Disabled 2026-10-16: fails to load ("Could not load server") and
-    # contributes 0 tools, so this capability does not exist today
-    # regardless of this flag. Left configured, not deleted — re-enable
-    # after authorising it, rather than assuming it works.
+    # Authorised 2026-10-20. Of the 23 tools upstream, 16 WRITE — trash,
+    # spam, label mutations. Only reads and draft-creation are loaded: the
+    # email agent summarises and drafts, and nothing in Jarvis should be able
+    # to bin a thread on its own say-so.
+    # DISABLED 2026-10-25: the endpoint requires the Google Cloud project to be
+    # enrolled in Google's Workspace Developer Preview Program, which needs a
+    # Workspace domain -- a gmail.com account is rejected. Leaving it enabled
+    # was not neutral: the brain preferred it over the working path, so asking
+    # Hermes for delivery emails returned "I couldn't get through to your
+    # email" while IMAP was healthy the whole time. Re-enable after enrolling.
     enabled: false
+    allow_tools:
+      - "search_threads"
+      - "get_thread"
+      - "get_message"
+      - "list_labels"
+      - "list_drafts"
+      - "get_draft"
+      - "create_draft"
     transport: stdio
     command: npx
     args:
@@ -355,11 +369,21 @@ servers:
   # script as gmail. Skips gracefully until authorized.
   # ---------------------------------------------------------------------------
   google_calendar:
-    # Disabled 2026-10-16: fails to load ("Could not load server") and
-    # contributes 0 tools, so this capability does not exist today
-    # regardless of this flag. Left configured, not deleted — re-enable
-    # after authorising it, rather than assuming it works.
+    # Authorised 2026-10-20. Read-only tools only: Jarvis answers questions
+    # about the calendar, it does not edit it. The write tools exist upstream
+    # and are deliberately not loaded.
+    # DISABLED 2026-10-25: the endpoint requires the Google Cloud project to be
+    # enrolled in Google's Workspace Developer Preview Program, which needs a
+    # Workspace domain -- a gmail.com account is rejected. Leaving it enabled
+    # was not neutral: the brain preferred it over the working path, so asking
+    # Hermes for delivery emails returned "I couldn't get through to your
+    # email" while IMAP was healthy the whole time. Re-enable after enrolling.
     enabled: false
+    allow_tools:
+      - "list_events"
+      - "search_events"
+      - "get_event"
+      - "list_calendars"
     transport: stdio
     command: npx
     args:
