@@ -28,6 +28,24 @@ USER_ID = os.environ.get("JARVIS_USER_ID", "default")
 _r = redis.Redis(host=REDIS_HOST, decode_responses=True)
 _MEM_KEY = f"{USER_ID}:jarvis:memory"  # Redis hash: fact_id → json({text, ts})
 
+# Words too common to narrow anything. A topic made only of these is rejected
+# rather than matched, because matching on them deletes the whole store.
+_STOPWORDS = frozenset("""
+a an and any are as at be been by do does for from had has have he her his i
+if in into is it its me my of on or our she that the their them then there
+these they this to us was we were what when where which who will with you your
+user users fact facts remember remembered forget about
+""".split())
+
+# Upper bound on a single forget. Chosen to be clearly above a real request
+# ("forget my old address" touches 1-3 facts) and clearly below a sweep.
+_FORGET_MAX = int(os.environ.get("MEMORY_FORGET_MAX", "5"))
+
+# Deleted facts are kept here so a mistaken forget is recoverable instead of
+# final. Redis-only and capped; this is an undo buffer, not an archive.
+_TRASH_KEY = f"{USER_ID}:jarvis:memory:trash"
+_TRASH_TTL = int(os.environ.get("MEMORY_TRASH_TTL_S", str(30 * 86400)))
+
 # ---------------------------------------------------------------------------
 # Chroma setup — lazy, with graceful fallback
 # ---------------------------------------------------------------------------
@@ -207,30 +225,65 @@ def recall(topic: str = "") -> str:
 
 @tool
 def forget(topic: str) -> str:
-    """Forget remembered facts matching a topic.
+    """Forget remembered facts matching a topic. Deletes at most a few at once.
 
     Args:
-        topic: Keyword(s); any remembered fact containing them is deleted.
+        topic: What to forget. Matching requires EVERY meaningful word to
+            appear in the fact, so be specific -- "austin apartment" not
+            "the user moved".
     """
     topic = topic.strip().lower()
     if not topic:
         return "Please specify what to forget."
 
     removed = 0
-    terms = topic.split()
+    # Match on MEANINGFUL words only, and require ALL of them.
+    #
+    # This used to be `any(t in text for t in topic.split())`, which deleted a
+    # fact if ANY single word matched -- including stopwords. On 2026-10-27 the
+    # topic "the user is planning to move to austin." therefore matched
+    # anything containing "the", "to", "is" or "user" and wiped 15 facts in one
+    # call: the user's address, job and apartment all went with it. The report
+    # said "Forgot 15 fact(s)" and that was the only warning.
+    terms = [t.strip(".,!?;:'\"") for t in topic.split()]
+    terms = [t for t in terms if t and t not in _STOPWORDS]
+    if not terms:
+        return (f"'{topic}' is only common words — too vague to forget safely. "
+                "Name the specific thing, e.g. 'the old apartment address'.")
 
     # --- Redis: find matching IDs ---
     raw = _r.hgetall(_MEM_KEY)
     ids_to_delete = []
+    matched_texts = []
     for fact_id, payload in raw.items():
         try:
             text = json.loads(payload)["text"].lower()
         except (json.JSONDecodeError, KeyError):
             continue
-        if any(t in text for t in terms):
+        if all(t in text for t in terms):
             ids_to_delete.append(fact_id)
+            matched_texts.append(json.loads(payload)["text"])
+
+    # A forget that sweeps up a pile of facts is almost always a too-broad
+    # topic rather than genuine intent. Refuse and show what it would have
+    # taken, so the user can narrow it instead of discovering the loss later.
+    if len(ids_to_delete) > _FORGET_MAX:
+        preview = "\n".join(f"  - {t[:90]}" for t in matched_texts[:8])
+        return (f"Refusing: '{topic}' matches {len(ids_to_delete)} facts, which "
+                f"is more than the {_FORGET_MAX} I will delete at once. That "
+                f"usually means the topic is too broad. Matches include:\n"
+                f"{preview}\nNarrow it and try again.")
 
     if ids_to_delete:
+        # Copy to the trash BEFORE deleting, so an unwanted forget can be undone.
+        try:
+            for fid in ids_to_delete:
+                payload = raw.get(fid)
+                if payload:
+                    _r.hset(_TRASH_KEY, fid, payload)
+            _r.expire(_TRASH_KEY, _TRASH_TTL)
+        except Exception as e:
+            print(f"[Memory] could not write trash ({e}) — deleting anyway")
         _r.hdel(_MEM_KEY, *ids_to_delete)
         removed += len(ids_to_delete)
 
@@ -242,11 +295,14 @@ def forget(topic: str) -> str:
         except Exception as e:
             print(f"[Memory] Chroma delete error: {e}")
 
-    return (
-        f"Forgot {removed} fact(s) about '{topic}'."
-        if removed
-        else f"Nothing remembered about '{topic}'."
-    )
+    if not removed:
+        return f"Nothing remembered about '{topic}'."
+    # Name what went, rather than only a count. "Forgot 15 fact(s)" was the only
+    # notice given when this wiped the store, and a number tells the user
+    # nothing about whether the right things were taken.
+    listed = "\n".join(f"  - {t[:90]}" for t in matched_texts[:_FORGET_MAX])
+    return (f"Forgot {removed} fact(s) about '{topic}':\n{listed}\n"
+            f"Say \"undo that\" (restore_forgotten) if that was wrong.")
 
 
 @tool
@@ -283,3 +339,47 @@ def consolidate_memory() -> str:
         except Exception as e:
             print(f"[Memory] consolidate Chroma delete error: {e}")
     return f"Consolidated memory — merged {len(dup_ids)} duplicate fact(s); {len(by_norm)} unique remain."
+
+
+@tool
+def restore_forgotten(topic: str = "") -> str:
+    """Restore facts deleted by a previous `forget`. Use for "undo that".
+
+    Args:
+        topic: Optional filter — restore only trashed facts containing this
+            text. Empty restores everything still in the undo buffer.
+    """
+    try:
+        trash = _r.hgetall(_TRASH_KEY)
+    except Exception as e:
+        return f"Could not reach the memory trash: {e}"
+    if not trash:
+        return ("Nothing to restore — the undo buffer is empty. Deletions older "
+                f"than {_TRASH_TTL // 86400} days are gone for good.")
+
+    topic = (topic or "").strip().lower()
+    restored, texts = 0, []
+    for fid, payload in trash.items():
+        try:
+            text = json.loads(payload)["text"]
+        except (json.JSONDecodeError, KeyError):
+            continue
+        if topic and topic not in text.lower():
+            continue
+        _r.hset(_MEM_KEY, fid, payload)
+        # Put it back in Chroma too, or it returns for exact reads but stops
+        # being findable by meaning -- a half-restore is its own bug.
+        col = _get_collection()
+        if col is not None:
+            try:
+                col.upsert(ids=[fid], documents=[text])
+            except Exception as e:
+                print(f"[Memory] Chroma restore error: {e}")
+        _r.hdel(_TRASH_KEY, fid)
+        restored += 1
+        texts.append(text)
+
+    if not restored:
+        return f"Nothing in the undo buffer matches '{topic}'."
+    listed = "\n".join(f"  - {t[:90]}" for t in texts[:10])
+    return f"Restored {restored} fact(s):\n{listed}"

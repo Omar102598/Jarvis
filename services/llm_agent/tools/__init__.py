@@ -24,7 +24,7 @@ from .mac import (
     mac_system_info,
     mac_type,
 )
-from .memory import forget, recall, remember, consolidate_memory
+from .memory import forget, recall, remember, consolidate_memory, restore_forgotten
 from .chronicle import recall_journal
 from .finance_insights import get_spending_insights
 from .tasks import manage_tasks
@@ -121,6 +121,7 @@ __all__ = [
     "read_file",
     "recall",
     "remember",
+    "restore_forgotten",
     "run_python",
     "run_shell",
     "send_email",
