@@ -393,6 +393,63 @@ _SERVER_TOOLS: list[dict] = [
 if os.environ.get("ANTHROPIC_SERVER_TOOLS", "1").strip().lower() in ("0", "false", "no"):
     _SERVER_TOOLS = []
 
+# ---------------------------------------------------------------------------
+# Tool search — load tool definitions on demand instead of all 180 up front
+# ---------------------------------------------------------------------------
+# Every request carried ~180 tool definitions. That hurt twice: it is a large
+# prompt prefix to cache and re-write (a 1h cache write costs 2x base, so a
+# rebuilt cache has to be read more than ~1.1 times just to break even), and
+# Anthropic documents tool-selection accuracy degrading past 30-50 tools. The
+# Gmail-MCP incident fits that: the brain had a working email path and picked a
+# broken one out of a crowded field.
+#
+# With tool search, only the search tool plus the hot list below enter context;
+# everything else is found on demand. Deferred definitions are excluded from the
+# system-prompt PREFIX, so the cached portion stays small and stable --
+# discovered tools are appended inline instead of invalidating the cache.
+#
+# The hot list is measured, not guessed: these are the most-called tools in
+# jarvis:tool_events over the last week.
+#     get_device_states 28 | control_device 20 | get_weather 13 | recall 12
+_TOOL_SEARCH_TOOL: dict = {
+    "type": "tool_search_tool_regex_20251119",
+    "name": "tool_search_tool_regex",
+}
+_HOT_TOOLS: set[str] = {
+    n.strip() for n in os.environ.get(
+        "TOOL_SEARCH_HOT",
+        "get_device_states,control_device,get_weather,recall,sleep_mode",
+    ).split(",") if n.strip()
+}
+TOOL_SEARCH_ENABLED = os.environ.get(
+    "TOOL_SEARCH", "1").strip().lower() not in ("0", "false", "no")
+
+
+def _apply_defer_loading(tools: list) -> int:
+    """Mark everything outside the hot list as deferred. Returns the count.
+
+    langchain_anthropic forwards a BaseTool's ``extras`` dict for the fields in
+    its _ANTHROPIC_EXTRA_FIELDS set, which includes defer_loading -- verified
+    against the installed version rather than assumed. Server tools and the
+    search tool itself are never deferred: the API rejects a request where
+    every tool is deferred, and a deferred tool may not carry cache_control.
+    """
+    deferred = 0
+    for t in tools:
+        name = getattr(t, "name", None)
+        if not name or name in _HOT_TOOLS:
+            continue
+        try:
+            extras = dict(getattr(t, "extras", None) or {})
+            extras["defer_loading"] = True
+            t.extras = extras
+            deferred += 1
+        except Exception:
+            # A tool that refuses extras simply stays eagerly loaded; that is a
+            # cost regression, never a broken request.
+            pass
+    return deferred
+
 
 def _rebuild_graph() -> None:
     """Recompile one LangGraph agent per model tier sharing the same tool set."""
@@ -431,6 +488,18 @@ def _rebuild_graph() -> None:
     if _dropped:
         print(f"[LLM] Server tools take precedence over: {', '.join(_dropped)}",
               flush=True)
+
+    # Tool search goes at the FRONT and is never deferred -- the API rejects a
+    # request in which every tool is deferred, and it is the entry point for
+    # finding everything else.
+    if TOOL_SEARCH_ENABLED:
+        n_deferred = _apply_defer_loading(bound_tools)
+        bound_tools = [_TOOL_SEARCH_TOOL] + bound_tools
+        eager = len(bound_tools) - n_deferred
+        print(f"[LLM] Tool search on — {n_deferred} deferred, {eager} loaded up "
+              f"front ({', '.join(sorted(_HOT_TOOLS))} + search + server tools)",
+              flush=True)
+
     new_agents: dict[str, object] = {}
 
     for tier in ("haiku", "sonnet", "opus"):
