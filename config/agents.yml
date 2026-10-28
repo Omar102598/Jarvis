@@ -19,10 +19,15 @@ agents:
       Proactive monitoring agent. Announces upcoming calendar events, weather
       changes, daily morning briefing, and user-defined triggers without being
       asked. Runs every 5 minutes with per-trigger cooldowns to avoid spam.
-    # Disabled 2026-07-01 to avoid idle API-token spend — still runs on manual
-    # MQTT trigger (jarvis/agents/ambient/trigger). Restore "true" to re-enable cron.
-    enabled: false
-    schedule: "*/5 * * * *"   # Every 5 minutes (inactive while disabled)
+    # Was disabled 2026-07-01 to avoid idle API-token spend. Re-enabled
+    # 2026-10-28: this agent owns the SCHEDULED morning briefing, so with it off
+    # the brief only fired when a Ring camera happened to catch motion on the
+    # way out of bed — which is why mornings went quiet for weeks while the
+    # occasional camera-triggered greeting still worked.
+    # Idle cost is lower than it was: the brain now defers 174 of 180 tool
+    # definitions behind tool search rather than sending them on every tick.
+    enabled: true
+    schedule: "*/5 * * * *"   # Every 5 minutes, with per-trigger cooldowns
     params:
       room: "office"                # Room to announce to (ACTIVE_ROOM when idle)
       calendar_lookahead_min: 30    # Warn this many minutes before an event
