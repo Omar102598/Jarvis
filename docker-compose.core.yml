@@ -180,9 +180,13 @@ services:
       # a cart built against the wrong location looks entirely normal until
       # pickup. This was never forwarded, so the grocery agent has been running
       # with no store set at all.
+      # Pass REAL defaults, not empty strings. `${X:-}` sets the variable to ""
+      # rather than leaving it unset, so os.environ.get(X, fallback) returns ""
+      # and the code's own default never applies -- int("") then crashed
+      # agent_runner on import and took every agent down with it.
       - HEB_STORE=${HEB_STORE:-}
-      - TARGET_STORE_ID=${TARGET_STORE_ID:-}
-      - TARGET_WEB_API_KEY=${TARGET_WEB_API_KEY:-}
+      - TARGET_STORE_ID=${TARGET_STORE_ID:-2550}
+      - TARGET_WEB_API_KEY=${TARGET_WEB_API_KEY:-9f36aeafbe60771e321a7cc95a78140772ab3e96}
       - AGENTS_CONFIG=/config/agents.yml
       - HA_URL=${HA_URL}
       - HA_TOKEN=${HA_TOKEN:-}

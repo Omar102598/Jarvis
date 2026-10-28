@@ -1411,7 +1411,10 @@ _TARGET_CART_URL = ("https://carts.target.com/web_checkouts/v1/cart_items"
 _TARGET_WEB_KEY = os.environ.get(
     "TARGET_WEB_API_KEY", "9f36aeafbe60771e321a7cc95a78140772ab3e96").strip()
 # Store to fulfil from. Captured from a real add; override per household.
-_TARGET_STORE_ID = int(os.environ.get("TARGET_STORE_ID", "2550"))
+# An env var set to "" is NOT absent: os.environ.get returns the empty string
+# and the default here never fires, so int("") raises at import and takes the
+# whole agent_runner down. Treat blank as missing.
+_TARGET_STORE_ID = int((os.environ.get("TARGET_STORE_ID") or "").strip() or "2550")
 
 
 def _target_tcin(href: str) -> str:
