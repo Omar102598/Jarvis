@@ -39,6 +39,22 @@ REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 _DEFAULT_ROOM = os.environ.get("AMBIENT_ROOM", "office")
 
 
+def _user_now():
+    """Current time in the USER's timezone, not the container's.
+
+    Everything user-facing (what hour it is to them) must go through this.
+    The containers run UTC with TZ unset, so datetime.now() is six hours off
+    and any naive hour comparison silently fires at the wrong local time.
+    """
+    import os as _os
+    from datetime import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        return _dt.now(ZoneInfo(_os.environ.get("USER_TZ", "America/Chicago")))
+    except Exception:
+        return _dt.now()
+
+
 class AmbientAgent(BaseAgent):
     """Proactive monitoring agent. Checks triggers and speaks when they fire."""
 
@@ -156,7 +172,13 @@ class AmbientAgent(BaseAgent):
         if not self._cooled_down(trigger_id, cooldown_min=23 * 60):
             return []
 
-        now = datetime.now()
+        # morning_hour is the USER'S hour, not the container's. These containers
+        # run on UTC with TZ unset, so a naive datetime.now() made "hour 8" mean
+        # 08:00 UTC -- 3am in Chicago. Re-enabling this agent on 2026-10-28
+        # therefore scheduled a 3am briefing on the opus tier instead of
+        # restoring the 8am one. The date check a few lines up already used
+        # USER_TZ; this one did not, and the two disagreed.
+        now = _user_now()
         if now.hour != morning_hour:
             return []
 
