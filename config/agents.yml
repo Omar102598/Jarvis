@@ -10,17 +10,19 @@ agents:
 
   # ---------------------------------------------------------------------------
   # Ambient Agent
-  # Proactive monitoring: calendar countdowns, weather alerts, morning briefing,
+  # Proactive monitoring: calendar countdowns, weather alerts,
   # and user-defined Redis-keyed triggers. Runs every 5 minutes.
   # ---------------------------------------------------------------------------
   - name: ambient
     display_name: "Ambient Monitor"
     description: >
       Proactive monitoring agent. Announces upcoming calendar events, weather
-      changes, daily morning briefing, and user-defined triggers without being
+      changes, and user-defined triggers (the morning brief is morning_brief) without being
       asked. Runs every 5 minutes with per-trigger cooldowns to avoid spam.
     # Was disabled 2026-07-01 to avoid idle API-token spend. Re-enabled
-    # 2026-10-28: this agent owns the SCHEDULED morning briefing, so with it off
+    # 2026-10-28 for its 8am brief -- REMOVED 2026-11-07: that brief never set
+    # jarvis:briefed, so it doubled up with morning_brief (below), which is the
+    # sole owner now. Original note: with ambient off
     # the brief only fired when a Ring camera happened to catch motion on the
     # way out of bed — which is why mornings went quiet for weeks while the
     # occasional camera-triggered greeting still worked.
@@ -31,7 +33,6 @@ agents:
     params:
       room: "office"                # Room to announce to (ACTIVE_ROOM when idle)
       calendar_lookahead_min: 30    # Warn this many minutes before an event
-      morning_hour: 8               # Hour (local) to fire the morning briefing
       weather_enabled: true         # Monitor for significant weather changes
 
 
@@ -336,7 +337,7 @@ agents:
       workout, overnight camera activity, one headline. Fires on your first
       morning motion (Ring); this schedule is only the fallback.
     enabled: true
-    schedule: "30 14 * * *"   # 9:30 AM CDT fallback
+    schedule: "30 14 * * *"   # UTC: 8:30 AM CST / 9:30 AM CDT fallback
     params:
       action: "morning_brief"
       room: "office"

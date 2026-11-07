@@ -3,7 +3,7 @@
 Centralizes provider selection so the main agent, sub-agents, and any tool
 that needs an LLM all build models the same way.
 
-    LLM_MODEL=claude-sonnet-4-6 | claude-opus-4-8 | gpt-4.1 | gpt-4o-mini ...
+    LLM_MODEL=claude-sonnet-5-5 | haiku | sonnet | opus | gpt-4.1 | gpt-4o-mini ...
 
 Tiers (Anthropic only):
   haiku  → claude-haiku-5-5            fast/cheap  — simple commands & device control
@@ -54,7 +54,7 @@ def build_llm(model: str = "", temperature: float = 0.3, enable_cache: bool = Tr
 
     Args:
         model: explicit model name OR tier key ("haiku" / "sonnet" / "opus")
-        temperature: sampling temperature
+        temperature: sampling temperature (OpenAI/Ollama only; ignored for Claude)
         enable_cache: attach Anthropic prompt-caching beta header (no-op for OpenAI)
     """
     # Local tier → Ollama (OpenAI-compatible) when configured.
@@ -70,20 +70,17 @@ def build_llm(model: str = "", temperature: float = 0.3, enable_cache: bool = Tr
     if "claude" in model_name.lower() or model_name.startswith("anthropic"):
         from langchain_anthropic import ChatAnthropic
 
-        # Opus 4.7/4.8 and the Claude 5 family (Sonnet 5, Fable 5) reject the
-        # temperature param with a 400. Forgetting a new model here breaks
-        # EVERY request on its tier — symptom: "temperature is deprecated".
-        _no_temp_models = ("opus-4-7", "opus-4-8", "fable-5", "sonnet-5", "haiku-5")
-        supports_temperature = not any(m in model_name for m in _no_temp_models)
-
+        # NO temperature for Claude. Every tier is the 5.5 family, which
+        # rejects it with a 400 ("temperature is deprecated"). A per-model
+        # allowlist kept going stale -- missing opus-5-5 broke the whole opus
+        # tier, so every morning brief spoke "I encountered an error". The
+        # agent_runner's llm_helper already omits it the same way.
         print(f"[LLM] Using Anthropic: {model_name}")
         kwargs = dict(
             model=model_name,
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
             default_headers=_CACHE_HEADER if enable_cache else {},
         )
-        if supports_temperature:
-            kwargs["temperature"] = temperature
         return ChatAnthropic(**kwargs)
 
     from langchain_openai import ChatOpenAI

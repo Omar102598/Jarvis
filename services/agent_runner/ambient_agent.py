@@ -7,7 +7,8 @@ the user having to ask first.
 Trigger categories:
   calendar   — events starting within the lookahead window (default 30 min)
   weather    — significant temperature change or rain since last check
-  morning    — daily briefing at a configurable hour
+  (the morning brief is NOT here -- it's the separate morning_brief entry,
+   action=morning_brief, so it has one owner and one once-per-day guard)
   health     — HealthKit anomalies (sleep drop, resting-HR spike) vs. 7-day baseline
   user       — arbitrary conditions stored in Redis under jarvis:ambient:triggers
 
@@ -102,13 +103,11 @@ class AmbientAgent(BaseAgent):
             self._publish(prompt, room, is_llm_request=True, proactive=True)
             return "Morning briefing dispatched to the brain."
         calendar_lookahead_min = int(params.get("calendar_lookahead_min", 30))
-        morning_hour = int(params.get("morning_hour", 8))
         weather_enabled = params.get("weather_enabled", True)
 
         triggered: list[str] = []
 
         triggered += await self._check_calendar(calendar_lookahead_min, room)
-        triggered += await self._check_morning_briefing(morning_hour, room)
         triggered += self._check_user_triggers(room)
         triggered += self._check_health_anomalies(room)
         triggered += self._check_classpass(room)
@@ -161,36 +160,6 @@ class AmbientAgent(BaseAgent):
             return [f"calendar:{title}"]
 
         return []
-
-    # ------------------------------------------------------------------
-    # Morning briefing trigger
-    # ------------------------------------------------------------------
-
-    async def _check_morning_briefing(self, morning_hour: int, room: str) -> list[str]:
-        trigger_id = "morning_briefing"
-        # Fire once per day within the target hour; cooldown 23h to avoid double-fire
-        if not self._cooled_down(trigger_id, cooldown_min=23 * 60):
-            return []
-
-        # morning_hour is the USER'S hour, not the container's. These containers
-        # run on UTC with TZ unset, so a naive datetime.now() made "hour 8" mean
-        # 08:00 UTC -- 3am in Chicago. Re-enabling this agent on 2026-10-28
-        # therefore scheduled a 3am briefing on the opus tier instead of
-        # restoring the 8am one. The date check a few lines up already used
-        # USER_TZ; this one did not, and the two disagreed.
-        now = _user_now()
-        if now.hour != morning_hour:
-            return []
-
-        # Ask Jarvis to compose a briefing
-        prompt = (
-            "Good morning. Please give me a brief morning briefing: today's date, "
-            "any upcoming calendar events today, current weather, and one key item "
-            "from the daily newsletter if available. Keep it under 4 sentences."
-        )
-        self._publish(prompt, room, is_llm_request=True, proactive=True)
-        self._mark_fired(trigger_id)
-        return ["morning_briefing"]
 
     # ------------------------------------------------------------------
     # Weather change trigger
