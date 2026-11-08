@@ -29,7 +29,12 @@ from .chronicle import recall_journal
 from .finance_insights import get_spending_insights
 from .tasks import manage_tasks
 from .health import get_readiness
-from .nutrition import log_meal, get_nutrition_today
+from .nutrition import (log_meal, edit_meal, delete_meal, get_nutrition_today,
+                        get_nutrition_history)
+from .recomp import (get_recomp_plan, update_recomp_targets, log_body_metrics,
+                     get_recomp_checkin)
+from .checkins import (schedule_recurring_checkin, list_recurring_checkins,
+                       cancel_recurring_checkin)
 from .visual_memory import log_sighting, recall_visual
 from .capture import quick_capture
 from .packages import get_packages

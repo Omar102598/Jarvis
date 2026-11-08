@@ -109,3 +109,22 @@ def get_workout_plan() -> str:
     if plan.get("weekly_note"):
         lines.append(f"\nCoach's note: {plan['weekly_note']}")
     return "\n".join(lines)
+
+
+@tool
+def skip_workout_day() -> str:
+    """The user missed (or will miss) today's lifting session: shift the rolling
+    split back one step so the NEXT lift day does the workout they skipped,
+    then re-plan the week.
+
+    Use for "I skipped the gym today", "I'm not lifting today, push it back".
+    The split is rolling (Arnold A → B → C) and never restarts on Monday, so a
+    missed day must move the rotation rather than drop a workout.
+    """
+    try:
+        offset = _r.decr("workout:rotation_offset")
+    except Exception as exc:
+        return f"Couldn't shift the rotation: {exc}"
+    err = _trigger("week")
+    return err or (f"Rotation shifted (offset now {offset}) — your next lift day picks up "
+                   "the workout you missed. Apollo is re-planning the week.")

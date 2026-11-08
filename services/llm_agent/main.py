@@ -57,7 +57,12 @@ from tools.chronicle import recall_journal
 from tools.finance_insights import get_spending_insights
 from tools.tasks import manage_tasks
 from tools.health import get_readiness
-from tools.nutrition import log_meal, get_nutrition_today
+from tools.nutrition import (log_meal, edit_meal, delete_meal, get_nutrition_today,
+                             get_nutrition_history)
+from tools.recomp import (get_recomp_plan, update_recomp_targets, log_body_metrics,
+                          get_recomp_checkin)
+from tools.checkins import (schedule_recurring_checkin, list_recurring_checkins,
+                            cancel_recurring_checkin)
 from tools.visual_memory import log_sighting, recall_visual
 from tools.capture import quick_capture
 from tools.packages import get_packages
@@ -118,7 +123,8 @@ from tools.petkit import (
     list_petkit_devices, toggle_feeding_plan,
 )
 from tools.profile import get_user_profile, update_user_profile
-from tools.workout import get_todays_workout, get_workout_plan, plan_workout_week
+from tools.workout import (get_todays_workout, get_workout_plan, plan_workout_week,
+                           skip_workout_day)
 from tools.grocery import (
     approve_grocery_order, get_grocery_status, get_usual_order,
     learn_fresh_cart, pin_favorite_product, suggest_meals, trigger_grocery_run,
@@ -315,10 +321,14 @@ _core_tools = [
     get_grocery_status, approve_grocery_order, trigger_grocery_run, suggest_meals,
     learn_fresh_cart, get_usual_order, pin_favorite_product,
     # Workout coach (Apollo) + fused readiness score + Atlas health overview
-    get_todays_workout, get_workout_plan, plan_workout_week, get_readiness,
+    get_todays_workout, get_workout_plan, plan_workout_week, skip_workout_day, get_readiness,
     get_health_overview,
     # Nutrition (Sage), visual memory (glasses), hands-free capture
-    log_meal, get_nutrition_today, log_sighting, recall_visual, quick_capture,
+    log_meal, edit_meal, delete_meal, get_nutrition_today, get_nutrition_history,
+    # Recomp plan (targets, body metrics, weekly check-in) + recurring check-ins
+    get_recomp_plan, update_recomp_targets, log_body_metrics, get_recomp_checkin,
+    schedule_recurring_checkin, list_recurring_checkins, cancel_recurring_checkin,
+    log_sighting, recall_visual, quick_capture,
     trigger_classpass_scan, get_class_suggestions, book_class, manage_classpass_favorites,
     search_classpass, join_classpass_waitlist,
 ]

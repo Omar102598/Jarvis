@@ -10,6 +10,14 @@ Programs the user's training week around three signals:
   • Recovery — HealthKit snapshot (user:health:latest): sleep, HRV, resting
     HR steer intensity (deload cues on poor recovery).
 
+Recomp plan (user:plan:recomp) — when present it OWNS the week: its
+week_template fixes which days lift (Mon/Tue/Thu/Fri), recover (Wed), take a
+class (Sat) or rest (Sun), and its rolling split (Arnold A/B/C) is assigned to
+the lift days in order. The rotation is ROLLING, not weekly: it continues from
+the last lift day instead of restarting every Monday. Position = lift days
+scheduled since the plan's start + workout:rotation_offset, which
+skip_workout_day nudges back by one when a session is missed.
+
 Actions (params["action"]):
   "week"  (default) — generate the 7-day plan → Redis workout:plan + report
   "today"           — return today's session from the stored plan (regenerates
@@ -23,6 +31,9 @@ from base_agent import BaseAgent
 from llm_helper import complete
 
 PLAN_KEY = "workout:plan"
+RECOMP_KEY = "user:plan:recomp"
+OFFSET_KEY = "workout:rotation_offset"
+_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 _DEFAULT_SPLIT = [
     "back/biceps", "chest/triceps", "legs/shoulders",
@@ -56,12 +67,92 @@ Return ONLY valid JSON — no markdown fences, no commentary:
  "weekly_note": "one-paragraph coaching note referencing recovery + goal"}"""
 
 
+_RECOMP_PROMPT = """You are Apollo, JARVIS's personal-trainer agent — a sharp, encouraging \
+strength coach. Program ONE week for a user on a 12-week body-recomposition plan \
+(goal: tighter waist, visible abs, fuller chest and shoulders, keep arm size).
+
+Hard rules:
+- The DAY SCHEDULE below is fixed. Do not move, add or drop sessions, and keep \
+each lift day's Arnold workout letter and focus exactly as given.
+- Arnold A = chest + back (pair them: press/row, fly/pulldown). Arnold B = \
+shoulders + arms (biceps/triceps). Arnold C = legs (quads, hamstrings, glutes, calves).
+- Lift days: 5-6 exercises, compound first, sets x reps (e.g. "4x8"); progressive \
+overload on the main lifts. End each lift day with 1 short ab exercise.
+- Recovery day (light cardio + sauna): one easy cardio entry (e.g. 30 min zone-2 \
+incline walk), no exercises. Class day: name the class, no exercises. Rest day: empty.
+- The user also walks 10,000 steps daily — no extra cardio finishers on lift days.
+- Respect recovery data: low readiness, poor sleep or elevated resting HR → cut \
+volume ~20% and say so; good recovery → normal or slightly progressive load.
+- Keep every "note" under 8 words (form cue or omit — empty string is fine).
+
+Return ONLY valid JSON — no markdown fences, no commentary:
+{"days": [{"day": "Monday", "workout": "A", "focus": "Arnold A — chest and back",
+  "exercises": [{"name": "Incline dumbbell press", "sets_reps": "4x8", "note": ""}],
+  "cardio": "", "class": ""}],
+ "weekly_note": "one paragraph: coaching note referencing recovery, the plan week and goal"}"""
+
+
+def _lift_days(template: dict) -> set[str]:
+    return {d for d, v in template.items() if str(v).strip().lower() == "lift"}
+
+
+def rotation_for_week(r, plan: dict, monday) -> list[dict]:
+    """Day-by-day schedule for the week starting `monday` (a date), with the
+    rolling split letter assigned to each lift day."""
+    from datetime import date as _date
+    template = plan.get("week_template") or {}
+    workouts = (plan.get("split") or {}).get("workouts") or []
+    lift = _lift_days(template)
+    try:
+        start = _date.fromisoformat(plan["start_date"])
+    except Exception:
+        start = monday
+    try:
+        offset = int(r.get(OFFSET_KEY) or 0)
+    except Exception:
+        offset = 0
+    # Lift days scheduled from the start up to (not including) this Monday
+    n = 0
+    d = start
+    while d < monday:
+        if d.strftime("%A") in lift:
+            n += 1
+        d += timedelta(days=1)
+    out = []
+    for i, name in enumerate(_WEEKDAYS):
+        day = monday + timedelta(days=i)
+        entry = {"day": name, "date": day.isoformat()}
+        if day < start:
+            entry["kind"] = "before plan start"
+        elif name in lift and workouts:
+            w = workouts[(n + offset) % len(workouts)]
+            entry.update(kind="lift", workout=w["id"],
+                         focus=f"Arnold {w['id']} — {w['focus'].lower()}")
+            n += 1
+        else:
+            entry["kind"] = str(template.get(name, "rest"))
+        out.append(entry)
+    return out
+
+
 def _load_json(r, key, default):
     try:
         raw = r.get(key)
         return json.loads(raw) if raw else default
     except Exception:
         return default
+
+
+def _plan_monday():
+    """Monday of the week to program, in the USER's timezone. The scheduled run
+    is Sunday evening, which belongs to the week AHEAD — computing this from
+    UTC "now" labelled (and rotated) the plan a week behind."""
+    import os as _os
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo(_os.environ.get("USER_TZ", "America/Chicago"))).date()
+    if today.weekday() == 6:   # Sunday → next week
+        return today + timedelta(days=1)
+    return today - timedelta(days=today.weekday())
 
 
 class WorkoutAgent(BaseAgent):
@@ -120,11 +211,14 @@ class WorkoutAgent(BaseAgent):
             },
             "booked_classes": upcoming,
             "class_suggestions": top_suggestions,
-            "week_of": (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d"),
+            "week_of": _plan_monday().isoformat(),
         }
 
     async def _plan_week(self) -> str:
         ctx = self._gather_context()
+        recomp = _load_json(self.r, RECOMP_KEY, {})
+        if recomp.get("week_template"):
+            return await self._plan_recomp_week(ctx, recomp)
         user_msg = (
             f"User profile: {json.dumps(ctx['profile'])}\n"
             f"Lifting split (weekday order): {ctx['split']}\n"
@@ -168,6 +262,72 @@ class WorkoutAgent(BaseAgent):
         note = plan.get("weekly_note", "")
         if note:
             lines.append(f"\nCoach's note: {note}")
+        return "\n".join(lines)
+
+    async def _plan_recomp_week(self, ctx: dict, recomp: dict) -> str:
+        from datetime import date as _date
+        monday = _date.fromisoformat(ctx["week_of"])
+        schedule = rotation_for_week(self.r, recomp, monday)
+        try:
+            week_no = (monday - _date.fromisoformat(recomp["start_date"])).days // 7 + 1
+        except Exception:
+            week_no = None
+        phase = next((p for p in recomp.get("phases", [])
+                      if week_no and p["weeks"][0] <= week_no <= p["weeks"][1]), {})
+        sched_lines = []
+        for e in schedule:
+            if e["kind"] == "lift":
+                sched_lines.append(f"{e['day']} {e['date']}: {e['focus']} (workout {e['workout']})")
+            else:
+                sched_lines.append(f"{e['day']} {e['date']}: {e['kind']}")
+        booked = ctx["booked_classes"]
+        user_msg = (
+            f"User: {json.dumps(ctx['profile'])}\n"
+            f"Plan week {week_no} of {recomp.get('weeks', 12)}"
+            + (f" — phase '{phase.get('name')}': {phase.get('focus')}" if phase else "") + "\n"
+            f"DAY SCHEDULE (fixed):\n" + "\n".join(sched_lines) + "\n"
+            f"Recovery: {json.dumps(ctx['recovery'])}\n"
+            f"Booked classes (from Kai): {booked or 'none booked yet'}\n"
+            "Program the week now."
+        )
+        response = await complete(_RECOMP_PROMPT, user_msg, max_tokens=3500, temperature=0.4)
+        plan = None
+        try:
+            cleaned = response.replace("```json", "").replace("```", "")
+            start, end = cleaned.find("{"), cleaned.rfind("}") + 1
+            if start >= 0:
+                plan = json.loads(cleaned[start:end])
+        except Exception:
+            plan = None
+        if not plan or not isinstance(plan.get("days"), list):
+            return f"Apollo: couldn't produce a structured plan this run. Raw output:\n{response[:800]}"
+        # The rotation is ours, not the model's: force letters/focus to match.
+        by_day = {e["day"]: e for e in schedule}
+        for d in plan["days"]:
+            e = by_day.get(d.get("day"))
+            if e and e["kind"] == "lift":
+                d["workout"], d["focus"] = e["workout"], e["focus"]
+            elif e:
+                d.pop("workout", None)
+                d["focus"] = e["kind"]
+                if "barry" in e["kind"].lower() and not d.get("class"):
+                    d["class"] = e["kind"]
+        plan["generated_at"] = datetime.now(timezone.utc).isoformat()
+        plan["week_of"] = ctx["week_of"]
+        plan["plan_week"] = week_no
+        self.r.set(PLAN_KEY, json.dumps(plan))
+        lines = [f"Training week {week_no} (week of {ctx['week_of']}):"]
+        for d in plan["days"]:
+            bits = [f"{d.get('day')}: {d.get('class') or d.get('focus', '')}"]
+            ex = d.get("exercises") or []
+            if ex:
+                bits.append(" — " + "; ".join(
+                    f"{x.get('name')} {x.get('sets_reps', '')}".strip() for x in ex[:6]))
+            if d.get("cardio"):
+                bits.append(f" + {d['cardio']}")
+            lines.append("".join(bits))
+        if plan.get("weekly_note"):
+            lines.append(f"\nCoach's note: {plan['weekly_note']}")
         return "\n".join(lines)
 
     async def _today(self) -> str:

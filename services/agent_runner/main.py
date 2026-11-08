@@ -223,6 +223,7 @@ def _on_connect(client, userdata, flags, rc):
         client.subscribe("homeassistant/camera/+/+/config")
         client.subscribe("homeassistant/binary_sensor/+/+/config")
         client.subscribe("jarvis/presence/home")   # iPhone geofence arrivals
+        client.subscribe("jarvis/recurring/+")     # check-ins scheduled from chat
         print("[AgentRunner] MQTT connected, subscribed to trigger + ring + presence topics.")
     else:
         print(f"[AgentRunner] MQTT connect failed (rc={rc})", file=sys.stderr)
@@ -522,6 +523,73 @@ def _on_ring_event(client, userdata, msg):
         print(f"[AgentRunner] ring event error: {exc}", file=sys.stderr)
 
 
+# ---------------------------------------------------------------------------
+# Recurring check-ins (scheduled from chat — see llm_agent tools/checkins.py)
+# ---------------------------------------------------------------------------
+
+RECURRING_KEY = "jarvis:recurring"
+_scheduler = None
+
+
+async def _fire_recurring(rec_id: str) -> None:
+    """Hand a check-in's prompt to the brain as a proactive request."""
+    raw = _redis.hget(RECURRING_KEY, rec_id)
+    if not raw:
+        return   # cancelled since the last sync
+    rec = json.loads(raw)
+    print(f"[AgentRunner] recurring check-in firing: {rec.get('title')}")
+    _mqtt.publish("jarvis/llm/request", json.dumps({
+        "text": f"[Scheduled check-in: {rec['title']}] {rec['prompt']}",
+        "room": rec.get("room") or "office",
+        "proactive": True,
+    }))
+    rec["last_run"] = datetime.now(timezone.utc).isoformat()
+    _redis.hset(RECURRING_KEY, rec_id, json.dumps(rec))
+
+
+def _sync_recurring() -> None:
+    """Make the scheduler's recurring:* jobs match the Redis hash exactly."""
+    if _scheduler is None:
+        return
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(os.environ.get("USER_TZ", "America/Chicago"))
+    for job in _scheduler.get_jobs():
+        if job.id.startswith("recurring:"):
+            job.remove()
+    for rec_id, raw in (_redis.hgetall(RECURRING_KEY) or {}).items():
+        try:
+            rec = json.loads(raw)
+            # The user's LOCAL time — "Sundays at 10" means 10 in Chicago.
+            trigger = CronTrigger.from_crontab(rec["cron"], timezone=tz)
+        except Exception as exc:
+            print(f"[AgentRunner] bad recurring check-in {rec_id}: {exc}", file=sys.stderr)
+            continue
+        _scheduler.add_job(_fire_recurring, trigger=trigger, args=[rec_id],
+                           id=f"recurring:{rec_id}", name=rec.get("title", rec_id),
+                           replace_existing=True, misfire_grace_time=3600)
+    n = len([j for j in _scheduler.get_jobs() if j.id.startswith("recurring:")])
+    print(f"[AgentRunner] recurring check-ins synced: {n} scheduled")
+
+
+def _on_recurring(client, userdata, msg):
+    """jarvis/recurring/add {rec} stores + schedules; .../changed re-syncs.
+
+    add is what the Approval Inbox action publishes, so a one-tap approve
+    needs no special executor. Runs on paho's thread; the scheduler lives on
+    the asyncio loop, hence call_soon_threadsafe."""
+    try:
+        if msg.topic.endswith("/add"):
+            rec = json.loads(msg.payload)
+            if not (rec.get("id") and rec.get("cron") and rec.get("prompt")):
+                return
+            _redis.hset(RECURRING_KEY, rec["id"], json.dumps(rec))
+            print(f"[AgentRunner] recurring check-in added: {rec.get('title')} ({rec['cron']})")
+        if _loop:
+            _loop.call_soon_threadsafe(_sync_recurring)
+    except Exception as exc:
+        print(f"[AgentRunner] recurring error: {exc}", file=sys.stderr)
+
+
 def _on_approval_resolve(client, userdata, msg):
     """Single executor for Approval Inbox decisions (see approvals.py).
 
@@ -644,6 +712,7 @@ async def main() -> None:
     _mqtt.message_callback_add("homeassistant/camera/+/+/config", _on_ring_discovery)
     _mqtt.message_callback_add("homeassistant/binary_sensor/+/+/config", _on_ring_discovery)
     _mqtt.message_callback_add("jarvis/presence/home", _on_presence)
+    _mqtt.message_callback_add("jarvis/recurring/+", _on_recurring)
     _mqtt.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
     _mqtt.loop_start()
 
@@ -681,6 +750,9 @@ async def main() -> None:
         print(f"[AgentRunner] Scheduled '{name}' → cron: {schedule}")
 
     scheduler.start()
+    global _scheduler
+    _scheduler = scheduler
+    _sync_recurring()
     print("[AgentRunner] All agents scheduled and running.")
 
     try:
