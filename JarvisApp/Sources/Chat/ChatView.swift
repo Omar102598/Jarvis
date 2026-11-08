@@ -112,6 +112,15 @@ struct ChatView: View {
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
             }
+            // A reply landing doesn't change the count — the loading bubble
+            // just grows into cards + text — so the view used to stay put with
+            // the answer below the fold. Show it from its TOP, the way ChatGPT
+            // does, so the cards are read first.
+            .onChange(of: chatViewModel.messages.last?.isLoading ?? false) { wasLoading, isLoading in
+                if wasLoading, !isLoading, let last = chatViewModel.messages.last {
+                    withAnimation { proxy.scrollTo(last.id, anchor: .top) }
+                }
+            }
         }
     }
 
