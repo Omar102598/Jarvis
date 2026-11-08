@@ -966,6 +966,7 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     sentence_buf  = ""
     _emitted_tc_ids: set = set()
     turn_cards: list[dict] = []
+    _tool_ran_since_text = False
 
     try:
         async for chunk, metadata in current_agent.astream(
@@ -976,6 +977,7 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
             # Capture tool results from the tools node
             if node == "tools":
                 if hasattr(chunk, "name") and chunk.name:
+                    _tool_ran_since_text = True
                     turn_cards.extend(_cards.take(str(chunk.content or "")))
                     result = _cards.strip(str(chunk.content))[:200] if chunk.content else ""
                     # ToolMessage.tool_call_id is the other half of the pair
@@ -1020,6 +1022,12 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
 
             if not chunk_text:
                 continue
+
+            # Text before and after a tool call arrives as separate runs with
+            # nothing between them ("checking again.Breakfast is logged").
+            if _tool_ran_since_text and full_response and not full_response[-1].isspace():
+                chunk_text = "\n\n" + chunk_text.lstrip()
+            _tool_ran_since_text = False
 
             sentence_buf  += chunk_text
             full_response += chunk_text
@@ -1076,6 +1084,13 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     assistant_entry = {"role": "assistant", "content": full_response, "turn_id": turn_id,
                        "ts": _now_iso}
     if turn_cards:
+        # One card per kind+title, the LAST one wins: checking today's log and
+        # then logging a meal produced an empty tracker AND the updated one.
+        _seen: dict = {}
+        for _c in turn_cards:
+            _seen.pop((_c.get("type"), _c.get("title")), None)
+            _seen[(_c.get("type"), _c.get("title"))] = _c
+        turn_cards = list(_seen.values())
         # Cards ride with the turn: /history restores them, and the gateway
         # reads jarvis:turn_cards:{turn} to return them with the live reply.
         assistant_entry["cards"] = turn_cards
