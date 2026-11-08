@@ -450,7 +450,9 @@ struct MessageBubble: View {
                     jarvisBubble
                 }
             }
-            if message.role == .jarvis { Spacer(minLength: 60) }
+            // Replies with cards or structure need the room; plain chat keeps
+            // the conversational inset.
+            if message.role == .jarvis { Spacer(minLength: message.cards.isEmpty ? 40 : 8) }
         }
     }
 
@@ -473,11 +475,13 @@ struct MessageBubble: View {
                     }
                 }
             } else {
+                // Cards first, the way ChatGPT leads with its tracker: the data
+                // up top, Jarvis's commentary underneath.
+                ForEach(message.cards) { card in
+                    ChatCardView(card: card)
+                }
                 if !message.text.isEmpty {
-                    Text(Self.rendered(message.text))
-                        .font(.system(size: 14))
-                        .foregroundColor(.jText)
-                        .textSelection(.enabled)
+                    MarkdownText(text: message.text)
                 }
                 if let media = message.mediaURL, let url = URL(string: media) {
                     MediaCard(url: url,

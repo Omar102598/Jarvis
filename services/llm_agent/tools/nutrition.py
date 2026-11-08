@@ -24,6 +24,7 @@ from datetime import date, datetime, timedelta, timezone
 import redis
 from langchain_core.tools import tool
 
+from . import cards
 from .recomp import local_today, plan_targets
 
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
@@ -92,6 +93,30 @@ def _summary(day: str, totals: dict) -> str:
     return line + "."
 
 
+def _macro_card(day: str, totals: dict, meals: list[dict] | None = None) -> str:
+    """The daily tracker card: calories hero + P/C/F progress bars."""
+    t = plan_targets()
+    is_today = day == local_today().isoformat()
+    bars = []
+    for k, label, color in (("protein_g", "Protein", "blue"), ("carbs_g", "Carbs", "gold"),
+                            ("fat_g", "Fat", "green")):
+        bars.append({"label": label, "value": round(totals.get(k, 0)),
+                     "target": t.get(k) or 0, "unit": "g", "color": color})
+    footer = ""
+    if t.get("calories"):
+        left = round(t["calories"] - totals.get("calories", 0))
+        footer = (f"Remaining calories: {left:,}" if left >= 0
+                  else f"Over by {-left:,} kcal")
+    card = {"type": "macros",
+            "title": "Daily nutrition" if is_today else f"Nutrition · {day}",
+            "calories": {"value": round(totals.get("calories", 0)),
+                         "target": t.get("calories") or 0},
+            "bars": bars, "footer": footer}
+    if meals:
+        card["meals"] = [f"{m['description']} · {m['calories']} kcal" for m in meals][-8:]
+    return cards.attach(card)
+
+
 def _find(meals: list[dict], which: str) -> int | None:
     """Index of a meal by 1-based number, 'last', or description substring."""
     w = (which or "").strip().lower()
@@ -141,7 +166,7 @@ def log_meal(description: str, calories: float = 0, protein_g: float = 0,
         return f"Couldn't log the meal: {exc}"
     return (f"Logged #{len(meals)}: {entry['description']} (~{entry['calories']} kcal, "
             f"P {entry['protein_g']}g, C {entry['carbs_g']}g, F {entry['fat_g']}g). "
-            + _summary(d, totals))
+            + _summary(d, totals) + _macro_card(d, totals, meals))
 
 
 @tool
@@ -172,7 +197,8 @@ def edit_meal(which: str = "last", description: str = "", calories: float = -1,
             m[k] = round(float(v))
     totals = _write_meals(d, meals)
     return (f"Updated #{i + 1}: {m['description']} (~{m['calories']} kcal, P {m['protein_g']}g, "
-            f"C {m['carbs_g']}g, F {m['fat_g']}g). " + _summary(d, totals))
+            f"C {m['carbs_g']}g, F {m['fat_g']}g). " + _summary(d, totals)
+            + _macro_card(d, totals, meals))
 
 
 @tool
@@ -192,7 +218,7 @@ def delete_meal(which: str = "last", day: str = "") -> str:
         return f"No logged meal matches '{which}' on {d}."
     gone = meals.pop(i)
     totals = _write_meals(d, meals)
-    return f"Removed: {gone['description']}. " + _summary(d, totals)
+    return f"Removed: {gone['description']}. " + _summary(d, totals) + _macro_card(d, totals, meals)
 
 
 @tool
@@ -212,14 +238,14 @@ def get_nutrition_today(day: str = "") -> str:
         return f"Couldn't read the date '{day}'."
     meals = _meals(d)
     if not meals:
-        return f"Nothing logged for {d} yet. " + _summary(d, {})
+        return f"Nothing logged for {d} yet. " + _summary(d, {}) + _macro_card(d, {})
     lines = [f"🍽️ Nutrition for {d}:"]
     for n, m in enumerate(meals, 1):
         lines.append(f"  {n}. {m['description']} — {m['calories']} kcal, P {m['protein_g']}g, "
                      f"C {m.get('carbs_g', 0)}g, F {m.get('fat_g', 0)}g")
     totals = {k: sum(m.get(k, 0) for m in meals) for k in _MACROS}
     lines.append(_summary(d, totals))
-    return "\n".join(lines)
+    return "\n".join(lines) + _macro_card(d, totals, meals)
 
 
 @tool
@@ -231,15 +257,18 @@ def get_nutrition_history(days: int = 7) -> str:
     days = max(1, min(int(days or 7), 90))
     t = plan_targets()
     today = local_today()
-    rows, logged = [], []
+    rows, logged, points = [], [], []
     for i in range(days - 1, -1, -1):
         d = (today - timedelta(days=i)).isoformat()
         meals = _meals(d)
+        label = (today - timedelta(days=i)).strftime("%a" if days <= 7 else "%m/%d")
         if not meals:
             rows.append(f"  {d}: —")
+            points.append({"x": label, "y": 0})
             continue
         tot = {k: sum(m.get(k, 0) for m in meals) for k in _MACROS}
         logged.append(tot)
+        points.append({"x": label, "y": tot["calories"]})
         rows.append(f"  {d}: {tot['calories']} kcal · P {tot['protein_g']}g · "
                     f"C {tot['carbs_g']}g · F {tot['fat_g']}g")
     head = (f"Last {days} days (targets: {t.get('calories')} kcal · P {t.get('protein_g')}g · "
@@ -249,4 +278,7 @@ def get_nutrition_history(days: int = 7) -> str:
         avg = {k: round(sum(x[k] for x in logged) / len(logged)) for k in _MACROS}
         tail += (f" Avg on logged days: {avg['calories']} kcal · P {avg['protein_g']}g · "
                  f"C {avg['carbs_g']}g · F {avg['fat_g']}g")
-    return "\n".join([head, *rows, tail])
+    card = cards.attach({"type": "chart", "title": f"Calories · last {days} days",
+                         "kind": "bar", "unit": "kcal", "points": points,
+                         "target": t.get("calories") or 0, "footer": tail})
+    return "\n".join([head, *rows, tail]) + card

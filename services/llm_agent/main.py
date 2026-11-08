@@ -81,6 +81,7 @@ from tools.files import list_files, read_file, write_file
 from tools.shell import run_shell
 from tools.comms import send_email, send_sms
 from tools.dispatch import ACTIVE_ROOM, ask_subagent, spawn_task
+from tools import cards as _cards
 from tools.code_exec import run_python
 from tools.sleep_mode import sleep_mode
 from tools.spotify import spotify_control
@@ -818,12 +819,21 @@ def _build_system_prompt(room: str) -> list[dict]:
     verbosity      = prefs.get("response_verbosity", "balanced")
     personas       = r.get("agents:personas") or ""
 
-    is_voice = not room.startswith(("mobile-", "glasses-"))
+    is_voice = not room.startswith(("mobile-", "glasses-", "app-"))
     voice_note = (
         "\nThis response will be spoken aloud. Keep it to 2-3 sentences maximum. "
         "No bullet points, no markdown, no lists — plain spoken prose only."
         if is_voice else ""
     )
+    if room.startswith("app-"):
+        voice_note = (
+            "\nSurface: the iPhone app chat (a screen, like ChatGPT). Write for reading: "
+            "markdown headings, bullets, numbered steps and tables are rendered properly. "
+            "Lead with the answer, keep it scannable. When a tool result says a card is "
+            "shown, the user sees that data as a native card above your reply — add the "
+            "insight and the next step instead of repeating its numbers. Do NOT use the "
+            "DISPLAY:/BODY: glasses headers here."
+        )
 
     persona_note = (
         f"\nYour reasoning-agent team (refer to them by name when handing off a task, "
@@ -953,6 +963,7 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     full_response = ""
     sentence_buf  = ""
     _emitted_tc_ids: set = set()
+    turn_cards: list[dict] = []
 
     try:
         async for chunk, metadata in current_agent.astream(
@@ -963,7 +974,8 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
             # Capture tool results from the tools node
             if node == "tools":
                 if hasattr(chunk, "name") and chunk.name:
-                    result = str(chunk.content)[:200] if chunk.content else ""
+                    turn_cards.extend(_cards.take(str(chunk.content or "")))
+                    result = _cards.strip(str(chunk.content))[:200] if chunk.content else ""
                     # ToolMessage.tool_call_id is the other half of the pair
                     _push_tool_event(chunk.name, "", "done", result,
                                      call_id=getattr(chunk, "tool_call_id", "") or "",
@@ -1023,6 +1035,10 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     except Exception as exc:
         print(f"[LLM] Streaming error ({exc}), falling back to ainvoke")
         result = await current_agent.ainvoke({"messages": messages})
+        turn_cards = []
+        for _m in result["messages"][len(messages):]:
+            if getattr(_m, "type", "") == "tool":
+                turn_cards.extend(_cards.take(str(_m.content or "")))
         raw    = result["messages"][-1].content
         if isinstance(raw, list):
             full_response = " ".join(
@@ -1051,8 +1067,17 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     # keeping a separate, unrelatable list of tool calls.
     r.rpush(history_key, json.dumps({"role": "user", "content": stored_text,
                                      "turn_id": turn_id}))
-    r.rpush(history_key, json.dumps({"role": "assistant", "content": full_response,
-                                     "turn_id": turn_id}))
+    full_response = _cards.strip(full_response) if isinstance(full_response, str) else full_response
+    assistant_entry = {"role": "assistant", "content": full_response, "turn_id": turn_id}
+    if turn_cards:
+        # Cards ride with the turn: /history restores them, and the gateway
+        # reads jarvis:turn_cards:{turn} to return them with the live reply.
+        assistant_entry["cards"] = turn_cards
+        try:
+            r.set(f"jarvis:turn_cards:{turn_id}", json.dumps(turn_cards), ex=7 * 86400)
+        except Exception:
+            pass
+    r.rpush(history_key, json.dumps(assistant_entry))
     r.ltrim(history_key, -40, -1)
 
     return full_response
@@ -1068,7 +1093,7 @@ def process_request(text: str, room: str) -> str:
 
 def _fanout_to_active_surfaces(
     client, response: str, source_room: str = "", title: str = "Jarvis",
-    always_persist: bool = False,
+    always_persist: bool = False, cards: list | None = None,
 ) -> None:
     """Push a message to every active surface that didn't originate the request.
 
@@ -1082,7 +1107,7 @@ def _fanout_to_active_surfaces(
     in the app's feed when opened. Without this, a 6 AM brief spoken to an empty
     room (app not connected) vanishes with no trace — exactly the bug seen.
     """
-    source_is_mobile = source_room.startswith(("mobile-", "glasses-", "siri-", "satellite-"))
+    source_is_mobile = source_room.startswith(("mobile-", "glasses-", "siri-", "satellite-", "app-"))
     try:
         pushed_iphone = False
         active = r.smembers("jarvis:active_surfaces")
@@ -1097,7 +1122,7 @@ def _fanout_to_active_surfaces(
                     continue
                 client.publish(
                     "jarvis/surfaces/iphone/push",
-                    json.dumps({"text": response, "title": title}),
+                    json.dumps({"text": response, "title": title, "cards": cards or []}),
                 )
                 pushed_iphone = True
             elif surface_type == "mac":
@@ -1107,7 +1132,7 @@ def _fanout_to_active_surfaces(
         if always_persist and not pushed_iphone and not source_is_mobile:
             client.publish(
                 "jarvis/surfaces/iphone/push",
-                json.dumps({"text": response, "title": title}),
+                json.dumps({"text": response, "title": title, "cards": cards or []}),
             )
     except Exception as e:
         print(f"[LLM] Surface fanout error: {e}")
@@ -1310,7 +1335,7 @@ def _handle_request(client, data):
     # Conversation-end reasoning: if the user's turn was a closer, still let the
     # reply play, but tell the STT to STOP listening instead of re-opening the
     # follow-up mic. Skipped for non-voice surfaces (mobile/glasses/siri).
-    if not room.startswith(("mobile-", "glasses-", "siri-", "satellite-")) and _is_conversation_closer(text):
+    if not room.startswith(("mobile-", "glasses-", "siri-", "satellite-", "app-")) and _is_conversation_closer(text):
         try:
             r.set(f"jarvis:voice:end_turn:{room}", "1", ex=30)
             print(f"[LLM] Conversation closer detected ('{text[:30]}') — ending turn.")
@@ -1318,8 +1343,13 @@ def _handle_request(client, data):
             pass
 
     # Proactive dispatches (e.g. the morning brief) always land in the phone feed.
+    try:
+        _turn_cards = json.loads(r.get(f"jarvis:turn_cards:{room}") or "[]")
+    except Exception:
+        _turn_cards = []
     _fanout_to_active_surfaces(client, response, source_room=room,
-                               always_persist=bool(data.get("proactive")))
+                               always_persist=bool(data.get("proactive")),
+                               cards=_turn_cards)
 
 
 def on_llm_request(client, userdata, msg):

@@ -195,8 +195,11 @@ final class ChatViewModel: ObservableObject {
         guard !isProcessing else { return }
         guard let history = try? await JarvisClient.shared.fetchHistory() else { return }
         let pushes = (try? await JarvisClient.shared.fetchPushes()) ?? []
-        let fresh = history.map {
-            ChatMessage(role: $0.role == "user" ? .user : .jarvis, text: $0.text)
+        let fresh = history.map { h -> ChatMessage in
+            var m = ChatMessage(role: h.role == "user" ? .user : .jarvis, text: h.text)
+            m.cards = h.cards
+            if !h.turnID.isEmpty { m.turnID = h.turnID }
+            return m
         }
         guard !fresh.isEmpty || !pushes.isEmpty else { return }
 
@@ -219,6 +222,7 @@ final class ChatViewModel: ObservableObject {
             if isDupe { continue }
             var msg = ChatMessage(role: .jarvis, text: item.text, mediaURL: item.mediaURL)
             msg.pushID = item.id
+            msg.cards = item.cards
             merged.append(msg)
         }
 
@@ -260,8 +264,11 @@ final class ChatViewModel: ObservableObject {
             // Typed in, so reply in text only — no synthesis requested, nothing
             // to play. Holding the mic button (sendVoice) still speaks.
             let response = try await JarvisClient.shared.askText(text, speak: false)
-            let displayText = response.display.body.isEmpty ? response.text : response.display.body
-            finishLoading(loadingId, text: displayText, turnID: response.turnID)
+            // The chat is the "app" surface: response.text is the whole reply.
+            // display.body is the one-line glasses HUD summary — showing it
+            // here is what made phone answers look truncated.
+            finishLoading(loadingId, text: response.text, turnID: response.turnID,
+                          cards: response.cards)
             await glassesManager?.send(response.display.hudState)
         } catch {
             finishLoading(loadingId, text: "Error: \(error.localizedDescription)")
@@ -284,8 +291,8 @@ final class ChatViewModel: ObservableObject {
 
             let response = try await JarvisClient.shared.askAudio(audioData)
             finishLoading(userPlaceholder, text: "(voice)")
-            let displayText = response.display.body.isEmpty ? response.text : response.display.body
-            finishLoading(loadingId, text: displayText)
+            finishLoading(loadingId, text: response.text, turnID: response.turnID,
+                          cards: response.cards)
             playAudio(base64: response.audioB64)
             await glassesManager?.send(response.display.hudState)
         } catch {
@@ -329,7 +336,8 @@ final class ChatViewModel: ObservableObject {
             // Camera capture means eyes already on the screen — show, don't speak.
             let payload = Self.downscaledJPEG(imageData)
             let response = try await JarvisClient.shared.askImage(payload, text: prompt)
-            finishLoading(loadingId, text: response.text)
+            finishLoading(loadingId, text: response.text, turnID: response.turnID,
+                          cards: response.cards)
             await glassesManager?.send(response.display.hudState)
         } catch {
             finishLoading(loadingId, text: "Error: \(error.localizedDescription)")
@@ -389,8 +397,8 @@ final class ChatViewModel: ObservableObject {
 
         do {
             let response = try await JarvisClient.shared.askVideo(videoData, text: prompt)
-            let displayText = response.display.body.isEmpty ? response.text : response.display.body
-            finishLoading(loadingId, text: displayText)
+            finishLoading(loadingId, text: response.text, turnID: response.turnID,
+                          cards: response.cards)
             await glassesManager?.send(response.display.hudState)
         } catch {
             finishLoading(loadingId, text: "Error: \(error.localizedDescription)")
@@ -444,7 +452,8 @@ final class ChatViewModel: ObservableObject {
             || candidate.hasPrefix(reply)
     }
 
-    private func finishLoading(_ id: UUID, text: String, turnID: String = "") {
+    private func finishLoading(_ id: UUID, text: String, turnID: String = "",
+                               cards: [ChatCard] = []) {
         if !text.isEmpty {
             lastReplyText = text
             lastReplyAt = Date()
@@ -452,6 +461,7 @@ final class ChatViewModel: ObservableObject {
         if let idx = messages.firstIndex(where: { $0.id == id }) {
             messages[idx].text = text
             messages[idx].isLoading = false
+            messages[idx].cards = cards
             if !turnID.isEmpty {
                 messages[idx].turnID = turnID
                 reconcileToolCalls(messageID: id, turnID: turnID)

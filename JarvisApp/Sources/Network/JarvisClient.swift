@@ -58,7 +58,7 @@ final class JarvisClient {
     // MARK: Audio query → QueryResponse
 
     func askAudio(_ audioData: Data) async throws -> QueryResponse {
-        var request = try baseRequest(path: "/ask/query/audio")
+        var request = try baseRequest(path: "/ask/query/audio?source=app")
         request.httpMethod = "POST"
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         request.httpBody = audioData
@@ -209,12 +209,27 @@ final class JarvisClient {
 
     // MARK: Conversation history — restore chat across app launches
 
-    struct HistoryMessage: Codable {
+    struct HistoryMessage: Decodable {
         let role: String
         let text: String
+        let turnID: String
+        let cards: [ChatCard]
+
+        enum CodingKeys: String, CodingKey {
+            case role, text, cards
+            case turnID = "turn_id"
+        }
+
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: CodingKeys.self)
+            role   = try c.decode(String.self, forKey: .role)
+            text   = try c.decode(String.self, forKey: .text)
+            turnID = (try? c.decode(String.self, forKey: .turnID)) ?? ""
+            cards  = (try? c.decode([ChatCard].self, forKey: .cards)) ?? []
+        }
     }
 
-    private struct HistoryResponse: Codable { let messages: [HistoryMessage] }
+    private struct HistoryResponse: Decodable { let messages: [HistoryMessage] }
 
     func fetchHistory(limit: Int = 40) async throws -> [HistoryMessage] {
         let request = try baseRequest(path: "/history?limit=\(limit)")
@@ -243,6 +258,23 @@ final class JarvisClient {
         request.timeoutInterval = 90   // embedding on CPU takes seconds/image
         let response: FaceEnrollResponse = try await execute(request)
         return (response.samples, response.of, response.enrolled)
+    }
+
+    // MARK: Approval Inbox — one-tap "set up" / approve from a chat card
+
+    /// Approve or deny a pending approval. The agent_runner executes the
+    /// action (e.g. scheduling a check-in); this only publishes the decision.
+    func resolveApproval(id: String, approve: Bool) async throws {
+        var request = try baseRequest(path: "/approvals/\(id)/resolve")
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "decision": approve ? "approve" : "deny", "by": "ios-chat",
+        ])
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw JarvisError.httpError((response as? HTTPURLResponse)?.statusCode ?? 0, "approval \(id) not resolved")
+        }
     }
 
     private struct PushesResponse: Decodable { let pushes: [PushItem] }

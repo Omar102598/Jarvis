@@ -8,6 +8,8 @@ import paho.mqtt.publish as mqtt_publish
 import redis
 from langchain_core.tools import tool
 
+from . import cards
+
 _r = redis.Redis(host=os.environ.get("REDIS_HOST", "redis"), decode_responses=True)
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
@@ -64,7 +66,16 @@ def get_todays_workout() -> str:
         lines.append(f"  • {e.get('name')} {e.get('sets_reps', '')}{note}")
     if day.get("cardio"):
         lines.append(f"  Finisher: {day['cardio']}")
-    return "\n".join(lines)
+    rows = [[e.get("name", ""), e.get("sets_reps", ""), e.get("note", "")]
+            for e in day.get("exercises") or []]
+    if day.get("cardio"):
+        rows.append(["Cardio", day["cardio"], ""])
+    card = ""
+    if rows:
+        card = cards.attach({"type": "table",
+                             "title": f"{today} · {day.get('class') or day.get('focus', '')}",
+                             "columns": ["Exercise", "Sets × reps", "Cue"], "rows": rows})
+    return "\n".join(lines) + card
 
 
 @tool
@@ -108,7 +119,17 @@ def get_workout_plan() -> str:
             lines.append(f"  Finisher: {d['cardio']}")
     if plan.get("weekly_note"):
         lines.append(f"\nCoach's note: {plan['weekly_note']}")
-    return "\n".join(lines)
+    rows = []
+    for d in plan.get("days", []):
+        n = len(d.get("exercises") or [])
+        rows.append([d.get("day", "")[:3], d.get("class") or d.get("focus", ""),
+                     f"{n} exercises" if n else (d.get("cardio") or "")])
+    title = (f"Week {plan['plan_week']} training" if plan.get("plan_week")
+             else f"Week of {plan.get('week_of', '?')}")
+    card = cards.attach({"type": "table", "title": title, "columns": ["Day", "Training", ""],
+                         "rows": rows, "footer": "Rolling Arnold split — continues where you left off."
+                         if plan.get("plan_week") else ""})
+    return "\n".join(lines) + card
 
 
 @tool

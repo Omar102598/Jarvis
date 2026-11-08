@@ -394,7 +394,7 @@ def _on_surface_push(client, userdata, msg):
             _redis.lpush("surface:pushes", json.dumps({
                 "id": uuid.uuid4().hex,
                 "title": title, "text": text, "media_url": media_url,
-                "type": ptype,
+                "type": ptype, "cards": data.get("cards") or [],
                 "ts": datetime.now(timezone.utc).isoformat(),
             }))
             _redis.ltrim("surface:pushes", 0, 49)
@@ -608,31 +608,50 @@ async def _run_pipeline_audio(text: str, source: str = "mobile") -> tuple[str, b
     return response_text, wav_bytes
 
 
-async def _run_pipeline_json(text: str, speak: bool = True) -> dict:
+_CARD_MARKER = re.compile(r"\[\[card:[0-9a-f]{10}\]\]")
+
+
+def _turn_cards(turn_id: str) -> list:
+    try:
+        return json.loads(_redis.get(f"jarvis:turn_cards:{turn_id}") or "[]") if turn_id else []
+    except Exception:
+        return []
+
+
+async def _run_pipeline_json(text: str, speak: bool = True, source: str = "glasses") -> dict:
     """Run the full pipeline and return a JSON-friendly dict with display payload.
 
-    Used by the native iOS app endpoints.  Sends source='glasses' so the LLM
-    knows to format the response with DISPLAY:/BODY: headers.
+    Used by the native iOS app endpoints.
+
+    ``source`` picks the surface the brain writes for:
+      • "app"     — the iPhone chat screen: full markdown reply + native cards
+                    (macro tracker, tables, charts, one-tap actions)
+      • "glasses" — the 600x600 HUD: DISPLAY:/BODY: headers, one-line body.
+                    Default, so older app builds keep their behaviour.
 
     ``speak=False`` returns text only and skips synthesis entirely — the caller
     typed, so it has nothing to play.
     """
-    turn_id = ""
-    if not speak:
-        response_text, turn_id = await _run_pipeline_text_turn(text, source="glasses")
-        wav_bytes = b""
-    else:
-        response_text, wav_bytes = await _run_pipeline_audio(text, source="glasses")
+    source = source if source in ("app", "glasses") else "glasses"
+    response_text, turn_id = await _run_pipeline_text_turn(text, source=source)
+    response_text = _CARD_MARKER.sub("", response_text).strip()
     payload = parse_display_response(response_text)
+    # The app shows the whole reply; the glasses only ever get the spoken part.
+    shown = response_text if source == "app" else payload.tts_text
+    wav_bytes = (await synthesize_speech_async(_strip_for_speech(shown))) if speak else b""
 
-    # Push display payload to any connected WebSocket clients immediately
-    asyncio.create_task(_push_display_payload(payload))
+    # Broadcast the HUD payload for glasses turns only. An "app" turn's reply
+    # goes back over HTTP to the very client that asked; broadcasting it too
+    # made the phone show a second, shortened copy of the same answer.
+    if source != "app":
+        asyncio.create_task(_push_display_payload(payload))
 
     return {
-        "text": payload.tts_text,
+        "text": shown,
         "audio_b64": base64.b64encode(wav_bytes).decode(),
         # Lets the client attach this turn's tool calls to this exact message.
         "turn_id": turn_id,
+        "cards": _turn_cards(turn_id),
         "display": {
             "type": payload.type,
             "title": payload.title,
@@ -750,7 +769,7 @@ async def ask_query(request: QueryRequest, x_api_key: str = Header(default="")):
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="text must not be empty")
     print(f"[Gateway] /ask/query: '{request.text}' (speak={request.speak})")
-    return await _run_pipeline_json(request.text, speak=request.speak)
+    return await _run_pipeline_json(request.text, speak=request.speak, source=request.source)
 
 
 @app.post("/ask/query/siri", summary="[Siri App Intent] Text query → plain text, no audio synthesis")
@@ -784,7 +803,8 @@ async def ask_query_siri(request: QueryRequest, x_api_key: str = Header(default=
 
 
 @app.post("/ask/query/audio", summary="[iOS app] Audio bytes → JSON with display payload")
-async def ask_query_audio(request: Request, x_api_key: str = Header(default="")):
+async def ask_query_audio(request: Request, x_api_key: str = Header(default=""),
+                          source: str = "glasses"):
     """
     Used by the native iOS app for voice queries (PTT mic button or glasses tap).
     Accepts raw WAV bytes in the request body.
@@ -799,7 +819,7 @@ async def ask_query_audio(request: Request, x_api_key: str = Header(default=""))
         raise HTTPException(status_code=422, detail="No speech detected in audio")
 
     print(f"[Gateway] /ask/query/audio transcribed: '{text}'")
-    return await _run_pipeline_json(text)
+    return await _run_pipeline_json(text, source=source)
 
 
 class ImageQueryRequest(BaseModel):
@@ -833,7 +853,7 @@ async def ask_image(request: ImageQueryRequest, x_api_key: str = Header(default=
     composite_text = f"{_stash_image(data_uri)}\n{request.text}"
 
     print(f"[Gateway] /ask/image: prompt='{request.text}', image_len={len(request.image_b64)}")
-    return await _run_pipeline_json(composite_text)
+    return await _run_pipeline_json(composite_text, source=request.source)
 
 
 # Images used to travel to the brain INLINE in the request text, as
@@ -1111,7 +1131,7 @@ async def ask_video(request: VideoQueryRequest, x_api_key: str = Header(default=
             f"(A video the user just recorded was analyzed; here is what it shows: "
             f"{gemini_desc})\n\nThe user asked: {request.text}"
         )
-        return await _run_pipeline_json(composite, speak=request.speak)
+        return await _run_pipeline_json(composite, speak=request.speak, source=request.source)
 
     tmpdir = tempfile.mkdtemp(prefix="jarvis_vid_")
     try:
@@ -1157,7 +1177,7 @@ async def ask_video(request: VideoQueryRequest, x_api_key: str = Header(default=
         )
         print(f"[Gateway] /ask/video: prompt='{request.text}', "
               f"{duration:.1f}s clip → {len(frames)} frames")
-        return await _run_pipeline_json(composite_text)
+        return await _run_pipeline_json(composite_text, speak=request.speak, source=request.source)
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=408, detail="Video processing timed out")
     except subprocess.CalledProcessError:
@@ -1896,7 +1916,11 @@ async def get_history(x_api_key: str = Header(default=""), limit: int = 40):
             continue
         role = msg.get("role", "")
         if role in ("user", "assistant"):
-            messages.append({"role": role, "text": content.strip()})
+            entry = {"role": role, "text": _CARD_MARKER.sub("", content).strip(),
+                     "turn_id": msg.get("turn_id", "")}
+            if msg.get("cards"):
+                entry["cards"] = msg["cards"]
+            messages.append(entry)
     return {"messages": messages}
 
 

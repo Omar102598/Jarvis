@@ -24,6 +24,8 @@ from zoneinfo import ZoneInfo
 import redis
 from langchain_core.tools import tool
 
+from . import cards
+
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 USER_TZ = os.environ.get("USER_TZ", "America/Chicago")
 _r = redis.Redis(host=REDIS_HOST, decode_responses=True)
@@ -161,11 +163,25 @@ def get_recomp_plan() -> str:
         pass
     lines.append(f"Today ({day_name}): {session or template or 'see Apollo'}")
     lines.append(f"Goal: {plan.get('goal', '')}")
+    wk_label = ("Not started" if week is None
+                else f"Week {min(week, plan.get('weeks', 12))} of {plan.get('weeks', 12)}")
+    ph = _phase(plan, week)
+    card = cards.attach({
+        "type": "stats", "title": plan.get("name", "Recomp plan"),
+        "subtitle": wk_label + (f" · {ph.get('name')}" if ph else ""),
+        "items": [
+            {"label": "Calories", "value": f"{t.get('calories', 0):,}", "sub": "daily target"},
+            {"label": "Protein", "value": f"{t.get('protein_g')}g", "sub": "muscle retention"},
+            {"label": "Carbs", "value": f"{t.get('carbs_g')}g", "sub": "training fuel"},
+            {"label": "Fat", "value": f"{t.get('fat_g')}g", "sub": "hormones"},
+            {"label": "Steps", "value": f"{t.get('steps', 0):,}", "sub": "daily"},
+            {"label": f"Today · {day_name[:3]}", "value": session or template or "—", "sub": ""},
+        ]})
     lo, hi = plan.get("pace_lbs_per_week", [0.25, 0.5])
     glo, ghi = plan.get("goal_weight_range_lbs", [None, None])
     lines.append(f"Pace: lose {lo}–{hi} lb/week"
                  + (f"; land around {glo}–{ghi} lb, not lower at the cost of muscle." if glo else "."))
-    return "\n".join(lines)
+    return "\n".join(lines) + card
 
 
 @tool
@@ -346,4 +362,24 @@ def get_recomp_checkin() -> str:
     else:
         sug = "On pace — hold targets."
     lines.append(f"Suggestion: {sug}")
-    return "\n".join(lines)
+
+    items = [{"label": "Avg weight", "value": f"{w_now} lb" if w_now is not None else "—",
+              "sub": f"{n_now} weigh-ins"},
+             {"label": "vs last week", "value": f"{change:+} lb" if change is not None else "—",
+              "sub": f"goal −{lo} to −{hi}"},
+             {"label": "Waist", "value": f'{waists[-1][1]}"' if waists else "—",
+              "sub": waists[-1][0] if waists else "not measured"},
+             {"label": "Workouts", "value": f"{workouts}/{planned}", "sub": "HealthKit"},
+             {"label": "Avg steps", "value": f"{round(mean(steps)):,}" if steps else "—",
+              "sub": f"target {t.get('steps', 10000):,}"},
+             {"label": "Food logged", "value": f"{len(logged)}/7",
+              "sub": (f"avg {round(mean(x['calories'] for x in logged)):,} kcal" if logged else "days")}]
+    out = cards.attach({"type": "stats", "title": f"Week {week or '?'} check-in",
+                        "subtitle": sug, "items": items})
+    pts = [{"x": d[5:], "y": weights[d]} for d in _window(13, 0) if d in weights]
+    if len(pts) >= 2:
+        out += cards.attach({"type": "chart", "title": "Weight · 14 days", "kind": "line",
+                             "unit": "lb", "points": pts,
+                             "target": (plan.get("goal_weight_range_lbs") or [0, 0])[1] or 0,
+                             "footer": "Daily weigh-ins; the weekly average is what counts."})
+    return "\n".join(lines) + out

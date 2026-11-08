@@ -21,14 +21,22 @@ targets:
     sources:
       - path: Sources
       - path: Resources/Assets.xcassets
+    # Properties MUST live here: xcodegen rewrites the .entitlements file from
+    # this block, and a bare `path:` emptied it -- silently dropping HealthKit.
     entitlements:
       path: JarvisApp.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.background-delivery: true
+    # Generate the shared scheme too; regenerating used to delete the
+    # hand-made one and leave xcodebuild with "no schemes".
+    scheme: {}
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.omarsalazar.jarvis
         INFOPLIST_FILE: Resources/Info.plist
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: "9A2248P7R6"
+        DEVELOPMENT_TEAM: "FCTJWGB3C4"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - package: meta-wearables-dat-ios
@@ -37,6 +45,10 @@ targets:
         product: MWDATCamera
       - package: meta-wearables-dat-ios
         product: MWDATDisplay
+      # Used by Glasses/GlassesMockController.swift. Was added to the pbxproj by
+      # hand and missing here, so every `xcodegen generate` silently dropped it.
+      - package: meta-wearables-dat-ios
+        product: MWDATMockDevice
 
 packages:
   meta-wearables-dat-ios:

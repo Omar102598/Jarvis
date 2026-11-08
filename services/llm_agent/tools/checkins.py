@@ -32,6 +32,8 @@ import paho.mqtt.publish as mqtt_publish
 import redis
 from langchain_core.tools import tool
 
+from . import cards
+
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
@@ -118,7 +120,10 @@ def schedule_recurring_checkin(title: str, cron: str, prompt: str,
                                 hostname=MQTT_HOST, port=MQTT_PORT)
         except Exception as exc:
             return f"Couldn't reach the scheduler: {exc}"
-        return f"Done — '{rec['title']}' is set for {when}. Say 'cancel {rec['title']}' to stop it."
+        return (f"Done — '{rec['title']}' is set for {when}. Say 'cancel {rec['title']}' to stop it."
+                + cards.attach({"type": "action", "title": rec["title"], "subtitle": when,
+                                "icon": "calendar.badge.clock", "status": "done",
+                                "footer": "Scheduled"}))
 
     approval_id = uuid.uuid4().hex[:12]
     _r.hset(APPROVALS_KEY, approval_id, json.dumps({
@@ -130,7 +135,10 @@ def schedule_recurring_checkin(title: str, cron: str, prompt: str,
     }))
     return (f"Suggested '{rec['title']}' ({when}) — it's in the Approval Inbox "
             f"(id {approval_id}). Tap approve, or the user can just say yes and you "
-            "call manage_approvals to approve it.")
+            "call manage_approvals to approve it."
+            + cards.attach({"type": "action", "title": rec["title"], "subtitle": when,
+                            "icon": "calendar.badge.clock", "approval_id": approval_id,
+                            "status": "pending", "footer": "Tap to set up"}))
 
 
 @tool
