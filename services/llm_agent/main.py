@@ -822,7 +822,8 @@ def _build_system_prompt(room: str) -> list[dict]:
     )
 
     dynamic = (
-        f"Current time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+        f"Current time: {_user_local_now()} (user's local time; "
+        f"{datetime.now(timezone.utc).strftime('%H:%M UTC')})\n"
         f"User location: {room}\n"
         f"Active plugins: {active_plugins}\n"
         f"Response style: {verbosity}"
@@ -853,11 +854,28 @@ def _build_system_prompt(room: str) -> list[dict]:
     ]
 
 
-async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence=None) -> str:
+def _user_local_now() -> str:
+    """The user's wall-clock time. Giving the model only UTC made it do the
+    conversion itself -- and a brief once announced 3 AM in the afternoon."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago"))
+                            ).strftime("%A %Y-%m-%d %I:%M %p %Z")
+    except Exception:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence=None,
+                         fresh: bool = False) -> str:
     """Stream response sentence-by-sentence via on_sentence callback.
 
     Selects the agent compiled for the given model tier.
     Always returns the full accumulated response for history storage.
+
+    ``fresh`` (proactive dispatches like the morning brief) skips LOADING prior
+    history -- the brief was reading yesterday's test briefs and opening with
+    "not the 3 AM I told you earlier". The turn is still STORED, so a follow-up
+    ("tell me more about the commute") has the brief as context.
     """
     ACTIVE_ROOM["room"] = room
     # Stamped on every tool event this turn emits so a surface can group them
@@ -878,7 +896,7 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     system        = SystemMessage(content=system_blocks)
 
     history_key = f"conversation:{USER_ID}"
-    history_raw = r.lrange(history_key, -20, -1)
+    history_raw = [] if fresh else r.lrange(history_key, -20, -1)
     history = []
     for h in history_raw:
         msg     = json.loads(h)
@@ -1226,7 +1244,8 @@ def _handle_request(client, data):
 
     response = ""
     try:
-        response = asyncio.run(_process_async(text, room, tier=tier, on_sentence=on_sentence))
+        response = asyncio.run(_process_async(text, room, tier=tier, on_sentence=on_sentence,
+                                              fresh=bool(data.get("proactive"))))
     except Exception as e:
         err_str = str(e)
         print(f"[LLM] Error: {err_str}")
@@ -1237,7 +1256,8 @@ def _handle_request(client, data):
                 time.sleep(3)
                 print("[LLM] 529/overloaded — retrying once")
                 response = asyncio.run(
-                    _process_async(text, room, tier=tier, on_sentence=on_sentence))
+                    _process_async(text, room, tier=tier, on_sentence=on_sentence,
+                                   fresh=bool(data.get("proactive"))))
                 err_str = ""
             except Exception as e2:
                 err_str = str(e2)
