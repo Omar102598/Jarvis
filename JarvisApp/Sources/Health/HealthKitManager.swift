@@ -51,6 +51,9 @@ final class HealthKitManager: ObservableObject {
     /// Request authorization (if needed) and push a fresh snapshot. Safe to call
     /// on every app foreground — HealthKit only prompts once.
     func syncOnLaunch() async {
+        // Simulator builds never sync sensors to the live backend (see
+        // JarvisConfig.isSimulator), so don't prompt for access either.
+        if JarvisConfig.isSimulator { return }
         guard HKHealthStore.isHealthDataAvailable() else { return }
         if !authorized { await requestAuthorization() }
         guard authorized else { return }

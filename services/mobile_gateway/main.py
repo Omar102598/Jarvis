@@ -1917,7 +1917,7 @@ async def get_history(x_api_key: str = Header(default=""), limit: int = 40):
         role = msg.get("role", "")
         if role in ("user", "assistant"):
             entry = {"role": role, "text": _CARD_MARKER.sub("", content).strip(),
-                     "turn_id": msg.get("turn_id", "")}
+                     "turn_id": msg.get("turn_id", ""), "ts": msg.get("ts", "")}
             if msg.get("cards"):
                 entry["cards"] = msg["cards"]
             messages.append(entry)

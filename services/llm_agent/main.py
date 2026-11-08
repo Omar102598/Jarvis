@@ -830,9 +830,11 @@ def _build_system_prompt(room: str) -> list[dict]:
             "\nSurface: the iPhone app chat (a screen, like ChatGPT). Write for reading: "
             "markdown headings, bullets, numbered steps and tables are rendered properly. "
             "Lead with the answer, keep it scannable. When a tool result says a card is "
-            "shown, the user sees that data as a native card above your reply — add the "
-            "insight and the next step instead of repeating its numbers. Do NOT use the "
-            "DISPLAY:/BODY: glasses headers here."
+            "shown, the user sees that data as a native card above your reply — don't "
+            "re-list every number, but still answer fully: the takeaway, what it means "
+            "for them today, and the next step (a few sentences or short bullets). Never "
+            "answer an open question with a single line. Do NOT use the DISPLAY:/BODY: "
+            "glasses headers here."
         )
 
     persona_note = (
@@ -1065,10 +1067,14 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     # turn_id travels with the stored turn so any surface reading history can
     # join it to that turn's tool events and show the work inline, instead of
     # keeping a separate, unrelatable list of tool calls.
+    _now_iso = datetime.now(timezone.utc).isoformat()
     r.rpush(history_key, json.dumps({"role": "user", "content": stored_text,
-                                     "turn_id": turn_id}))
+                                     "turn_id": turn_id, "ts": _now_iso}))
     full_response = _cards.strip(full_response) if isinstance(full_response, str) else full_response
-    assistant_entry = {"role": "assistant", "content": full_response, "turn_id": turn_id}
+    # ts lets the app interleave turns with proactive pushes by time; without
+    # it every refresh put ALL pushes after ALL history, burying the newest turn.
+    assistant_entry = {"role": "assistant", "content": full_response, "turn_id": turn_id,
+                       "ts": _now_iso}
     if turn_cards:
         # Cards ride with the turn: /history restores them, and the gateway
         # reads jarvis:turn_cards:{turn} to return them with the live reply.

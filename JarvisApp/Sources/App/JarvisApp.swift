@@ -14,6 +14,7 @@ struct JarvisApp: App {
 
         do {
             try Wearables.configure()
+            WearablesState.isConfigured = true
         } catch {
             print("[JarvisApp] Wearables SDK configuration failed: \(error)")
         }
@@ -33,13 +34,26 @@ struct JarvisApp: App {
                 .environmentObject(chatViewModel)
                 .onOpenURL { url in
                     // Meta AI OAuth callback after registration/permission flow
-                    Task { _ = try? await Wearables.shared.handleUrl(url) }
+                    if WearablesState.isConfigured {
+                        Task { _ = try? await Wearables.shared.handleUrl(url) }
+                    }
                 }
                 .task {
                     await glassesManager.start()
                     await chatViewModel.connectWebSocket()
                     await chatViewModel.loadHistory()
-                    chatViewModel.requestNotificationPermission()
+                    if !JarvisConfig.isSimulator {
+                        chatViewModel.requestNotificationPermission()
+                    }
+                    #if DEBUG
+                    // `--send "<text>"`: send one chat message on launch, so a
+                    // full round-trip (reply, markdown, cards) can be checked
+                    // from `simctl launch` without tapping through the UI.
+                    let args = ProcessInfo.processInfo.arguments
+                    if let i = args.firstIndex(of: "--send"), i + 1 < args.count {
+                        await chatViewModel.sendText(args[i + 1])
+                    }
+                    #endif
                     PresenceManager.shared.startHeartbeat()
                     LocationManager.shared.start()
                     // Month 4: push HealthKit + calendar context to the backend

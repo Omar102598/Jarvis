@@ -230,6 +230,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// time, and an unfinished retry is worth less than leaving lastPosted
     /// untouched so the next self-heal can try again with a clean slate.
     private static func postPresence(_ event: String) async -> Bool {
+        // Simulator location is Cupertino: a "left" from a dev build would run
+        // the real departure scene (lamps off) and set away mode.
+        if JarvisConfig.isSimulator { return false }
         guard let url = URL(string: "\(JarvisConfig.serverURL)/presence/location") else { return false }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"

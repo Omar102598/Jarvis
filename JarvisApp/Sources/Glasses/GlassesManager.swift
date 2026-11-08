@@ -44,7 +44,12 @@ final class GlassesManager: ObservableObject {
     private var displayListenerToken: (any AnyListenerToken)?
     private var stateTask: Task<Void, Never>?
 
-    private let wearables = Wearables.shared
+    // LAZY: Wearables.shared fatal-errors when configure() failed (it does on
+    // the iOS 26 simulator, and could on a phone). As an eager stored property
+    // it ran the moment SwiftUI built this @StateObject, crashing the whole app
+    // at launch over a feature that isn't even in use. Now it's only touched
+    // after start() has checked WearablesState.isConfigured.
+    private lazy var wearables = Wearables.shared
     let renderer = HUDRenderer()
 
     // MARK: Lifecycle
@@ -64,6 +69,11 @@ final class GlassesManager: ObservableObject {
             return
         }
         #endif
+        guard WearablesState.isConfigured else {
+            errorMessage = "Glasses SDK unavailable on this device."
+            print("[GlassesManager] Wearables not configured — glasses disabled, app continues.")
+            return
+        }
         do {
             do {
                 try await wearables.startRegistration()
@@ -266,4 +276,10 @@ private final class ResumeOnce<T>: @unchecked Sendable {
 
 extension Notification.Name {
     static let jarvisActivateWake = Notification.Name("jarvisActivateWake")
+}
+
+/// Whether Wearables.configure() succeeded at launch. Read before touching
+/// Wearables.shared, which traps if it didn't.
+enum WearablesState {
+    static var isConfigured = false
 }

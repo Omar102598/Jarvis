@@ -34,6 +34,9 @@ final class CalendarManager: ObservableObject {
     /// Request access (if needed) and push the next event. Safe to call on every
     /// app foreground.
     func syncOnLaunch() async {
+        // Simulator builds never sync sensors to the live backend (see
+        // JarvisConfig.isSimulator), so don't prompt for access either.
+        if JarvisConfig.isSimulator { return }
         if !authorized { await requestAuthorization() }
         guard authorized else {
             // Reinstalling the app revokes calendar permission, and this used to

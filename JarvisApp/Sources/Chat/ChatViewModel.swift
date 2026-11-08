@@ -137,7 +137,8 @@ final class ChatViewModel: ObservableObject {
             return
         }
 
-        let msg = ChatMessage(role: .jarvis, text: text, mediaURL: payload.mediaURL)
+        var msg = ChatMessage(role: .jarvis, text: text, mediaURL: payload.mediaURL)
+        msg.date = Date()   // live arrival: "now" keeps it in place on refresh
         messages.append(msg)
         pinSnapshotBytes(for: msg.id, urlString: payload.mediaURL)
     }
@@ -198,6 +199,7 @@ final class ChatViewModel: ObservableObject {
         let fresh = history.map { h -> ChatMessage in
             var m = ChatMessage(role: h.role == "user" ? .user : .jarvis, text: h.text)
             m.cards = h.cards
+            m.date = ChatMessage.parseDate(h.ts)
             if !h.turnID.isEmpty { m.turnID = h.turnID }
             return m
         }
@@ -223,6 +225,7 @@ final class ChatViewModel: ObservableObject {
             var msg = ChatMessage(role: .jarvis, text: item.text, mediaURL: item.mediaURL)
             msg.pushID = item.id
             msg.cards = item.cards
+            msg.date = ChatMessage.parseDate(item.ts)
             merged.append(msg)
         }
 
@@ -241,6 +244,15 @@ final class ChatViewModel: ObservableObject {
                 }
             }
         }
+
+        // Time order, not "all history then all pushes": that appended every
+        // agent push AFTER the newest conversation turn, so a fresh reply sat
+        // buried above days-old notifications. Undated items (history from
+        // before timestamps existed) keep their relative order at the top.
+        merged = merged.enumerated().sorted { a, b in
+            let da = a.element.date ?? .distantPast, db = b.element.date ?? .distantPast
+            return da == db ? a.offset < b.offset : da < db
+        }.map(\.element)
 
         if merged.count != messages.count || merged.last?.text != messages.last?.text {
             messages = merged
@@ -430,11 +442,14 @@ final class ChatViewModel: ObservableObject {
     // MARK: Message helpers
 
     private func append(_ role: ChatMessage.Role, text: String) {
-        messages.append(ChatMessage(role: role, text: text))
+        var msg = ChatMessage(role: role, text: text)
+        msg.date = Date()
+        messages.append(msg)
     }
 
     private func appendLoading() -> UUID {
-        let msg = ChatMessage(role: .jarvis, text: "", isLoading: true)
+        var msg = ChatMessage(role: .jarvis, text: "", isLoading: true)
+        msg.date = Date()
         messages.append(msg)
         return msg.id
     }

@@ -262,6 +262,16 @@ struct ChatMessage: Identifiable, Equatable {
     var turnID: String? = nil
     /// Native cards attached by this turn's tools, rendered above the text.
     var cards: [ChatCard] = []
+    /// When the server recorded it (history ts / push ts). Used to interleave
+    /// turns and proactive pushes in time order on refresh. nil = unknown.
+    var date: Date? = nil
+
+    static func parseDate(_ s: String) -> Date? {
+        guard !s.isEmpty else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+    }
 }
 
 // MARK: - Persisted push (gateway /pushes — cards missed while suspended)

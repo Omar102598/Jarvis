@@ -36,6 +36,18 @@ struct JarvisConfig {
     }
 }
 
+extension JarvisConfig {
+    /// True in the iOS Simulator. Used to keep a dev build pointed at the live
+    /// server from writing fake sensor data (health, calendar, presence) into it.
+    static var isSimulator: Bool {
+        #if targetEnvironment(simulator)
+        return true
+        #else
+        return false
+        #endif
+    }
+}
+
 extension UserDefaults {
     static let group = UserDefaults(suiteName: "group.com.omarsalazar.jarvis") ?? .standard
 }
@@ -214,9 +226,10 @@ final class JarvisClient {
         let text: String
         let turnID: String
         let cards: [ChatCard]
+        let ts: String
 
         enum CodingKeys: String, CodingKey {
-            case role, text, cards
+            case role, text, cards, ts
             case turnID = "turn_id"
         }
 
@@ -226,6 +239,7 @@ final class JarvisClient {
             text   = try c.decode(String.self, forKey: .text)
             turnID = (try? c.decode(String.self, forKey: .turnID)) ?? ""
             cards  = (try? c.decode([ChatCard].self, forKey: .cards)) ?? []
+            ts     = (try? c.decode(String.self, forKey: .ts)) ?? ""
         }
     }
 
@@ -292,6 +306,9 @@ final class JarvisClient {
 
     @discardableResult
     func pushHealthSnapshot(_ snapshot: HealthSnapshot) async throws -> Bool {
+        // A simulator talks to the REAL backend: its fake calendar/HealthKit
+        // data would overwrite the user's (readiness, brief, Sentry all read it).
+        if JarvisConfig.isSimulator { return false }
         var request = try baseRequest(path: "/health/snapshot")
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -307,6 +324,9 @@ final class JarvisClient {
 
     @discardableResult
     func pushNextCalendarEvent(_ event: NextCalendarEvent) async throws -> Bool {
+        // A simulator talks to the REAL backend: its fake calendar/HealthKit
+        // data would overwrite the user's (readiness, brief, Sentry all read it).
+        if JarvisConfig.isSimulator { return false }
         var request = try baseRequest(path: "/calendar/next-event")
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

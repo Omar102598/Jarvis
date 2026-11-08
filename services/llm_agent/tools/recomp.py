@@ -163,7 +163,11 @@ def get_recomp_plan() -> str:
         pass
     lines.append(f"Today ({day_name}): {session or template or 'see Apollo'}")
     lines.append(f"Goal: {plan.get('goal', '')}")
-    wk_label = ("Not started" if week is None
+    try:
+        _start = date.fromisoformat(plan["start_date"]).strftime("%a, %b %-d")
+    except Exception:
+        _start = plan.get("start_date", "?")
+    wk_label = (f"Starts {_start}" if week is None
                 else f"Week {min(week, plan.get('weeks', 12))} of {plan.get('weeks', 12)}")
     ph = _phase(plan, week)
     card = cards.attach({
