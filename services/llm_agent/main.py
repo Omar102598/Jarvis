@@ -909,7 +909,16 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     # events to its own request deterministically instead of inferring from
     # timing. Minting a fresh id here would have been a second, private
     # identifier nobody else could see.
-    turn_id = room or uuid.uuid4().hex[:12]
+    #
+    # But only gateway rooms are per-request. Voice/satellite/proactive turns
+    # arrive with a FIXED room ("office"), so every one of them shared the
+    # turn id "office" and the dashboard drew every recent office tool call
+    # under each office reply -- a thermostat request showed the morning
+    # brief's lights/weather/camera calls. Those get a fresh id.
+    if room and re.fullmatch(r"[a-z]+-[0-9a-f]{12}", room):
+        turn_id = room
+    else:
+        turn_id = f"{room or 'turn'}-{uuid.uuid4().hex[:12]}"
 
     with _graph_lock:
         current_agent = _agents.get(tier, _agents.get("sonnet"))
