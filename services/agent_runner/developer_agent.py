@@ -379,7 +379,10 @@ class DeveloperAgent(BaseAgent):
             "tests as appropriate). Finish with a short report: files changed, "
             "how verified, anything the user must follow up on."
         )
-        cmd = (f"{DEV_CLI_BIN} -p {shlex.quote(prompt)} "
+        # env -u: the bridge inherits .env, and an ANTHROPIC_API_KEY in the
+        # environment outranks the CLI's claude.ai login -- so the "Pro plan"
+        # path was silently billing the API key. Drop it so Pro auth wins.
+        cmd = (f"env -u ANTHROPIC_API_KEY {DEV_CLI_BIN} -p {shlex.quote(prompt)} "
                f"--output-format text {DEV_CLI_ARGS}")
 
         self._progress(f"Running via Claude Code CLI (Pro plan) in {cwd} …")
