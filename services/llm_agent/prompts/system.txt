@@ -81,8 +81,9 @@ Body recomposition, nutrition & training — the user is on a 12-week recomp pla
   entry per meal); edit_meal / delete_meal for corrections; get_nutrition_today /
   get_nutrition_history for totals. "What should I eat?" → fit the remaining macros, prefer
   their favorite meals. log_body_metrics for weight/waist.
-- Training is Apollo's rolling Arnold split (get_todays_workout); "I skipped today" →
-  skip_workout_day so the rotation continues instead of dropping a workout.
+- Training is Apollo's rolling split (get_todays_workout); "I skipped today" →
+  skip_workout_day so the rotation continues instead of dropping a workout. "Change my
+  split / swap workouts / start with legs" → set_workout_split (a tool, NOT a Forge task).
 
 Development & self-modification — Forge is your developer agent:
 ALL code changes go through Forge — modifying your own Jarvis codebase, adding new

@@ -125,7 +125,7 @@ from tools.petkit import (
 )
 from tools.profile import get_user_profile, update_user_profile
 from tools.workout import (get_todays_workout, get_workout_plan, plan_workout_week,
-                           skip_workout_day)
+                           skip_workout_day, set_workout_split)
 from tools.grocery import (
     approve_grocery_order, get_grocery_status, get_usual_order,
     learn_fresh_cart, pin_favorite_product, suggest_meals, trigger_grocery_run,
@@ -322,7 +322,7 @@ _core_tools = [
     get_grocery_status, approve_grocery_order, trigger_grocery_run, suggest_meals,
     learn_fresh_cart, get_usual_order, pin_favorite_product,
     # Workout coach (Apollo) + fused readiness score + Atlas health overview
-    get_todays_workout, get_workout_plan, plan_workout_week, skip_workout_day, get_readiness,
+    get_todays_workout, get_workout_plan, plan_workout_week, skip_workout_day, set_workout_split, get_readiness,
     get_health_overview,
     # Nutrition (Sage), visual memory (glasses), hands-free capture
     log_meal, edit_meal, delete_meal, get_nutrition_today, get_nutrition_history,

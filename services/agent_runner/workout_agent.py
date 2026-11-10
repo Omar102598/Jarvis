@@ -73,9 +73,9 @@ strength coach. Program ONE week for a user on a 12-week body-recomposition plan
 
 Hard rules:
 - The DAY SCHEDULE below is fixed. Do not move, add or drop sessions, and keep \
-each lift day's Arnold workout letter and focus exactly as given.
-- Arnold A = chest + back (pair them: press/row, fly/pulldown). Arnold B = \
-shoulders + arms (biceps/triceps). Arnold C = legs (quads, hamstrings, glutes, calves).
+each lift day's workout letter and focus exactly as given.
+- Program each lift day for exactly the muscle groups in its focus (the SPLIT \
+below defines every letter); pair antagonists where the split allows.
 - Lift days: 5-6 exercises, compound first, sets x reps (e.g. "4x8"); progressive \
 overload on the main lifts. End each lift day with 1 short ab exercise.
 - Recovery day (light cardio + sauna): one easy cardio entry (e.g. 30 min zone-2 \
@@ -86,7 +86,7 @@ volume ~20% and say so; good recovery → normal or slightly progressive load.
 - Keep every "note" under 8 words (form cue or omit — empty string is fine).
 
 Return ONLY valid JSON — no markdown fences, no commentary:
-{"days": [{"day": "Monday", "workout": "A", "focus": "Arnold A — chest and back",
+{"days": [{"day": "Monday", "workout": "A", "focus": "A — chest and back",
   "exercises": [{"name": "Incline dumbbell press", "sets_reps": "4x8", "note": ""}],
   "cardio": "", "class": ""}],
  "weekly_note": "one paragraph: coaching note referencing recovery, the plan week and goal"}"""
@@ -127,7 +127,7 @@ def rotation_for_week(r, plan: dict, monday) -> list[dict]:
         elif name in lift and workouts:
             w = workouts[(n + offset) % len(workouts)]
             entry.update(kind="lift", workout=w["id"],
-                         focus=f"Arnold {w['id']} — {w['focus'].lower()}")
+                         focus=f"{w['id']} — {w['focus'].lower()}")
             n += 1
         else:
             entry["kind"] = str(template.get(name, "rest"))
@@ -285,6 +285,9 @@ class WorkoutAgent(BaseAgent):
             f"User: {json.dumps(ctx['profile'])}\n"
             f"Plan week {week_no} of {recomp.get('weeks', 12)}"
             + (f" — phase '{phase.get('name')}': {phase.get('focus')}" if phase else "") + "\n"
+            f"SPLIT ({(recomp.get('split') or {}).get('name', 'rolling split')}, rotating in this order): "
+            + "; ".join(f"{w['id']} = {w['focus']}"
+                        for w in (recomp.get("split") or {}).get("workouts", [])) + "\n"
             f"DAY SCHEDULE (fixed):\n" + "\n".join(sched_lines) + "\n"
             f"Recovery: {json.dumps(ctx['recovery'])}\n"
             f"Booked classes (from Kai): {booked or 'none booked yet'}\n"

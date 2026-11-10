@@ -127,7 +127,7 @@ def get_workout_plan() -> str:
     title = (f"Week {plan['plan_week']} training" if plan.get("plan_week")
              else f"Week of {plan.get('week_of', '?')}")
     card = cards.attach({"type": "table", "title": title, "columns": ["Day", "Training", ""],
-                         "rows": rows, "footer": "Rolling Arnold split — continues where you left off."
+                         "rows": rows, "footer": "Rolling split — continues where you left off."
                          if plan.get("plan_week") else ""})
     return "\n".join(lines) + card
 
@@ -139,7 +139,7 @@ def skip_workout_day() -> str:
     then re-plan the week.
 
     Use for "I skipped the gym today", "I'm not lifting today, push it back".
-    The split is rolling (Arnold A → B → C) and never restarts on Monday, so a
+    The split is rolling (A → B → C) and never restarts on Monday, so a
     missed day must move the rotation rather than drop a workout.
     """
     try:
@@ -149,3 +149,88 @@ def skip_workout_day() -> str:
     err = _trigger("week")
     return err or (f"Rotation shifted (offset now {offset}) — your next lift day picks up "
                    "the workout you missed. Apollo is re-planning the week.")
+
+
+@tool
+def set_workout_split(workouts: str = "", order: str = "", start_with: str = "",
+                      name: str = "", reason: str = "") -> str:
+    """Change the user's rolling lifting split (what each workout letter trains,
+    the rotation order, or which workout the next lift day does), then have
+    Apollo re-plan the week. Lift/rest/class DAYS don't change — only what the
+    lift days train.
+
+    Use for "change my split to back and triceps / chest and biceps / legs and
+    shoulders", "swap B and C", "start with legs next session".
+
+    Args:
+        workouts: letters with their muscle groups, e.g.
+                  "A=back and triceps; B=chest and biceps; C=legs and shoulders".
+                  Edits existing letters; new letters are appended.
+        order: the full rotation order, e.g. "A, C, B" (letters left out are
+               dropped). Empty = keep the current order.
+        start_with: letter the NEXT lift day should do (e.g. "A" to start the
+                    new split fresh). Empty = continue the rotation in place.
+        name: optional name for the split, e.g. "Push/pull/legs".
+        reason: why it changed (kept in the plan's history).
+    """
+    from datetime import date
+    from . import recomp
+    from .workout_split import (apply_split_edit, describe, lift_days, next_lift_day,
+                                offset_for, parse_order, parse_workouts)
+
+    plan = recomp.load_plan()
+    split = plan.get("split") or {}
+    current = split.get("workouts") or []
+    template = plan.get("week_template") or {}
+    if not current or not template:
+        return ("There's no rolling split on the plan to edit — the user's training "
+                "isn't on the recomp plan yet.")
+    if not (workouts or order or start_with or name):
+        return f"Current split ({split.get('name', 'rolling split')}): {describe(current)}."
+    try:
+        new = apply_split_edit(current, parse_workouts(workouts), parse_order(order))
+    except ValueError as exc:
+        return f"Couldn't change the split: {exc}"
+
+    lift = lift_days(template)
+    try:
+        start = date.fromisoformat(plan["start_date"])
+    except Exception:
+        start = recomp.local_today()
+    next_day = next_lift_day(max(recomp.local_today(), start), lift)
+
+    ids = [w["id"] for w in new]
+    offset_note = ""
+    if start_with:
+        letter = start_with.strip().upper()[:1]
+        if letter not in ids:
+            return f"'{start_with}' isn't in the new split ({', '.join(ids)})."
+        if next_day:
+            off = offset_for(next_day, start, lift, ids.index(letter), len(new))
+            _r.set("workout:rotation_offset", off)
+            offset_note = f" {next_day.strftime('%A')} does {letter}, then it keeps rolling."
+
+    old_desc = describe(current)
+    split["workouts"] = new
+    if name.strip():
+        split["name"] = name.strip()
+    elif workouts and split.get("name", "").lower().startswith("arnold"):
+        split["name"] = "Custom split"   # it's no longer Arnold's grouping
+    plan["split"] = split
+    plan.setdefault("split_history", []).append({
+        "date": recomp.local_today().isoformat(), "from": old_desc,
+        "to": describe(new), "reason": reason or ""})
+    recomp.save_plan(plan)
+
+    # The profile's free-text split feeds Apollo's non-recomp prompt and the
+    # brain's context; keep it saying the same thing.
+    try:
+        profile = json.loads(_r.get("user:profile") or "{}")
+        profile["workout_split"] = describe(new)
+        _r.set("user:profile", json.dumps(profile))
+    except Exception:
+        pass
+
+    err = _trigger("week")
+    return (f"Split is now {split.get('name', 'rolling split')}: {describe(new)}.{offset_note} "
+            + (err or "Apollo is re-planning the week — get_workout_plan shows it in a minute."))
