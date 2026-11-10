@@ -11,6 +11,22 @@ struct ChatView: View {
     @State private var showMediaPicker = false
     @State private var showSourceChoice = false
     @State private var showCamera = false
+    /// Photo/clip waiting in the composer. Picking media used to send it at
+    /// once with a canned "What am I looking at?", so there was no moment to
+    /// say what you actually wanted analysed. Now it waits here, ChatGPT-style:
+    /// attach, type the question, send.
+    @State private var pending: PendingMedia?
+
+    enum PendingMedia {
+        case image(Data, UIImage?)
+        case video(Data)
+
+        var sizeMB: Double {
+            switch self {
+            case .image(let d, _), .video(let d): return Double(d.count) / 1_048_576
+            }
+        }
+    }
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
@@ -190,6 +206,7 @@ struct ChatView: View {
     private var inputBar: some View {
         VStack(spacing: 0) {
             Rectangle().fill(Color.jBorder).frame(height: 1)
+            if let pending { attachmentChip(pending) }
             HStack(spacing: 12) {
                 // Glasses when they're connected; otherwise the phone's own
                 // library. Previously this was hard-disabled without glasses,
@@ -225,28 +242,24 @@ struct ChatView: View {
                 }
                 .fullScreenCover(isPresented: $showCamera) {
                     CameraPicker { capture in
-                        let prompt = consumeTypedPrompt()
-                        Task {
-                            switch capture {
-                            case .image(let data): await chatViewModel.sendImage(data, prompt: prompt)
-                            case .video(let data): await chatViewModel.sendVideo(data, prompt: prompt)
-                            }
+                        switch capture {
+                        case .image(let data): attach(.image(data, UIImage(data: data)))
+                        case .video(let data): attach(.video(data))
                         }
                     }
                     .ignoresSafeArea()
                 }
                 .onChange(of: mediaItem) { _, item in
                     guard let item else { return }
-                    let prompt = consumeTypedPrompt()
                     Task {
                         defer { mediaItem = nil }
                         guard let data = try? await item.loadTransferable(type: Data.self) else { return }
                         // A video's frames get sampled server-side (or handed to
                         // Gemini); an image goes down the existing image path.
                         if item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }) {
-                            await chatViewModel.sendVideo(data, prompt: prompt)
+                            attach(.video(data))
                         } else {
-                            await chatViewModel.sendImage(data, prompt: prompt)
+                            attach(.image(data, UIImage(data: data)))
                         }
                     }
                 }
@@ -275,7 +288,7 @@ struct ChatView: View {
                 )
                 .cornerRadius(8)
 
-                if inputText.isEmpty {
+                if inputText.isEmpty && pending == nil {
                     micButton
                 } else {
                     sendButton
@@ -330,10 +343,66 @@ struct ChatView: View {
 
     private func submitText() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let media = pending {
+            // Typed text is the question about the media; empty falls back to
+            // the view model's default prompt.
+            pending = nil
+            inputText = ""
+            fieldFocused = false
+            let prompt: String? = text.isEmpty ? nil : text
+            Task {
+                switch media {
+                case .image(let data, _): await chatViewModel.sendImage(data, prompt: prompt)
+                case .video(let data): await chatViewModel.sendVideo(data, prompt: prompt)
+                }
+            }
+            return
+        }
         guard !text.isEmpty else { return }
         inputText = ""
         fieldFocused = false
         Task { await chatViewModel.sendText(text) }
+    }
+
+    private func attach(_ media: PendingMedia) {
+        pending = media
+        fieldFocused = true   // straight to "what do you want to know about it?"
+    }
+
+    private func attachmentChip(_ media: PendingMedia) -> some View {
+        HStack(spacing: 10) {
+            Group {
+                if case .image(_, let thumb?) = media {
+                    Image(uiImage: thumb).resizable().scaledToFill()
+                } else {
+                    ZStack {
+                        Color.jBg
+                        Image(systemName: "video.fill").foregroundColor(.jBlue)
+                    }
+                }
+            }
+            .frame(width: 48, height: 48)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.jBorder, lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text({ if case .video = media { return "Video" } else { return "Photo" } }())
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.jText)
+                Text("Type what you want to know, or just send")
+                    .font(.system(size: 11))
+                    .foregroundColor(.jText.opacity(0.55))
+            }
+            Spacer()
+            Button { pending = nil } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(.jText.opacity(0.5))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .background(Color.jCard)
     }
 }
 

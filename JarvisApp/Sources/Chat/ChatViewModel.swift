@@ -384,7 +384,12 @@ final class ChatViewModel: ObservableObject {
         let scale = maxEdge / longest
         let target = CGSize(width: image.size.width * scale,
                             height: image.size.height * scale)
-        let renderer = UIGraphicsImageRenderer(size: target)
+        // scale = 1: the default format renders at the SCREEN's scale (3x on
+        // a Pro), so "1568px" came out ~4700px and a fresh camera photo blew
+        // the gateway's size limit while lighter library shots squeaked by.
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: target, format: format)
         let resized = renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: target))
         }
