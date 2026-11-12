@@ -1,0 +1,152 @@
+# =============================================================================
+# Forge in the cloud — Copilot-coding-agent style.
+#
+#   Jarvis (developer_agent) opens an issue labelled `forge`
+#     → this workflow runs Claude Code on a GitHub runner against a fresh clone
+#     → golden tasks gate the result
+#     → a PR is opened (branch forge/issue-<n>) and linked back on the issue
+#   developer_agent sees the PR and files a "Ship" approval in Jarvis.
+#   Approving squash-merges the PR; "Build images" builds what changed; the VM's
+#   scripts/vm_deploy.sh pulls and restarts it.
+#
+# Nothing runs on the Mac, so Forge works with the Mac asleep, and there is no
+# TCC / launchd / API-key-billing trap.
+#
+# One-time setup (billing goes to the Claude subscription, not API credits):
+#   claude setup-token                       # prints a long-lived token
+#   gh secret set CLAUDE_CODE_OAUTH_TOKEN    # paste it
+#
+# SAFETY: the repo is public, so anyone can open an issue. The job only runs
+# for issues opened by the repo owner AND carrying the `forge` label.
+# =============================================================================
+
+name: Forge
+
+on:
+  issues:
+    types: [opened]    # creating a labelled issue also fires `labeled`; one trigger only
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: 'Issue number to work on'
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: forge-${{ github.event.issue.number || inputs.issue }}
+  cancel-in-progress: false
+
+jobs:
+  forge:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.issue.user.login == github.repository_owner &&
+       contains(github.event.issue.labels.*.name, 'forge'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Fetch the task
+        run: |
+          gh issue view "$ISSUE" --json title,body -q '"# " + .title + "\n\n" + .body' > /tmp/task.md
+          gh issue comment "$ISSUE" --body "🔨 Forge picked this up — [run log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          cat /tmp/task.md
+
+      - name: Run Forge (Claude Code)
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            gh issue comment "$ISSUE" --body "⚠️ Forge can't run: the CLAUDE_CODE_OAUTH_TOKEN secret is not set (run \`claude setup-token\`, then \`gh secret set CLAUDE_CODE_OAUTH_TOKEN\`)."
+            exit 1
+          fi
+          {
+            cat /tmp/task.md
+            cat <<'EOF'
+
+          ---
+          You are Forge, working on the Jarvis repo in a GitHub Actions runner (a fresh
+          clone; nothing else from Jarvis is running here). Read AGENTS.md first and
+          follow it. Do the task above completely, verify it (python3 -m py_compile on
+          changed Python files; python3 scripts/golden_tasks.py must pass), and do NOT
+          commit, push or deploy — the workflow commits your changes and opens the PR.
+          Never touch .env or credentials. Native Mac services and the live VM are not
+          reachable from here; say in the report what needs verifying live.
+
+          Finish with a short report in markdown: what changed (files), how you
+          verified it, and anything the user must check after it ships.
+          EOF
+          } > /tmp/prompt.md
+          claude -p "$(cat /tmp/prompt.md)" --output-format text \
+            --permission-mode acceptEdits \
+            --allowedTools Read Write Edit Glob Grep TodoWrite WebFetch WebSearch Task Bash \
+            > /tmp/report.md
+          cat /tmp/report.md
+
+      - name: Golden tasks
+        id: golden
+        run: |
+          if python3 scripts/golden_tasks.py > /tmp/golden.out 2>&1; then
+            echo "verdict=✅ Golden tasks passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "verdict=🔴 Golden tasks FAILED" >> "$GITHUB_OUTPUT"
+          fi
+          tail -20 /tmp/golden.out
+
+      - name: Open the PR
+        env:
+          VERDICT: ${{ steps.golden.outputs.verdict }}
+        run: |
+          # Belt and braces: never ship secrets even if the agent wrote one.
+          git checkout -- .env 2>/dev/null || true
+          git reset -q -- '.env*' 'data/' 2>/dev/null || true
+          if [ -z "$(git status --porcelain -- . ':!.env*' ':!data/')" ]; then
+            { echo "Forge finished without changing any files."; echo; cat /tmp/report.md; } > /tmp/comment.md
+            gh issue comment "$ISSUE" --body-file /tmp/comment.md
+            exit 0
+          fi
+          BRANCH="forge/issue-$ISSUE"
+          TITLE=$(gh issue view "$ISSUE" --json title -q .title)
+          git config user.name  "Forge"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add -A -- . ':!.env*' ':!data/'
+          git commit -q -m "$TITLE" -m "Forge, for #$ISSUE." \
+            -m "Co-Authored-By: Claude <noreply@anthropic.com>"
+          git push -f -q origin "$BRANCH"
+          {
+            echo "Closes #$ISSUE"; echo
+            echo "**$VERDICT**"; echo
+            cat /tmp/report.md; echo
+            echo '<details><summary>Golden tasks output</summary>'; echo; echo '```'
+            tail -30 /tmp/golden.out; echo '```'; echo '</details>'
+            echo; echo '🤖 Generated with [Claude Code](https://claude.com/claude-code)'
+          } > /tmp/pr.md
+          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            gh pr edit "$BRANCH" --body-file /tmp/pr.md
+          else
+            gh pr create --base develop --head "$BRANCH" --title "$TITLE" \
+              --body-file /tmp/pr.md --label forge
+          fi
+          gh issue comment "$ISSUE" --body "PR ready: $(gh pr view "$BRANCH" --json url -q .url) — $VERDICT"

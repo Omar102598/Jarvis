@@ -67,6 +67,13 @@ when a module `.format()`s the prompt. A restart of `agent_runner` picks it up.
 - **Never** `docker compose build/up` the core services on the Mac. That starts
   a second brain alongside the real one.
 - Forge: don't commit or push unless the task says so. Report what needs deploying.
+- **Forge's Ship flow** (Jarvis-repo tasks, `DEV_MODE=cloud`): `developer_agent`
+  opens a `forge` issue, then `.github/workflows/forge.yml` runs Claude Code on a
+  GitHub runner and opens a PR from `forge/issue-<n>`. Forge then files a "Ship"
+  approval. Approving it squash-merges the PR (`forge_cloud.ship`), waits for
+  "Build images", and writes `jarvis:deploy:request`. `scripts/vm_deploy.sh`
+  (cron on the VM) then pulls and restarts what changed. It pauses while
+  `~/Jarvis/.deploy-paused` exists. The log is `logs/deploy.log` on the VM.
 
 ## Verifying
 

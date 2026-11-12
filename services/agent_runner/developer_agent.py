@@ -44,6 +44,9 @@ MAX_STEPS = int(os.environ.get("DEV_AGENT_MAX_STEPS", "200"))
 # subscription, NOT API credits). Falls back to the API tool-loop when the
 # CLI is missing/fails. The CLI runs on the Mac via mac_bridge /dev/shell
 # with full repo access and its own tools — it completes the task itself.
+# "cloud": Jarvis-repo tasks run in GitHub Actions and come back as a PR with a
+# Ship approval (forge_cloud.py). "local": the old Mac-bridge path below.
+DEV_MODE = os.environ.get("DEV_MODE", "cloud").lower()
 DEV_PREFER_CLI = os.environ.get("DEV_PREFER_CLI", "true").lower() == "true"
 DEV_CLI_BIN = os.environ.get("DEV_CLI_BIN", "/usr/local/bin/claude")
 # Nothing in the chain requires a particular value: `claude -p` has no timeout
@@ -246,6 +249,20 @@ class DeveloperAgent(BaseAgent):
             from anthropic import AsyncAnthropic
         except ImportError:
             return "Developer agent: anthropic SDK not installed in agent_runner."
+
+        # Jarvis-repo work goes to the cloud (GitHub Actions → PR → Ship card);
+        # other projects on the Mac keep the bridge path below.
+        import forge_cloud
+        project_dir = (self.params.get("project_dir") or "").strip()
+        jarvis_repo = not project_dir or project_dir.rstrip("/").endswith("/Jarvis")
+        if DEV_MODE == "cloud" and jarvis_repo and forge_cloud.enabled():
+            self.r.delete("agent:developer:progress")
+            self._progress(f"Task accepted (cloud): {task[:200]}")
+            try:
+                return await forge_cloud.run_task(self, task)
+            except Exception as exc:
+                self._progress(f"Cloud dispatch failed: {exc}")
+                return f"Forge couldn't start in the cloud: {exc}"
 
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not api_key:

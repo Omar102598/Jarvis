@@ -21,6 +21,7 @@ descriptor rather than a callback so it survives restarts:
     {"type": "mqtt",        "topic": "...", "payload": {...}}
     {"type": "redis_lpush", "key": "...",   "value": "..."}
     {"type": "redis_set",   "key": "...",   "value": "...", "ex": 3600}
+    {"type": "github_merge", "pr": 123}     (Forge's Ship card — forge_cloud.ship)
 
 Fire-and-forget producers just call request_approval(); producers that must
 block on the answer (an agent mid-run) use wait_for_approval().
@@ -150,6 +151,10 @@ def _execute_action(action: dict) -> str:
         else:
             rr.set(action["key"], value, ex=action.get("ex"))
         return f"{kind} {action['key']}"
+    if kind == "github_merge":
+        # Forge's "Ship" card: merge the PR, then CI + VM deploy (forge_cloud).
+        import forge_cloud
+        return forge_cloud.ship(int(action["pr"]))
     return "no action"
 
 

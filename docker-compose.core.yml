@@ -198,6 +198,10 @@ services:
       - MAC_BRIDGE_HOST=${MAC_HOST:-host.docker.internal}
       - MAC_BRIDGE_PORT=${MAC_BRIDGE_PORT:-7777}
       - DEV_LLM_MODEL=${DEV_LLM_MODEL:-claude-opus-5-5}
+      # Cloud Forge (forge_cloud.py): issues → GitHub Actions → PR → Ship card.
+      - DEV_MODE=${DEV_MODE:-cloud}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_REPO=${GITHUB_DEFAULT_REPO:-Omar102598/Jarvis}
       - DEV_PREFER_CLI=${DEV_PREFER_CLI:-true}
       - DEV_CLI_BIN=${DEV_CLI_BIN:-/usr/local/bin/claude}
       # 900 here silently overrode the code default and capped Forge at 15
