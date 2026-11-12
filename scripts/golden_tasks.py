@@ -80,6 +80,34 @@ if os.path.exists(mp):
 else:
     bad("services/llm_agent/main.py missing")
 
+# 3b) Prompt files resolve ----------------------------------------------------
+# Agent prompts, the brain's core/SOUL and SKILL.md playbooks live in config/.
+# A renamed or deleted .md would crash an agent at import, so check every
+# reference resolves and every skill has front matter.
+import re as _re
+print("3b) Prompt files…")
+checks += 1
+_cfg = os.path.join(REPO, "config")
+_missing = []
+for _py in glob.glob(os.path.join(REPO, "services", "agent_runner", "*.py")):
+    for _rel in _re.findall(r'agent_prompt\("([^"]+)"\)', open(_py).read()):
+        if not os.path.isfile(os.path.join(_cfg, "prompts", "agents", _rel + ".md")):
+            _missing.append(f"{os.path.basename(_py)} -> {_rel}.md")
+for _f in ("SOUL.md", "prompts/brain/core.md", "prompts/surfaces/voice.md",
+           "prompts/surfaces/app.md", "prompts/surfaces/glasses.md"):
+    if not os.path.isfile(os.path.join(_cfg, _f)):
+        _missing.append(_f)
+_skills = glob.glob(os.path.join(_cfg, "skills", "*", "SKILL.md"))
+for _sk in _skills:
+    _t = open(_sk).read()
+    if not (_t.startswith("---") and "name:" in _t and "description:" in _t):
+        _missing.append(f"{_sk} (no name/description front matter)")
+if _missing:
+    bad("prompt files missing/invalid: " + "; ".join(_missing))
+else:
+    ok(f"agent prompts, core/SOUL/surfaces and {len(_skills)} skills resolve")
+
+
 # 4) Optional live health (only if services are up) ---------------------------
 print("4) Live health (optional)…")
 try:

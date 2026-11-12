@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 
 from base_agent import BaseAgent
 from llm_helper import complete
+from prompt_files import agent_prompt
 
 USER_TZ = os.environ.get("USER_TZ", "America/Chicago")
 MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
@@ -52,14 +53,7 @@ _REVIEW_SYSTEM = (
 CATCHUP_MAX = int(os.environ.get("CHRONICLE_CATCHUP_MAX", "3"))
 ENTRIES_KEEP = 180
 
-_SYSTEM = (
-    "You are JARVIS keeping a private daily journal for your user. Given the "
-    "day's raw signals (agent activity, camera events, health metrics, spending, "
-    "calendar), write a SHORT factual journal entry — 3 to 6 sentences, past "
-    "tense, third person ('He …' / 'The house …'). Note what actually happened "
-    "and anything notable or worth recalling later. No preamble, no bullet "
-    "points, no speculation. If the day was quiet, say so briefly."
-)
+_SYSTEM = agent_prompt("chronicle/system")
 
 # Reflection: promote the day's episodic record into DURABLE semantic facts.
 # The bar is deliberately high — an empty list is the normal answer.

@@ -32,17 +32,11 @@ from zoneinfo import ZoneInfo
 
 from base_agent import BaseAgent
 from llm_helper import complete
+from prompt_files import agent_prompt
 
 USER_TZ = os.environ.get("USER_TZ", "America/Chicago")
 
-_SYSTEM = (
-    "You are Atlas, JARVIS's health analyst, writing a short weekly health "
-    "overview for the user. You get pre-computed trend metrics (this week vs "
-    "last week) — do NOT recompute or invent numbers. Write 3-5 sentences, "
-    "second person, warm but direct: the overall picture, the one trend most "
-    "worth attention (good or bad), and ONE specific recommendation grounded "
-    "in the numbers you were given. No bullet lists, no preamble."
-)
+_SYSTEM = agent_prompt("atlas/system")
 
 
 def _avg(xs: list[float]) -> float | None:

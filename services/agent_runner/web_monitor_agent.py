@@ -46,6 +46,7 @@ import aiohttp
 
 from base_agent import BaseAgent
 from llm_helper import complete
+from prompt_files import agent_prompt
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 # An explicit MAC_BRIDGE_URL wins; otherwise build it from the vars compose
@@ -111,11 +112,7 @@ _UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-_SYSTEM_PROMPT = (
-    "You are JARVIS. Summarise these newly detected web results for your user. "
-    "Group by topic, highlight what is most interesting or actionable, and keep "
-    "it under 300 words. Use bullet points."
-)
+_SYSTEM_PROMPT = agent_prompt("web_monitor/system")
 
 # Default goal keeps the existing apartment watches working unchanged; any
 # watch can override with its own `goal` for a totally different use case

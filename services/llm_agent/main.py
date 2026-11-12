@@ -124,6 +124,7 @@ from tools.petkit import (
     list_petkit_devices, toggle_feeding_plan,
 )
 from tools.profile import get_user_profile, update_user_profile
+from tools.skills import load_skill
 from tools.workout import (get_todays_workout, get_workout_plan, plan_workout_week,
                            skip_workout_day, set_workout_split)
 from tools.grocery import (
@@ -158,16 +159,10 @@ PHYSICAL_ROOMS = {r.strip() for r in
 # evening on the couch, short enough that it cannot vouch for a whole workday.
 PRESENCE_PHYSICAL_TTL_S = int(os.environ.get("PRESENCE_PHYSICAL_TTL_S", "5400"))
 
-# Load system prompt from file — static portion is eligible for prompt caching
-_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "system.txt")
-try:
-    with open(_PROMPT_PATH) as _f:
-        _BASE_PROMPT = _f.read().strip()
-except FileNotFoundError:
-    _BASE_PROMPT = (
-        "You are JARVIS, an advanced AI assistant inspired by the AI from Iron Man. "
-        "You are British, witty, efficient, and loyal."
-    )
+# System prompt: assembled from config/ files (SOUL.md, prompts/brain/core.md,
+# skills/*/SKILL.md) by prompt_files -- editable without a rebuild. The static
+# portion is still what gets prompt-cached.
+import prompt_files
 
 # ---------------------------------------------------------------------------
 # Model routing — classify request complexity into one of three tiers
@@ -322,6 +317,7 @@ _core_tools = [
     get_grocery_status, approve_grocery_order, trigger_grocery_run, suggest_meals,
     learn_fresh_cart, get_usual_order, pin_favorite_product,
     # Workout coach (Apollo) + fused readiness score + Atlas health overview
+    load_skill,
     get_todays_workout, get_workout_plan, plan_workout_week, skip_workout_day, set_workout_split, get_readiness,
     get_health_overview,
     # Nutrition (Sage), visual memory (glasses), hands-free capture
@@ -429,7 +425,7 @@ _TOOL_SEARCH_TOOL: dict = {
 _HOT_TOOLS: set[str] = {
     n.strip() for n in os.environ.get(
         "TOOL_SEARCH_HOT",
-        "get_device_states,control_device,get_weather,recall,sleep_mode",
+        "get_device_states,control_device,get_weather,recall,sleep_mode,load_skill",
     ).split(",") if n.strip()
 }
 TOOL_SEARCH_ENABLED = os.environ.get(
@@ -820,22 +816,14 @@ def _build_system_prompt(room: str) -> list[dict]:
     personas       = r.get("agents:personas") or ""
 
     is_voice = not room.startswith(("mobile-", "glasses-", "app-"))
-    voice_note = (
-        "\nThis response will be spoken aloud. Keep it to 2-3 sentences maximum. "
-        "No bullet points, no markdown, no lists — plain spoken prose only."
-        if is_voice else ""
-    )
-    if room.startswith("app-"):
-        voice_note = (
-            "\nSurface: the iPhone app chat (a screen, like ChatGPT). Write for reading: "
-            "markdown headings, bullets, numbered steps and tables are rendered properly. "
-            "Lead with the answer, keep it scannable. When a tool result says a card is "
-            "shown, the user sees that data as a native card above your reply — don't "
-            "re-list every number, but still answer fully: the takeaway, what it means "
-            "for them today, and the next step (a few sentences or short bullets). Never "
-            "answer an open question with a single line. Do NOT use the DISPLAY:/BODY: "
-            "glasses headers here."
-        )
+    # Per-surface style lives in config/prompts/surfaces/*.md. The glasses HUD
+    # format used to sit in the cached base prompt for every turn; only glasses
+    # and mobile turns need it.
+    surface = ("app" if room.startswith("app-")
+               else "glasses" if room.startswith(("glasses-", "mobile-"))
+               else "voice" if is_voice else "")
+    note = prompt_files.surface_note(surface) if surface else ""
+    voice_note = f"\n{note}" if note else ""
 
     persona_note = (
         f"\nYour reasoning-agent team (refer to them by name when handing off a task, "
@@ -869,7 +857,7 @@ def _build_system_prompt(room: str) -> list[dict]:
         # bet on far fewer of them, not a free upgrade. Watch brain:cache_write
         # against brain:cache_read after this lands: if writes do not fall by
         # more than the multiplier rises, revert it.
-        {"type": "text", "text": _BASE_PROMPT,
+        {"type": "text", "text": prompt_files.base_prompt(),
          "cache_control": {"type": "ephemeral", "ttl": "1h"}},
         # Dynamic portion — changes every request, not cached
         {"type": "text", "text": dynamic},

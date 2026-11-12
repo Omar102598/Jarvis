@@ -16,6 +16,7 @@ import aiohttp
 
 from base_agent import BaseAgent
 from llm_helper import complete, complete_with_search, search_available
+from prompt_files import agent_prompt
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
@@ -29,24 +30,9 @@ TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 USE_NATIVE_SEARCH = os.environ.get(
     "NEWSLETTER_NATIVE_SEARCH", "false").lower() in ("1", "true", "yes")
 
-_SYSTEM_PROMPT = (
-    "You are JARVIS, a British AI assistant. Summarise these news articles into a "
-    "concise daily digest for your user. Use short bullet points grouped by topic. "
-    "Highlight the two or three most important stories at the top. Keep it under "
-    "400 words total. Be informative but not verbose."
-)
+_SYSTEM_PROMPT = agent_prompt("newsletter/system")
 
-_SEARCH_PROMPT = (
-    "You are JARVIS, a British AI assistant compiling your user's daily news "
-    "digest. Search the web for genuinely RECENT developments on each topic "
-    "given — prefer the last 24-48 hours and skip evergreen or undated pieces. "
-    "One focused search per topic, plus a follow-up only when a story clearly "
-    "warrants it.\n\n"
-    "Then write the digest: lead with the two or three most important stories, "
-    "then short bullets grouped by topic, each naming its source as [domain]. "
-    "Under 400 words. If a topic genuinely had no notable news, say so in one "
-    "line rather than padding it with filler."
-)
+_SEARCH_PROMPT = agent_prompt("newsletter/search")
 
 
 class NewsletterAgent(BaseAgent):

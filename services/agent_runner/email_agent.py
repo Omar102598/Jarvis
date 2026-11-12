@@ -17,6 +17,7 @@ from email.utils import parsedate_to_datetime, parseaddr
 
 from base_agent import BaseAgent
 from llm_helper import complete
+from prompt_files import agent_prompt
 
 _DRAFT_SYSTEM = (
     "You are Hermes drafting reply suggestions. From the inbox messages, pick "
@@ -33,16 +34,7 @@ IMAP_HOST = os.environ.get("IMAP_HOST", "imap.gmail.com")
 IMAP_USER = os.environ.get("IMAP_USER", "")
 IMAP_PASSWORD = os.environ.get("IMAP_PASSWORD", "")
 
-_SYSTEM_PROMPT = (
-    "You are Hermes, JARVIS's email triage agent — a British AI assistant. "
-    "Triage the user's recent inbox into a crisp morning brief. Structure it as:\n"
-    "1. A 2-sentence morning-brief summary at the very top (lead with this).\n"
-    "2. IMPORTANT / ACTION NEEDED — bullet each with a one-line 'why'.\n"
-    "3. Package & delivery updates — extract tracking numbers and carriers if present.\n"
-    "4. Newsletters & promos — one line each, grouped.\n"
-    "5. Everything else — a count only.\n"
-    "Be informative but not verbose. Keep the whole report under 400 words."
-)
+_SYSTEM_PROMPT = agent_prompt("email/system")
 
 
 def _decode(value: str) -> str:

@@ -1180,16 +1180,17 @@ def jarvis_grep(req: JarvisGrepRequest):
 def jarvis_rebuild(req: JarvisRebuildRequest):
     svc = req.service.strip()
     if svc in _DOCKER_SERVICES:
-        cmd = (
-            f"cd {_JARVIS_ROOT} && "
-            f"docker compose build {svc} && "
-            f"docker compose up -d {svc}"
-        )
-        try:
-            out = _run(["bash", "-c", cmd], timeout=180)
-            return {"status": f"Docker service '{svc}' rebuilt and restarted.", "output": out[-500:]}
-        except Exception as e:
-            raise HTTPException(500, f"Rebuild failed: {e}")
+        # The core stack runs on the GCP VM (jarvis-core), not this Mac. A local
+        # `docker compose build/up` here started a SECOND brain/runner on the
+        # Mac instead of updating the real one. Deploying is commit -> push
+        # develop -> CI builds the image -> pull on the VM (see AGENTS.md).
+        raise HTTPException(409, (
+            f"'{svc}' runs on the GCP VM, not this Mac — it can't be rebuilt from here. "
+            "Leave your change uncommitted and verified (py_compile / tests), and say in "
+            "your report that it needs deploying: commit + push to develop, wait for the "
+            "'Build images' CI run, then on the VM `docker compose -f docker-compose.core.yml "
+            f"pull {svc} && docker compose -f docker-compose.core.yml up -d --no-build {svc}`. "
+            "Config-only changes under config/ need only `git pull` on the VM."))
 
     if svc in _NATIVE_SERVICES:
         pids_file = os.path.join(_JARVIS_ROOT, ".audio_pids")
@@ -1231,9 +1232,9 @@ def jarvis_request_restart(req: RestartRequest):
     svc = req.service.strip()
     if svc not in _DOCKER_SERVICES:
         raise HTTPException(400, f"Unknown Docker service '{svc}'. Known: {_DOCKER_SERVICES}")
-    _restart_queue.put(svc)
-    print(f"[MacBridge] Restart queued for '{svc}'")
-    return {"status": f"Restart queued for '{svc}'"}
+    raise HTTPException(409, f"'{svc}' runs on the GCP VM (jarvis-core), not this Mac; "
+                             "restart it there: docker compose -f docker-compose.core.yml "
+                             f"restart {svc}")
 
 
 def _restart_watchdog() -> None:

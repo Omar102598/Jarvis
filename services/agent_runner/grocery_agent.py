@@ -32,6 +32,7 @@ import redis as redis_lib
 
 from base_agent import BaseAgent
 from llm_helper import complete
+from prompt_files import agent_prompt
 
 # An explicit MAC_BRIDGE_URL wins; otherwise build it from the vars compose
 # actually exports (MAC_HOST -> MAC_BRIDGE_HOST). Defaulting straight to
@@ -908,13 +909,7 @@ async def _scan_amazon_cart(session: aiohttp.ClientSession, store_key: str) -> l
     return items
 
 
-_TEXT_CART_PROMPT = (
-    "The text below is a grocery store's cart page. Extract the CART ITEMS "
-    "(product name + quantity). Ignore recommendations, 'saved for later', ads, "
-    "nav, and totals. Return ONLY a JSON array like "
-    '[{"title": "H-E-B Ground Turkey 93/7", "qty": 1}] — empty array if the '
-    "cart is empty or this doesn't look like a cart."
-)
+_TEXT_CART_PROMPT = agent_prompt("grocery/text_cart")
 
 
 async def _scan_text_cart(session: aiohttp.ClientSession, store_key: str) -> list[dict]:

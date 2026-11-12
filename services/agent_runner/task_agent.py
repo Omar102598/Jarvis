@@ -14,29 +14,13 @@ turn as the work. The triage + Tavily flow remains as the fallback.
 
 from base_agent import BaseAgent
 from llm_helper import complete, complete_with_search, search_available, tavily_search
+from prompt_files import agent_prompt
 
-_TRIAGE_PROMPT = (
-    "Decide if this task needs live web information to answer well. "
-    "Respond with exactly one word: SEARCH (needs current web data) or "
-    "REASON (can be answered from general knowledge)."
-)
+_TRIAGE_PROMPT = agent_prompt("task/triage")
 
-_ANSWER_PROMPT = (
-    "You are JARVIS, a British AI assistant working a task your user delegated. "
-    "Complete it thoroughly and present the result clearly and concisely. "
-    "If web results are provided, ground your answer in them and cite sources "
-    "as [domain]. End with a one-line summary the user can act on."
-)
+_ANSWER_PROMPT = agent_prompt("task/answer")
 
-_SEARCH_ANSWER_PROMPT = (
-    "You are JARVIS, a British AI assistant working a task your user delegated. "
-    "You can search the web — use it when the task depends on current or "
-    "verifiable information, and answer directly when it does not. Do not "
-    "search for things you already know reliably.\n\n"
-    "Complete the task thoroughly and present the result clearly and concisely. "
-    "Ground any factual claims in what you found and cite sources as [domain]. "
-    "End with a one-line summary the user can act on."
-)
+_SEARCH_ANSWER_PROMPT = agent_prompt("task/search_answer")
 
 
 class TaskAgent(BaseAgent):

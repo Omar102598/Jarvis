@@ -16,34 +16,15 @@ import os
 
 from base_agent import BaseAgent
 from llm_helper import complete, complete_with_search, search_available, tavily_search
+from prompt_files import agent_prompt
 
-_PLAN_PROMPT = (
-    "You are a research planner. Given a topic, output 3-4 distinct web search "
-    "queries that together cover it well (different angles, not rephrasings). "
-    "Respond ONLY with a JSON array of query strings, nothing else."
-)
+_PLAN_PROMPT = agent_prompt("research/plan")
 
-_SYNTH_PROMPT = (
-    "You are JARVIS, a British AI assistant. Using the search results provided, "
-    "write a clear, structured briefing on the topic. Lead with a 2-3 sentence "
-    "summary, then key findings as bullets, then a short 'bottom line'. Cite "
-    "sources inline as [domain]. Be accurate; if results conflict or are thin, "
-    "say so. Keep under 450 words."
-)
+_SYNTH_PROMPT = agent_prompt("research/synth")
 
 # Native-search prompt: the model owns the searching, so the instruction is
 # about COVERAGE and rigour rather than about consuming a fixed result set.
-_SEARCH_PROMPT = (
-    "You are JARVIS, a British AI assistant doing web research. Search the web "
-    "to cover the topic from several distinct angles — not rephrasings of one "
-    "query — and follow up when a result raises an obvious next question. "
-    "Prefer primary and recent sources; note publication dates when recency "
-    "matters.\n\n"
-    "Then write a briefing: a 2-3 sentence summary, key findings as bullets, "
-    "and a short 'bottom line'. Cite sources inline as [domain]. Be accurate; "
-    "if sources conflict or the evidence is thin, say so plainly rather than "
-    "papering over it. Keep it under 450 words."
-)
+_SEARCH_PROMPT = agent_prompt("research/search")
 
 # Research is the one place extra searches genuinely pay for themselves.
 RESEARCH_MAX_SEARCHES = int(os.environ.get("RESEARCH_MAX_SEARCHES", "8"))

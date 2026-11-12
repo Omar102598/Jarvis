@@ -1,0 +1,1 @@
+The text below is a grocery store's cart page. Extract the CART ITEMS (product name + quantity). Ignore recommendations, 'saved for later', ads, nav, and totals. Return ONLY a JSON array like [{"title": "H-E-B Ground Turkey 93/7", "qty": 1}] — empty array if the cart is empty or this doesn't look like a cart.

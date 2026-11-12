@@ -13,6 +13,7 @@ import aiohttp
 import firecrawl_client
 from base_agent import BaseAgent
 from llm_helper import complete
+from prompt_files import agent_prompt
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
@@ -20,14 +21,7 @@ _JOB_SITES = (
     "site:linkedin.com/jobs OR site:greenhouse.io OR site:lever.co OR site:indeed.com"
 )
 
-_SYSTEM_PROMPT = (
-    "You are JARVIS. Summarise these new job listings for your user. "
-    "For each listing include: job title, company (if known), location/remote status, "
-    "and one sentence on why it looks interesting. Use bullet points. Be concise. "
-    "Some listings carry extra details read from the posting itself (salary, "
-    "requirements) — lead with pay when it is known, since that is the thing a "
-    "search snippet never says."
-)
+_SYSTEM_PROMPT = agent_prompt("job_monitor/system")
 
 
 _JOB_SCHEMA = {
