@@ -235,8 +235,9 @@ class Endpointer:
     """Decides when an utterance is over, from per-chunk RMS. Pure logic, so it
     can be tested without a microphone."""
 
-    def __init__(self, threshold: float = 0.5):
+    def __init__(self, threshold: float = 0.5, no_speech_timeout: float | None = None):
         self.threshold = threshold
+        self.no_speech_timeout = NO_SPEECH_TIMEOUT if no_speech_timeout is None else no_speech_timeout
         self.loud = 0          # consecutive chunks above threshold
         self.silent = 0        # consecutive chunks below, after speech
         self.speech = False
@@ -258,7 +259,7 @@ class Endpointer:
                 self.silent += 1
                 if self.silent >= int(SILENCE_DURATION * _CPS):
                     return "silence"
-        if not self.speech and self.n >= int(NO_SPEECH_TIMEOUT * _CPS):
+        if not self.speech and self.n >= int(self.no_speech_timeout * _CPS):
             return "no_speech"
         return None
 
@@ -323,7 +324,8 @@ def _get_scorer():
     return _scorer
 
 
-def capture_command_audio(preroll: bool = True) -> io.BytesIO:
+def capture_command_audio(preroll: bool = True,
+                          no_speech_timeout: float | None = None) -> io.BytesIO:
     """Record one utterance and return it as WAV. `preroll` prepends the audio
     from just before the call (the words right after the wake word)."""
     global _mic
@@ -340,7 +342,7 @@ def capture_command_audio(preroll: bool = True) -> io.BytesIO:
     else:
         threshold = min(THRESHOLD_MAX, max(THRESHOLD_MIN, floor * NOISE_MULTIPLIER))
         level = _rms
-    ep = Endpointer(threshold)
+    ep = Endpointer(threshold, no_speech_timeout)
     t0 = time.time()
     pre, q = _mic.start(preroll)
     frames = list(pre)
@@ -472,7 +474,9 @@ def on_tts_done(client, userdata, msg):
     if BEEP:
         _beep()
 
-    audio_buf = capture_command_audio(preroll=False)
+    # The window is how long to wait for the user to START a follow-up; once
+    # they speak, normal endpointing ends the take.
+    audio_buf = capture_command_audio(preroll=False, no_speech_timeout=FOLLOWUP_WINDOW)
     audio_path = cache_audio(audio_buf, room)
     audio_buf.seek(0)
 
