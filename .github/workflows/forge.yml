@@ -118,7 +118,13 @@ jobs:
           claude -p "$(cat /tmp/prompt.md)" --output-format text \
             --permission-mode acceptEdits \
             --allowedTools Read Write Edit Glob Grep TodoWrite WebFetch WebSearch Task Bash \
-            > /tmp/report.md
+            > /tmp/report.md 2>&1 || {
+              echo "claude exited with $?:"; cat /tmp/report.md
+              { echo "⚠️ Forge can't run: Claude Code exited with an error."; echo; echo '```'
+                tail -c 3000 /tmp/report.md; echo '```'; } > /tmp/comment.md
+              gh issue comment "$ISSUE" --body-file /tmp/comment.md && touch /tmp/reported
+              exit 1
+            }
           cat /tmp/report.md
 
       - name: Golden tasks
@@ -198,3 +204,10 @@ jobs:
               --body-file /tmp/pr.md --label forge
           fi
           gh issue comment "$ISSUE" --body "PR ready: $(gh pr view "$BRANCH" --json url -q .url) — $VERDICT"
+
+      # Any other failed step: say so on the issue, so Jarvis stops waiting
+      # for a PR (forge_cloud.run_task watches for this prefix).
+      - name: Report failure
+        if: failure()
+        run: |
+          [ -e /tmp/reported ] || gh issue comment "$ISSUE" --body "⚠️ Forge can't run: a workflow step failed — [run log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})." || true
