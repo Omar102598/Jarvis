@@ -48,6 +48,11 @@ jobs:
        contains(github.event.issue.labels.*.name, 'forge'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    services:
+      # Throwaway Redis for scripts/forge_dash_shots.py (seeded with sample data).
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
     env:
       ISSUE: ${{ github.event.issue.number || inputs.issue }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -66,6 +71,11 @@ jobs:
 
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code
+
+      - name: Install dashboard preview tools
+        run: |
+          pip install -q -r services/dashboard/requirements.txt playwright
+          python -m playwright install --with-deps chromium
 
       - name: Fetch the task
         run: |
@@ -93,6 +103,13 @@ jobs:
           commit, push or deploy — the workflow commits your changes and opens the PR.
           Never touch .env or credentials. Native Mac services and the live VM are not
           reachable from here; say in the report what needs verifying live.
+
+          DASHBOARD / UI WORK: verify it visually. Run
+            python3 scripts/forge_dash_shots.py [--pages /chat /voice ...]
+          It serves the dashboard from this checkout with sample data and writes
+          desktop + phone screenshots to /tmp/forge-shots/. Open the PNGs with the
+          Read tool, look at them critically, fix and re-run until they look right.
+          The final screenshots are attached to the PR automatically.
 
           Finish with a short report in markdown: what changed (files), how you
           verified it, and anything the user must check after it ships.
@@ -128,6 +145,36 @@ jobs:
           fi
           BRANCH="forge/issue-$ISSUE"
           TITLE=$(gh issue view "$ISSUE" --json title -q .title)
+
+          # Dashboard change → final screenshots, kept on the orphan branch
+          # `forge-shots` (never merged) and embedded in the PR body.
+          SHOTS_MD=""
+          if git status --porcelain -- services/dashboard | grep -q .; then
+            rm -rf /tmp/forge-shots
+            if python3 scripts/forge_dash_shots.py --out /tmp/forge-shots; then
+              git config user.name "Forge"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              SHOTS_DIR=/tmp/shots-branch
+              if git ls-remote --exit-code origin forge-shots >/dev/null 2>&1; then
+                git clone -q --depth 1 -b forge-shots "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" "$SHOTS_DIR"
+              else
+                git init -q -b forge-shots "$SHOTS_DIR"
+                git -C "$SHOTS_DIR" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}"
+              fi
+              mkdir -p "$SHOTS_DIR/issue-$ISSUE" && rm -f "$SHOTS_DIR/issue-$ISSUE"/*.png
+              cp /tmp/forge-shots/*.png "$SHOTS_DIR/issue-$ISSUE/"
+              git -C "$SHOTS_DIR" add -A
+              git -C "$SHOTS_DIR" -c user.name=Forge -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+                commit -q -m "Screenshots for #$ISSUE (run ${{ github.run_id }})" || true
+              git -C "$SHOTS_DIR" push -q origin forge-shots
+              RAW="https://raw.githubusercontent.com/${{ github.repository }}/forge-shots/issue-$ISSUE"
+              SHOTS_MD="### Screenshots (sample data)"$'\n'
+              for f in /tmp/forge-shots/*.png; do
+                n=$(basename "$f")
+                SHOTS_MD+=$'\n'"**${n%.png}**"$'\n\n'"<img src=\"$RAW/$n?run=${{ github.run_id }}\" width=\"$([[ $n == *phone* ]] && echo 300 || echo 640)\">"$'\n'
+              done
+            fi
+          fi
           git config user.name  "Forge"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
@@ -139,6 +186,7 @@ jobs:
             echo "Closes #$ISSUE"; echo
             echo "**$VERDICT**"; echo
             cat /tmp/report.md; echo
+            [ -n "$SHOTS_MD" ] && { echo "$SHOTS_MD"; echo; }
             echo '<details><summary>Golden tasks output</summary>'; echo; echo '```'
             tail -30 /tmp/golden.out; echo '```'; echo '</details>'
             echo; echo '🤖 Generated with [Claude Code](https://claude.com/claude-code)'

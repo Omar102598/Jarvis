@@ -321,7 +321,7 @@ function renderConversation(msgs, toolEvents) {
     const isJ = m.role === 'assistant';
     const calls = isJ ? toolCallsFor(m.turn_id, te) : [];
     return `<div class="conv-row ${isJ ? '' : 'user'}">
-      <div class="conv-avatar ${isJ ? 'avatar-j' : 'avatar-u'}">${isJ ? 'AI' : 'YOU'}</div>
+      <div class="conv-avatar ${isJ ? 'avatar-j' : 'avatar-u'}">${isJ ? 'J' : 'YOU'}</div>
       <div class="conv-bubble ${isJ ? 'bubble-j' : 'bubble-u'}${(m.cards || []).length ? ' has-cards' : ''}">${renderToolCalls(calls)}${renderBody(m)}</div>
     </div>`;
   }).join('');

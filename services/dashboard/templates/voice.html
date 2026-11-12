@@ -24,8 +24,8 @@
     width: 34%;
     height: 34%;
   }
-  .voice-stage .orb-label  { font-size: clamp(0.55rem, 1.6vmin, 1.1rem); letter-spacing: 9px; margin-bottom: 8px; }
-  .voice-stage .orb-status { font-size: clamp(1rem, 3.6vmin, 2.6rem);   letter-spacing: 9px; white-space: nowrap; }
+  .voice-stage .orb-label  { font-size: clamp(0.55rem, 1.6vmin, 1.1rem); letter-spacing: clamp(3px, 1vmin, 9px); margin-bottom: 8px; }
+  .voice-stage .orb-status { font-size: clamp(1rem, 3.6vmin, 2.6rem);   letter-spacing: clamp(4px, 1vmin, 9px); white-space: nowrap; }
   /* Halos are decorative pulse rings — make them scale with the big orb instead
      of staying their original fixed 200–280px (which looked tiny on this page). */
   .voice-stage .halo { width: auto; height: auto; }
@@ -156,14 +156,20 @@
                     : 0.04;
   };
 
-  // Denser field than the ops orb — this one is meant to be stared at.
+  // ── 3D scene ──────────────────────────────────────────────
+  // A torus of particles (plus a fainter, cross-tilted orbit) around a lit
+  // glass sphere, projected with real perspective. The ring is drawn in two
+  // halves -- the far half before the sphere, the near half after -- so it
+  // genuinely passes behind and in front of the core. Depth drives size and
+  // brightness, and the whole thing yaws slowly with a gentle pitch wobble.
   const N_PARTICLES = 1500;
-  const parts = Array.from({ length: N_PARTICLES }, () => {
+  const parts = Array.from({ length: N_PARTICLES }, (_, i) => {
     const sparkle = Math.random() < 0.07;
     return {
-      a:   Math.random() * Math.PI * 2,
-      u:   Math.random() * 2 - 1,
-      v:   Math.random() * 2 - 1,
+      ring: i % 7 === 0 ? 1 : 0,            // 1 in 7 rides the secondary orbit
+      a:   Math.random() * Math.PI * 2,     // angle around the ring
+      phi: Math.random() * Math.PI * 2,     // angle around the tube
+      rr:  Math.sqrt(Math.random()),        // radial fill of the tube
       spd: (0.25 + Math.random() * 0.55) * (Math.random() < 0.5 ? 1 : -1),
       sz:  sparkle ? 1.6 + Math.random() * 1.1 : 0.55 + Math.random() * 0.85,
       base:sparkle ? 0.55 + Math.random() * 0.4 : 0.18 + Math.random() * 0.38,
@@ -190,116 +196,154 @@
     return Math.min(raw, 1.0);
   }
 
-  let lastTime = 0;
+  // Ring-local point (radius rad at angle a, height y) → screen + depth.
+  // pitch tips the ring toward the viewer; roll turns it in the screen plane.
+  function project(rad, a, y, pitch, roll, F) {
+    const x = rad * Math.cos(a), z = rad * Math.sin(a);
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const h = -y * cp - z * sp;             // screen-up is negative
+    const d =  z * cp - y * sp;             // + = away from the viewer
+    const k = F / (F + d);
+    let sx = x * k, sy = h * k;
+    if (roll) {
+      const cr = Math.cos(roll), sr = Math.sin(roll);
+      [sx, sy] = [sx * cr - sy * sr, sx * sr + sy * cr];
+    }
+    return { x: cx + sx, y: cy + sy, d, k };
+  }
+
+  let lastTime = 0, yaw = 0;
   function draw(ts) {
     const dt = Math.min((ts - lastTime) / 16.67, 3);
     lastTime = ts;
+    const t = ts * 0.001;
 
     amplitude += (targetAmplitude - amplitude) * 0.055 * dt;
     phaseT    += (0.018 + amplitude * 0.052) * dt;
+    yaw       += (0.0016 + amplitude * 0.004) * dt;
 
-    // Spatial constants scaled to the current buffer size.
-    const BASE_R = 98 * S, TUBE_R = 15 * S, TUBE_H = 9 * S;
+    const BASE_R = 108 * S, TUBE_R = 15 * S, F = 520 * S;
+    const SPHERE_R = BASE_R * 0.56 * (1 + amplitude * 0.04);
+    const rings = [
+      { pitch: 0.50 + Math.sin(t * 0.31) * 0.05, roll: -0.10, r: BASE_R,        alpha: 1.0 },
+      { pitch: 1.15 + Math.sin(t * 0.23) * 0.04, roll:  0.62, r: BASE_R * 0.86, alpha: 0.5 },
+    ];
 
     ctx.clearRect(0, 0, W, H);
-
     const col = _state === 'listening' ? [240, 160, 32] : [0, 212, 255];
     const [r, g, b] = col;
 
     let envAmplitude = amplitude;
     if (_state === 'speaking' && amplitude > 0.2) {
-      const t = ts * 0.001;
-      const env = _speechEnvelope(t);
-      envAmplitude = amplitude * (0.25 + 0.75 * env);
+      envAmplitude = amplitude * (0.25 + 0.75 * _speechEnvelope(t));
     }
-
     const maxD = TUBE_R * 0.45 + envAmplitude * TUBE_R * 2.6;
 
-    // Outer ambient bloom
+    // Ambient bloom
     const bloomR = BASE_R + TUBE_R + maxD;
-    const bloom  = ctx.createRadialGradient(cx, cy, BASE_R * 0.35, cx, cy, bloomR * 1.4);
-    bloom.addColorStop(0,    'transparent');
-    bloom.addColorStop(0.45, `rgba(${r},${g},${b},${0.012 + amplitude * 0.028})`);
-    bloom.addColorStop(0.78, `rgba(${r},${g},${b},${0.038 + amplitude * 0.07})`);
+    const bloom  = ctx.createRadialGradient(cx, cy, SPHERE_R * 0.8, cx, cy, bloomR * 1.4);
+    bloom.addColorStop(0,    `rgba(${r},${g},${b},${0.05 + amplitude * 0.06})`);
+    bloom.addColorStop(0.5,  `rgba(${r},${g},${b},${0.02 + amplitude * 0.04})`);
     bloom.addColorStop(1,    'transparent');
     ctx.fillStyle = bloom;
-    ctx.beginPath();
-    ctx.arc(cx, cy, bloomR * 1.45, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, bloomR * 1.45, 0, Math.PI * 2); ctx.fill();
 
-    // Dark center void
-    const voidR = Math.max(BASE_R - TUBE_R - maxD * 0.25 - 4 * S, 8 * S);
-    const void_ = ctx.createRadialGradient(cx, cy, 0, cx, cy, voidR + 8 * S);
-    void_.addColorStop(0,    'rgba(3,8,16,1)');
-    void_.addColorStop(0.82, 'rgba(3,8,16,0.97)');
-    void_.addColorStop(1,    'rgba(3,8,16,0)');
-    ctx.fillStyle = void_;
-    ctx.beginPath();
-    ctx.arc(cx, cy, voidR + 8 * S, 0, Math.PI * 2);
-    ctx.fill();
+    // Depth → 0 (far) .. 1 (near)
+    const near = (d) => Math.max(0, Math.min(1, 0.5 - d / (2 * BASE_R)));
 
-    // Ring stroke layers
-    for (let layer = 2; layer >= 0; layer--) {
-      const pOff = layer * 0.65;
-      const rOff = layer * 3.5 * S;
-      const alp  = (0.58 - layer * 0.14) * (0.22 + amplitude * 0.78);
-
-      ctx.beginPath();
-      for (let i = 0; i <= N_PATH; i++) {
-        const ang = (i / N_PATH) * Math.PI * 2;
-        const wv  = wave(ang, phaseT + pOff) * maxD;
-        const rad = BASE_R + TUBE_R * 0.65 + rOff + wv;
-        const x   = cx + rad * Math.cos(ang);
-        const y   = cy + rad * Math.sin(ang) * 0.87;
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    // Waveform strokes on the main ring, one half at a time.
+    function strokes(front) {
+      const ring = rings[0];
+      for (let layer = 2; layer >= 0; layer--) {
+        const pOff = layer * 0.65, rOff = layer * 3.5 * S;
+        const alp  = (0.58 - layer * 0.14) * (0.22 + amplitude * 0.78) * (front ? 1 : 0.45);
+        ctx.beginPath();
+        let pen = false;
+        for (let i = 0; i <= N_PATH; i++) {
+          const ang = (i / N_PATH) * Math.PI * 2;
+          const rad = ring.r + TUBE_R * 0.65 + rOff + wave(ang, phaseT + pOff) * maxD;
+          const P = project(rad, ang + yaw, 0, ring.pitch, ring.roll, F);
+          if ((P.d <= 0) === front) { pen ? ctx.lineTo(P.x, P.y) : ctx.moveTo(P.x, P.y); pen = true; }
+          else pen = false;
+        }
+        ctx.strokeStyle = `rgba(${r},${g},${b},${alp})`;
+        ctx.lineWidth   = (1.2 + envAmplitude * 0.9) * S * (front ? 1.15 : 0.8);
+        ctx.stroke();
       }
-      ctx.closePath();
-      ctx.strokeStyle = `rgba(${r},${g},${b},${alp})`;
-      ctx.lineWidth   = (1.2 + envAmplitude * 0.9) * S;
-      ctx.stroke();
-
-      ctx.beginPath();
-      for (let i = 0; i <= N_PATH; i++) {
-        const ang = (i / N_PATH) * Math.PI * 2;
-        const wv  = wave(ang, phaseT + pOff + 1.1) * maxD * 0.5;
-        const rad = BASE_R - TUBE_R * 0.45 + rOff * 0.4 + wv;
-        if (rad < 4 * S) continue;
-        const x   = cx + rad * Math.cos(ang);
-        const y   = cy + rad * Math.sin(ang) * 0.87;
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-      }
-      ctx.closePath();
-      ctx.strokeStyle = `rgba(${r},${g},${b},${alp * 0.42})`;
-      ctx.lineWidth   = 0.75 * S;
-      ctx.stroke();
     }
 
-    // Particle field
+    // Particles: positions once per frame, drawn in the matching half.
+    const pts = [];
     for (const p of parts) {
       p.a += p.spd * 0.001 * (1 + amplitude * 2.8) * dt;
-      const wv  = wave(p.a, phaseT) * maxD;
-      const rad = BASE_R + p.u * TUBE_R + wv;
-      if (rad < 0) continue;
-      const px = cx + rad * Math.cos(p.a);
-      const py = cy + (rad * Math.sin(p.a) + p.v * TUBE_H) * 0.87;
+      const ring = rings[p.ring];
+      const wv   = wave(p.a, phaseT) * maxD * (p.ring ? 0.5 : 1);
+      const tube = TUBE_R * p.rr * (p.ring ? 0.5 : 1);
+      const rad  = ring.r + tube * Math.cos(p.phi) + wv;
+      const P    = project(rad, p.a + yaw * (p.ring ? -0.7 : 1), tube * Math.sin(p.phi) * 0.8,
+                           ring.pitch, ring.roll, F);
       const dispFactor = Math.min(Math.abs(wv) / (maxD + 1), 1);
-      const baseBright = p.base * (0.3 + envAmplitude * 0.7);
-      const finalA     = Math.min(baseBright + dispFactor * 0.35 + (p.sparkle ? 0.1 : 0), 0.92);
-      ctx.beginPath();
-      ctx.arc(px, py, p.sz * (0.75 + envAmplitude * 0.45) * S, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${r},${g},${b},${finalA})`;
-      ctx.fill();
+      const n = near(P.d);
+      const a = Math.min(p.base * (0.3 + envAmplitude * 0.7) + dispFactor * 0.35 +
+                         (p.sparkle ? 0.1 : 0), 0.95) * (0.3 + 0.7 * n) * ring.alpha;
+      pts.push({ x: P.x, y: P.y, front: P.d <= 0, a,
+                 s: p.sz * (0.75 + envAmplitude * 0.45) * S * P.k * (0.8 + 0.4 * n) });
+    }
+    function particles(front) {
+      for (const q of pts) {
+        if (q.front !== front) continue;
+        ctx.beginPath();
+        ctx.arc(q.x, q.y, q.s, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${r},${g},${b},${q.a})`;
+        ctx.fill();
+      }
     }
 
-    // Inner-ring glow
-    const igR   = BASE_R - TUBE_R * 0.2;
-    const iglow = ctx.createRadialGradient(cx, cy, igR * 0.55, cx, cy, igR);
-    iglow.addColorStop(0, 'transparent');
-    iglow.addColorStop(1, `rgba(${r},${g},${b},${0.04 + amplitude * 0.08})`);
-    ctx.fillStyle = iglow;
-    ctx.beginPath();
-    ctx.arc(cx, cy, igR, 0, Math.PI * 2);
-    ctx.fill();
+    // Glass sphere: dark body lit from the top-left, fresnel rim, specular.
+    function sphere() {
+      const R = SPHERE_R;
+      const body = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.4, R * 0.05, cx, cy, R);
+      body.addColorStop(0,   `rgba(${Math.min(r + 60, 255)},${Math.min(g + 40, 255)},${Math.min(b + 20, 255)},${0.30 + amplitude * 0.25})`);
+      body.addColorStop(0.45, `rgba(${r * 0.25 | 0},${g * 0.25 | 0},${b * 0.3 | 0},0.92)`);
+      body.addColorStop(1,   'rgba(2,6,14,0.98)');
+      ctx.fillStyle = body;
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+
+      const rim = ctx.createRadialGradient(cx, cy, R * 0.72, cx, cy, R);
+      rim.addColorStop(0, 'transparent');
+      rim.addColorStop(1, `rgba(${r},${g},${b},${0.28 + amplitude * 0.35})`);
+      ctx.fillStyle = rim;
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+
+      // Bounce light along the bottom edge
+      const bounce = ctx.createRadialGradient(cx, cy + R * 0.95, 0, cx, cy + R * 0.95, R * 0.7);
+      bounce.addColorStop(0, `rgba(${r},${g},${b},${0.12 + amplitude * 0.12})`);
+      bounce.addColorStop(1, 'transparent');
+      ctx.save();
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
+      ctx.fillStyle = bounce; ctx.fillRect(cx - R, cy, R * 2, R);
+      // Specular highlight
+      ctx.translate(cx - R * 0.38, cy - R * 0.45);
+      ctx.rotate(-0.6);
+      const spec = ctx.createRadialGradient(0, 0, 0, 0, 0, R * 0.32);
+      spec.addColorStop(0, 'rgba(255,255,255,0.22)');
+      spec.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.scale(1, 0.55);
+      ctx.fillStyle = spec;
+      ctx.beginPath(); ctx.arc(0, 0, R * 0.32, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+
+      ctx.strokeStyle = `rgba(${r},${g},${b},${0.35 + amplitude * 0.4})`;
+      ctx.lineWidth = 1.2 * S;
+      ctx.shadowColor = `rgba(${r},${g},${b},0.8)`;
+      ctx.shadowBlur = (8 + amplitude * 14) * S;
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    strokes(false); particles(false);   // far half
+    sphere();
+    strokes(true);  particles(true);    // near half
 
     requestAnimationFrame(draw);
   }

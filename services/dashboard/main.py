@@ -55,7 +55,7 @@ GATEWAY_TIMEOUT = int(os.environ.get("MOBILE_LLM_TIMEOUT", "45")) + 15
 # Clients
 # ---------------------------------------------------------------------------
 
-_redis = redis.Redis(host=REDIS_HOST, decode_responses=True)
+_redis = redis.Redis(host=REDIS_HOST, port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True)
 _mqtt = mqtt.Client()
 
 # Widget files live in services/dashboard/widgets/ (volume-mounted into /app/widgets/)
