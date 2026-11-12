@@ -864,6 +864,42 @@ def _build_system_prompt(room: str) -> list[dict]:
     ]
 
 
+def _annotate(content, ts_iso: str, tools: list | None):
+    """Prefix a user message with when it was sent and what the reply did.
+
+    History reached the model as bare text, so it could not tell an old answer
+    from a new one. Asked "what time is it?" at 9:10 PM with "It's 7:43" two
+    turns up, it apologised for having been wrong -- the 7:43 answer was right
+    at 7:43. And with the tool calls gone from history, "The bedroom lamp is
+    on" looked unbacked, so it "re-sent" the command. The note rides on the
+    USER message (not the reply) so the model never learns to write it itself.
+    """
+    from zoneinfo import ZoneInfo
+    stamp = ""
+    try:
+        when = datetime.fromisoformat(ts_iso).astimezone(
+            ZoneInfo(os.environ.get("USER_TZ", "America/Chicago")))
+        stamp = when.strftime("%a %b %-d, %-I:%M %p")
+    except Exception:
+        pass
+    if not stamp:
+        return content
+    note = f"[Sent {stamp}"
+    if tools:
+        note += ". Your reply ran: " + "; ".join(str(t) for t in tools[:8])
+    note += "]\n"
+    if isinstance(content, str):
+        return note + content
+    if isinstance(content, list):
+        out = [dict(b) if isinstance(b, dict) else b for b in content]
+        for b in out:
+            if isinstance(b, dict) and b.get("type") == "text":
+                b["text"] = note + b.get("text", "")
+                return out
+        return [{"type": "text", "text": note.strip()}] + out
+    return content
+
+
 def _user_local_now() -> str:
     """The user's wall-clock time. Giving the model only UTC made it do the
     conversion itself -- and a brief once announced 3 AM in the afternoon."""
@@ -917,8 +953,8 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     history_key = f"conversation:{USER_ID}"
     history_raw = [] if fresh else r.lrange(history_key, -20, -1)
     history = []
-    for h in history_raw:
-        msg     = json.loads(h)
+    parsed = [json.loads(h) for h in history_raw]
+    for i, msg in enumerate(parsed):
         content = msg["content"]
         if isinstance(content, list):
             has_tool_use = any(
@@ -939,7 +975,11 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
             if not content:
                 continue
         if msg["role"] == "user":
-            history.append(HumanMessage(content=content))
+            reply = parsed[i + 1] if i + 1 < len(parsed) else {}
+            if reply.get("role") != "assistant" or reply.get("turn_id") != msg.get("turn_id"):
+                reply = {}
+            history.append(HumanMessage(content=_annotate(content, msg.get("ts", ""),
+                                                          reply.get("tools"))))
         elif msg["role"] == "assistant":
             history.append(AIMessage(content=content))
 
@@ -957,11 +997,13 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
         )
     else:
         user_content = text
+    user_content = _annotate(user_content, datetime.now(timezone.utc).isoformat(), None)
     messages = [system] + history + [HumanMessage(content=user_content)]
 
     full_response = ""
     sentence_buf  = ""
     _emitted_tc_ids: set = set()
+    turn_tools: list[str] = []   # stored with the reply; see _annotate_history
     turn_cards: list[dict] = []
     _tool_ran_since_text = False
 
@@ -977,6 +1019,7 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
                     _tool_ran_since_text = True
                     turn_cards.extend(_cards.take(str(chunk.content or "")))
                     result = _cards.strip(str(chunk.content))[:200] if chunk.content else ""
+                    turn_tools.append(f"{chunk.name} → {' '.join(result.split())[:100]}")
                     # ToolMessage.tool_call_id is the other half of the pair
                     _push_tool_event(chunk.name, "", "done", result,
                                      call_id=getattr(chunk, "tool_call_id", "") or "",
@@ -1080,6 +1123,8 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     # it every refresh put ALL pushes after ALL history, burying the newest turn.
     assistant_entry = {"role": "assistant", "content": full_response, "turn_id": turn_id,
                        "ts": _now_iso}
+    if turn_tools:
+        assistant_entry["tools"] = turn_tools[:12]
     if turn_cards:
         # One card per kind+title, the LAST one wins: checking today's log and
         # then logging a meal produced an empty tracker AND the updated one.
