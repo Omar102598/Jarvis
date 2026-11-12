@@ -42,11 +42,11 @@ except Exception:
 
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 1600  # 100ms at 16kHz
-SILENCE_THRESHOLD = int(os.environ.get("STT_SILENCE_THRESHOLD", "150"))  # RMS; lower = more sensitive
-SILENCE_DURATION = float(os.environ.get("STT_SILENCE_DURATION", "0.7"))  # seconds of silence to stop
-INITIAL_GRACE = float(os.environ.get("STT_INITIAL_GRACE", "0.6"))  # seconds before silence detection starts
+SILENCE_DURATION = float(os.environ.get("STT_SILENCE_DURATION", "0.7"))  # silence AFTER speech that ends a take
+# (STT_SILENCE_THRESHOLD / STT_INITIAL_GRACE are gone: the threshold now tracks the
+# room noise floor and silence only counts after speech -- see MicStream below.)
 # Hard ceiling on one utterance. Reached ONLY when silence is never detected
-# (ambient noise above SILENCE_THRESHOLD), in which case it is pure added
+# (noise never drops below the adaptive threshold), in which case it is pure added
 # latency on every turn — so keep it tight and watch the "hit cap" warning.
 MAX_RECORD_SECONDS = float(os.environ.get("STT_MAX_RECORD_SECONDS", "10"))
 # Seconds after TTS finishes to keep an open mic for follow-ups (0 = disabled)
@@ -168,61 +168,204 @@ def _beep():
         pass  # beep is best-effort
 
 
-def capture_command_audio() -> io.BytesIO:
-    """Record audio until silence or max duration, return as WAV BytesIO."""
-    audio = pyaudio.PyAudio()
-    stream = audio.open(
-        format=pyaudio.paInt16, channels=1, rate=SAMPLE_RATE,
-        input=True, frames_per_buffer=CHUNK_SIZE,
-    )
+# ---------------------------------------------------------------------------
+# Always-open mic + endpointing
+#
+# The old capture opened PyAudio fresh on every wake word, AFTER a blocking
+# afplay beep, then started counting "silence" 0.6s in whether or not the user
+# had said anything, against a fixed RMS of 350. This mic puts normal speech
+# under 350, so every take ended at ~1.8s: "set the thermostat to 71 cool" came
+# through as "that the thermostat is 71." -- first word lost to the beep/open
+# gap, last words lost to the early stop.
+#
+# Now: one stream stays open and feeds a rolling buffer (so the words said
+# right after "Hey Jarvis" are already captured when the wake event lands),
+# the speech threshold tracks the room's own noise floor, and silence only
+# counts once speech has actually been heard (as Hermes Agent does).
+# ---------------------------------------------------------------------------
+import collections
+import queue
+import threading
 
-    import time as _time
-    _t0 = _time.time()
-    _rms_floor = None
-    _stopped_on_silence = False
+PREROLL_SECONDS = float(os.environ.get("STT_PREROLL_SECONDS", "0.8"))
+# Speech must sit above threshold this long before silence starts counting.
+SPEECH_CONFIRM = float(os.environ.get("STT_SPEECH_CONFIRM", "0.3"))
+# Give up if no speech is heard at all within this long.
+NO_SPEECH_TIMEOUT = float(os.environ.get("STT_NO_SPEECH_TIMEOUT", "4.0"))
+# Adaptive threshold = noise floor x multiplier, clamped to [min, max].
+NOISE_MULTIPLIER = float(os.environ.get("STT_NOISE_MULTIPLIER", "2.0"))
+THRESHOLD_MIN = float(os.environ.get("STT_THRESHOLD_MIN", "150"))
+THRESHOLD_MAX = float(os.environ.get("STT_THRESHOLD_MAX", "600"))
+# Silero speech probability (bundled with faster-whisper) decides speech vs
+# silence; loudness is only the fallback. This mic puts normal speech at
+# ~1.5-2x the room's noise floor, too close for an RMS cutoff to be reliable.
+VAD_THRESHOLD = float(os.environ.get("STT_VAD_THRESHOLD", "0.5"))
+BEEP = os.environ.get("STT_BEEP", "false").strip().lower() in ("1", "true", "yes")
 
-    frames = []
-    silent_chunks = 0
-    chunks_per_second = SAMPLE_RATE // CHUNK_SIZE
-    grace_chunks = int(INITIAL_GRACE * chunks_per_second)
-    chunk_index = 0
+_CPS = SAMPLE_RATE // CHUNK_SIZE   # chunks per second (10)
 
-    for _ in range(int(MAX_RECORD_SECONDS * chunks_per_second)):
-        data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-        frames.append(data)
 
-        # During the grace period don't check for silence — give the user
-        # time to start speaking after the beep.
-        if chunk_index >= grace_chunks:
-            audio_data = np.frombuffer(data, dtype=np.int16)
-            rms = np.sqrt(np.mean(audio_data.astype(np.float32) ** 2))
+def _rms(chunk: bytes) -> float:
+    a = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+    return float(np.sqrt(np.mean(a * a))) if a.size else 0.0
 
-            _rms_floor = rms if _rms_floor is None else min(_rms_floor, rms)
 
-            if rms < SILENCE_THRESHOLD:
-                silent_chunks += 1
-            else:
-                silent_chunks = 0
+class SpeechScorer:
+    """Speech probability for the latest 100ms chunk, via Silero VAD over a
+    ~0.5s sliding window (the model call is stateless, so it needs context)."""
 
-            if silent_chunks > int(SILENCE_DURATION * chunks_per_second):
-                _stopped_on_silence = True
-                break
+    WINDOW = 8192   # 0.512s at 16kHz, a multiple of Silero's 512-sample frame
 
-        chunk_index += 1
+    def __init__(self):
+        from faster_whisper.vad import get_vad_model
+        self._model = get_vad_model()
+        self._buf = np.zeros(self.WINDOW, dtype=np.float32)
 
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
+    def reset(self):
+        self._buf[:] = 0
 
-    _elapsed = _time.time() - _t0
-    if _stopped_on_silence:
-        print(f"[STT] Recorded {_elapsed:.1f}s (stopped on silence; "
-              f"quietest RMS {_rms_floor or 0:.0f} vs threshold {SILENCE_THRESHOLD})")
+    def __call__(self, chunk: bytes) -> float:
+        a = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+        self._buf = np.concatenate([self._buf, a])[-self.WINDOW:]
+        probs = np.asarray(self._model(self._buf)).reshape(-1)
+        return float(probs[-3:].max()) if probs.size else 0.0
+
+
+class Endpointer:
+    """Decides when an utterance is over, from per-chunk RMS. Pure logic, so it
+    can be tested without a microphone."""
+
+    def __init__(self, threshold: float = 0.5):
+        self.threshold = threshold
+        self.loud = 0          # consecutive chunks above threshold
+        self.silent = 0        # consecutive chunks below, after speech
+        self.speech = False
+        self.n = 0
+
+    def feed(self, level: float) -> str | None:
+        """`level` is a speech probability (or RMS in fallback mode), compared
+        against `threshold`. Returns None to keep going, or why it stopped:
+        'silence' | 'no_speech'."""
+        self.n += 1
+        if level >= self.threshold:
+            self.loud += 1
+            self.silent = 0
+            if self.loud >= max(1, int(SPEECH_CONFIRM * _CPS)):
+                self.speech = True
+        else:
+            self.loud = 0
+            if self.speech:
+                self.silent += 1
+                if self.silent >= int(SILENCE_DURATION * _CPS):
+                    return "silence"
+        if not self.speech and self.n >= int(NO_SPEECH_TIMEOUT * _CPS):
+            return "no_speech"
+        return None
+
+
+class MicStream:
+    """One always-open input stream. Keeps the last few seconds of RMS for the
+    noise floor and the last PREROLL_SECONDS of audio for pre-roll."""
+
+    def __init__(self):
+        self._pa = pyaudio.PyAudio()
+        self._stream = self._pa.open(format=pyaudio.paInt16, channels=1, rate=SAMPLE_RATE,
+                                     input=True, frames_per_buffer=CHUNK_SIZE)
+        self._ring = collections.deque(maxlen=max(1, int(PREROLL_SECONDS * _CPS)))
+        self._levels = collections.deque(maxlen=5 * _CPS)
+        self._listener: queue.Queue | None = None
+        self._lock = threading.Lock()
+        threading.Thread(target=self._run, daemon=True, name="mic").start()
+
+    def _run(self):
+        while True:
+            try:
+                data = self._stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            except Exception as exc:
+                print(f"[STT] mic read error: {exc}")
+                time.sleep(0.5)
+                continue
+            with self._lock:
+                self._ring.append(data)
+                self._levels.append(_rms(data))
+                if self._listener is not None:
+                    self._listener.put(data)
+
+    def noise_floor(self) -> float:
+        lv = sorted(self._levels)
+        return lv[len(lv) // 5] if lv else 0.0   # 20th percentile of the last 5s
+
+    def start(self, preroll: bool) -> tuple[list[bytes], queue.Queue]:
+        q: queue.Queue = queue.Queue()
+        with self._lock:
+            pre = list(self._ring) if preroll else []
+            self._listener = q
+        return pre, q
+
+    def stop(self):
+        with self._lock:
+            self._listener = None
+
+
+_mic: MicStream | None = None
+_scorer: "SpeechScorer | None" = None
+_scorer_failed = False
+
+
+def _get_scorer():
+    global _scorer, _scorer_failed
+    if _scorer is None and not _scorer_failed:
+        try:
+            _scorer = SpeechScorer()
+        except Exception as exc:
+            _scorer_failed = True
+            print(f"[STT] Silero VAD unavailable ({exc}) — falling back to RMS")
+    return _scorer
+
+
+def capture_command_audio(preroll: bool = True) -> io.BytesIO:
+    """Record one utterance and return it as WAV. `preroll` prepends the audio
+    from just before the call (the words right after the wake word)."""
+    global _mic
+    if _mic is None:
+        _mic = MicStream()
+        time.sleep(0.3)   # let the noise floor see a few chunks on first use
+
+    floor = _mic.noise_floor()
+    scorer = _get_scorer()
+    if scorer is not None:
+        scorer.reset()
+        threshold = VAD_THRESHOLD
+        level = scorer
     else:
-        print(f"[STT] Recorded {_elapsed:.1f}s — HIT THE {MAX_RECORD_SECONDS}s CAP: "
-              f"silence never detected (quietest RMS {_rms_floor or 0:.0f} never fell "
-              f"below threshold {SILENCE_THRESHOLD}). Raise STT_SILENCE_THRESHOLD "
-              f"above the room's noise floor to stop paying this on every turn.")
+        threshold = min(THRESHOLD_MAX, max(THRESHOLD_MIN, floor * NOISE_MULTIPLIER))
+        level = _rms
+    ep = Endpointer(threshold)
+    t0 = time.time()
+    pre, q = _mic.start(preroll)
+    frames = list(pre)
+    for c in pre:          # warm the VAD's context window; doesn't drive endpointing
+        if scorer is not None:
+            scorer(c)
+    why = "cap"
+    try:
+        for _ in range(int(MAX_RECORD_SECONDS * _CPS)):
+            try:
+                data = q.get(timeout=10)
+            except queue.Empty:
+                why = "mic stalled"
+                break
+            frames.append(data)
+            r = ep.feed(level(data))
+            if r:
+                why = r
+                break
+    finally:
+        _mic.stop()
+
+    print(f"[STT] Recorded {time.time() - t0:.1f}s (+{len(pre) / _CPS:.1f}s pre-roll), "
+          f"stop={why}, speech={'yes' if ep.speech else 'no'}, "
+          f"{'vad' if scorer is not None else f'rms floor {floor:.0f}'} threshold {threshold:g}")
 
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
@@ -232,6 +375,15 @@ def capture_command_audio() -> io.BytesIO:
         wf.writeframes(b"".join(frames))
     buf.seek(0)
     return buf
+
+
+# Pre-roll can catch the tail of the wake phrase itself.
+_WAKE_PREFIX = re.compile(r"^\s*(hey|hi|okay|ok)?[\s,]*jarvis\b[\s,.!?]*", re.I)
+
+
+def _strip_wake(text: str) -> str:
+    out = _WAKE_PREFIX.sub("", text or "").strip()
+    return out[:1].upper() + out[1:] if out else out
 
 
 def cache_audio(audio_buf: io.BytesIO, room: str) -> str:
@@ -317,9 +469,10 @@ def on_tts_done(client, userdata, msg):
     # Brief pause so the mic doesn't pick up audio reverb from the speaker
     time.sleep(0.6)
     print(f"[STT] Follow-up window open for {FOLLOWUP_WINDOW}s in '{room}'...")
-    _beep()
+    if BEEP:
+        _beep()
 
-    audio_buf = capture_command_audio()
+    audio_buf = capture_command_audio(preroll=False)
     audio_path = cache_audio(audio_buf, room)
     audio_buf.seek(0)
 
@@ -343,15 +496,16 @@ def on_wake_word(client, userdata, msg):
     """Handle wake word detection: record, transcribe, publish."""
     data = json.loads(msg.payload)
     room = data["room"]
-    print(f"[STT] Wake word in '{room}', beeping and recording...")
-    _beep()
+    print(f"[STT] Wake word in '{room}', recording...")
+    if BEEP:
+        _beep()
 
-    audio_buf = capture_command_audio()
+    audio_buf = capture_command_audio(preroll=True)
     audio_path = cache_audio(audio_buf, room)
     audio_buf.seek(0)
 
     segments, info = model.transcribe(audio_buf, language="en", vad_filter=True)
-    text = " ".join([s.text for s in segments]).strip()
+    text = _strip_wake(" ".join([s.text for s in segments]).strip())
 
     if text and not _is_hallucination(text):
         print(f"[STT] Transcribed ({room}): '{text}'")
@@ -364,6 +518,10 @@ def on_wake_word(client, userdata, msg):
 
 
 def main():
+    # Open the mic at startup, not on the first wake word: the first CoreAudio
+    # read can take seconds, and pre-roll needs the ring already filling.
+    global _mic
+    _mic = MicStream()
     mqtt_client = mqtt.Client()
 
     # Subscribe in on_connect (NOT once in main): paho only restores
