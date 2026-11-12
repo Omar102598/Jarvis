@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		010B2E10A61C713A18214654 /* VoiceRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 395FDC318B7947C290651B23 /* VoiceRecorder.swift */; };
 		0470F816916DC59969908838 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0351D2CCD443344D2D3C6A55 /* SettingsView.swift */; };
+		04A39413F29A6F4983AF16D8 /* ChatMediaCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = D758C80F629DBF6D148898E6 /* ChatMediaCache.swift */; };
 		060697313E064F4B3877572C /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05324E07DB759668AAED1FC0 /* AgentsView.swift */; };
 		299C52A2483D4B83A86BADFD /* JarvisClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01850FC46EF51C52C729FEDD /* JarvisClient.swift */; };
 		2C9303C3D0E1EF897AD2BD9C /* PresenceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C575D13A1066337B17BF9CD9 /* PresenceManager.swift */; };
@@ -59,6 +60,7 @@
 		C575D13A1066337B17BF9CD9 /* PresenceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresenceManager.swift; sourceTree = "<group>"; };
 		CBC398BFD0D411B5F40A28F3 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 		CFE81596832509FC6C029227 /* CalendarManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarManager.swift; sourceTree = "<group>"; };
+		D758C80F629DBF6D148898E6 /* ChatMediaCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMediaCache.swift; sourceTree = "<group>"; };
 		DB76D2E01AE4FFC890367A0D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F24F09E2348676B64A4ABFCC /* MarkdownText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownText.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -177,6 +179,7 @@
 			children = (
 				9313A453880957C0C0B0638D /* CameraPicker.swift */,
 				5A7A2413BEBD79F55B05BAC0 /* CardViews.swift */,
+				D758C80F629DBF6D148898E6 /* ChatMediaCache.swift */,
 				12BF08499D6DED3B05E5AEC0 /* ChatView.swift */,
 				00DEA30CBAF36DA03378BC95 /* ChatViewModel.swift */,
 				F24F09E2348676B64A4ABFCC /* MarkdownText.swift */,
@@ -297,6 +300,7 @@
 				F998C62E240F1C0A24670D44 /* CalendarManager.swift in Sources */,
 				89CD52C9D7F6B7B8DB38FC7D /* CameraPicker.swift in Sources */,
 				D9B1C7E8DB35AA7002FAF6B9 /* CardViews.swift in Sources */,
+				04A39413F29A6F4983AF16D8 /* ChatMediaCache.swift in Sources */,
 				815B7FD2D06021F52551C1CA /* ChatView.swift in Sources */,
 				2D899C2282A114DE9CBDE6B5 /* ChatViewModel.swift in Sources */,
 				DEE4A6A0FA414A580939ED2B /* ContentView.swift in Sources */,

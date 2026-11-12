@@ -251,6 +251,8 @@ struct ChatMessage: Identifiable, Equatable {
     /// the image renders from data and never re-fetches (which was causing
     /// snapshots to flash then vanish on list re-render). Videos stay URL-based.
     var imageData: Data? = nil
+    /// The user's attachment was a video (imageData is its first frame).
+    var mediaIsVideo: Bool = false
     /// Server-side push id (gateway /pushes feed) — dedupes the merge between
     /// live WebSocket cards and the persisted feed fetched on foreground.
     var pushID: String? = nil

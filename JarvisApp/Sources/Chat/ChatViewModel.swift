@@ -198,6 +198,20 @@ final class ChatViewModel: ObservableObject {
         let pushes = (try? await JarvisClient.shared.fetchPushes()) ?? []
         let fresh = history.map { h -> ChatMessage in
             var m = ChatMessage(role: h.role == "user" ? .user : .jarvis, text: h.text)
+            if h.role == "user" {
+                // "[camera image]" lines stand in for an attachment: hide them
+                // and show the thumbnail kept on the phone instead. Several of
+                // them means a video's sampled frames.
+                let markers = h.text.components(separatedBy: "[camera image]").count - 1
+                let (clean, hadMedia) = ChatMediaCache.stripMarkers(h.text)
+                if hadMedia {
+                    m.text = clean
+                    m.mediaIsVideo = markers > 1
+                    if !h.turnID.isEmpty {
+                        m.imageData = ChatMediaCache.load(turnID: h.turnID)
+                    }
+                }
+            }
             m.cards = h.cards
             m.date = ChatMessage.parseDate(h.ts)
             if !h.turnID.isEmpty { m.turnID = h.turnID }
@@ -338,7 +352,8 @@ final class ChatViewModel: ObservableObject {
 
     func sendImage(_ imageData: Data, prompt: String? = nil) async {
         let prompt = Self.resolvedPrompt(prompt, fallback: Self.defaultImagePrompt)
-        append(.user, text: prompt)
+        let userId = append(.user, text: prompt,
+                            thumbnail: ChatMediaCache.thumbnail(fromImage: imageData))
         let loadingId = appendLoading()
         await glassesManager?.send(.thinking)
         isProcessing = true
@@ -348,6 +363,7 @@ final class ChatViewModel: ObservableObject {
             // Camera capture means eyes already on the screen — show, don't speak.
             let payload = Self.downscaledJPEG(imageData)
             let response = try await JarvisClient.shared.askImage(payload, text: prompt)
+            pinUserMedia(userId, turnID: response.turnID)
             finishLoading(loadingId, text: response.text, turnID: response.turnID,
                           cards: response.cards)
             await glassesManager?.send(response.display.hudState)
@@ -406,7 +422,9 @@ final class ChatViewModel: ObservableObject {
                                    + "Try a shorter clip (5-20s works best).")
             return
         }
-        append(.user, text: "\(prompt) (video, \(String(format: "%.1f", mb))MB)")
+        let userId = append(.user, text: prompt,
+                            thumbnail: ChatMediaCache.thumbnail(fromVideo: videoData),
+                            isVideo: true)
         let loadingId = appendLoading()
         await glassesManager?.send(.thinking)
         isProcessing = true
@@ -414,6 +432,7 @@ final class ChatViewModel: ObservableObject {
 
         do {
             let response = try await JarvisClient.shared.askVideo(videoData, text: prompt)
+            pinUserMedia(userId, turnID: response.turnID)
             finishLoading(loadingId, text: response.text, turnID: response.turnID,
                           cards: response.cards)
             await glassesManager?.send(response.display.hudState)
@@ -446,10 +465,26 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: Message helpers
 
-    private func append(_ role: ChatMessage.Role, text: String) {
+    @discardableResult
+    private func append(_ role: ChatMessage.Role, text: String,
+                        thumbnail: Data? = nil, isVideo: Bool = false) -> UUID {
         var msg = ChatMessage(role: role, text: text)
         msg.date = Date()
+        msg.imageData = thumbnail
+        msg.mediaIsVideo = isVideo
         messages.append(msg)
+        return msg.id
+    }
+
+    /// Once the turn id is known, pin the user's thumbnail to it on disk so the
+    /// photo survives the chat being rebuilt from /history.
+    private func pinUserMedia(_ id: UUID, turnID: String) {
+        guard !turnID.isEmpty,
+              let idx = messages.firstIndex(where: { $0.id == id }) else { return }
+        messages[idx].turnID = turnID
+        if let thumb = messages[idx].imageData {
+            ChatMediaCache.save(thumb, turnID: turnID)
+        }
     }
 
     private func appendLoading() -> UUID {

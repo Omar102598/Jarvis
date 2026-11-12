@@ -517,13 +517,20 @@ struct MessageBubble: View {
             if message.role == .user { Spacer(minLength: 60) }
             Group {
                 if message.role == .user {
-                    Text(message.text)
-                        .font(.system(size: 14))
-                        .foregroundColor(.black)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Color.jBlue)
-                        .cornerRadius(12)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        if let data = message.imageData {
+                            UserMediaThumb(data: data, isVideo: message.mediaIsVideo)
+                        }
+                        if !message.text.isEmpty {
+                            Text(message.text)
+                                .font(.system(size: 14))
+                                .foregroundColor(.black)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(Color.jBlue)
+                                .cornerRadius(12)
+                        }
+                    }
                 } else {
                     jarvisBubble
                 }
@@ -682,6 +689,36 @@ private struct ToolCallRow: View {
 // MARK: - Tap-to-view media card (Ring snapshots / live HLS streams)
 
 import AVKit
+
+/// The photo (or a video's first frame) the user sent, shown on their own
+/// message the way ChatGPT shows an upload. Tap for full screen.
+struct UserMediaThumb: View {
+    let data: Data
+    let isVideo: Bool
+    @State private var showViewer = false
+
+    var body: some View {
+        if let ui = UIImage(data: data) {
+            Image(uiImage: ui).resizable().scaledToFill()
+                .frame(width: 200, height: 200 * min(max(ui.size.height / max(ui.size.width, 1), 0.6), 1.4))
+                .clipped()
+                .cornerRadius(12)
+                .overlay {
+                    if isVideo {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 34))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .shadow(radius: 4)
+                    }
+                }
+                .onTapGesture { showViewer = true }
+                .fullScreenCover(isPresented: $showViewer) {
+                    MediaViewer(url: URL(string: "about:blank")!, isVideo: false,
+                                cachedData: data)
+                }
+        }
+    }
+}
 
 struct MediaCard: View {
     let url: URL
