@@ -887,6 +887,8 @@ def _annotate(content, ts_iso: str, tools: list | None):
     note = f"[Sent {stamp}"
     if tools:
         note += ". Your reply ran: " + "; ".join(str(t) for t in tools[:8])
+    elif tools is not None:
+        note += ". Your reply ran no tools"
     note += "]\n"
     if isinstance(content, str):
         return note + content
@@ -954,6 +956,19 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     history_raw = [] if fresh else r.lrange(history_key, -20, -1)
     history = []
     parsed = [json.loads(h) for h in history_raw]
+    # Replies saved before "tools" was recorded: recover what they ran from the
+    # tool-event log (last 100 events, keyed by turn). Without this the model
+    # read a missing note as "ran nothing" and disowned real actions.
+    _backfill: dict[str, list[str]] = {}
+    if any(m.get("role") == "assistant" and "tools" not in m for m in parsed):
+        try:
+            for raw_ev in reversed(r.lrange("jarvis:tool_events", 0, 99)):
+                ev = json.loads(raw_ev)
+                if ev.get("status") == "done" and ev.get("turn_id"):
+                    _backfill.setdefault(ev["turn_id"], []).append(
+                        f"{ev.get('tool')} → {' '.join(str(ev.get('result_preview') or '').split())[:100]}")
+        except Exception:
+            pass
     for i, msg in enumerate(parsed):
         content = msg["content"]
         if isinstance(content, list):
@@ -978,8 +993,10 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
             reply = parsed[i + 1] if i + 1 < len(parsed) else {}
             if reply.get("role") != "assistant" or reply.get("turn_id") != msg.get("turn_id"):
                 reply = {}
-            history.append(HumanMessage(content=_annotate(content, msg.get("ts", ""),
-                                                          reply.get("tools"))))
+            tools = reply.get("tools")
+            if tools is None and reply:
+                tools = _backfill.get(reply.get("turn_id", ""))   # None = unknown
+            history.append(HumanMessage(content=_annotate(content, msg.get("ts", ""), tools)))
         elif msg["role"] == "assistant":
             history.append(AIMessage(content=content))
 
@@ -1123,8 +1140,8 @@ async def _process_async(text: str, room: str, tier: str = "sonnet", on_sentence
     # it every refresh put ALL pushes after ALL history, burying the newest turn.
     assistant_entry = {"role": "assistant", "content": full_response, "turn_id": turn_id,
                        "ts": _now_iso}
-    if turn_tools:
-        assistant_entry["tools"] = turn_tools[:12]
+    # Always present on new replies, so "ran nothing" is stated, not inferred.
+    assistant_entry["tools"] = turn_tools[:12]
     if turn_cards:
         # One card per kind+title, the LAST one wins: checking today's log and
         # then logging a meal produced an empty tracker AND the updated one.
