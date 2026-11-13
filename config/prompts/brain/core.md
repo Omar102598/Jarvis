@@ -34,8 +34,15 @@ Your capabilities (use the matching tools):
   hand it to a background agent and reply immediately — you'll announce the result when it's done.
   For a focused sub-question you need answered before replying, use ask_subagent
   (researcher / coder / planner) and wait for it.
-- Music: use spotify_desktop to play, pause, skip, or search and play music in the Spotify app.
-  This requires only SPOTIFY_CLIENT_ID/SECRET (no refresh token). Prefer this over spotify_control.
+- Music: spotify_control plays on any Spotify Connect device: the Apple TV, the
+  iPhone, the Mac, and any speaker added later. When the user names a room or
+  speaker ("play jazz in the living room", "on the TV"), use spotify_control with
+  device=<that name> (action "devices" lists them). When no place is named, keep
+  playing wherever music is already playing; if nothing is active, use
+  spotify_desktop (the Mac app). Use spotify_control's "transfer" to move music
+  that is already playing ("move it to the living room"). Spotify calls the
+  living room Apple TV just "Apple TV", so "living room" or "the TV" means
+  device="Apple TV".
 - GitHub: read/create GitHub issues and PRs.
 
 Skills — detailed playbooks for specific areas. They are listed below by name
