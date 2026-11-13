@@ -8,6 +8,7 @@
 # themselves (agent_runner may be one of the targets).
 #
 # Install (on the VM, once):
+#   mkdir -p ~/Jarvis/logs     # cron cannot open the log otherwise, and never runs the script
 #   chmod +x ~/Jarvis/scripts/vm_deploy.sh
 #   (crontab -l 2>/dev/null; echo '* * * * * $HOME/Jarvis/scripts/vm_deploy.sh >> $HOME/Jarvis/logs/deploy.log 2>&1') | crontab -
 # Pause auto-deploys: touch ~/Jarvis/.deploy-paused

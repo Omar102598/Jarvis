@@ -119,7 +119,7 @@
 {% block scripts %}
 <script>
 // ══════════════════════════════════════════════════════════
-//  DOT SPHERE + WAVE RING — voice-reactive 3D particle orb
+//  DOT SPHERE + TORUS WAVEFORM — voice-reactive 3D particle orb
 //  Size-aware version: the drawing buffer is sized to the orb box and every
 //  spatial constant scales by S = W/290, so the ring fills a huge /voice orb
 //  crisply while staying identical to the original at the 290px reference size.
@@ -161,7 +161,7 @@
   // around the sphere. Every dot is projected with real perspective and drawn
   // far-to-near, so the ring genuinely passes behind and in front of the
   // sphere. Depth and a top-left light drive size and brightness.
-  const N_SPHERE = 2400, N_RING = 780, RING_LANES = 3;
+  const N_SPHERE = 2200;
 
   const sphereDots = [];
   const GA = Math.PI * (3 - Math.sqrt(5));            // golden angle
@@ -171,13 +171,23 @@
                       sz: 0.42 + Math.random() * 0.5, base: 0.45 + Math.random() * 0.4,
                       sparkle: Math.random() < 0.04 });
   }
-  const ringDots = [];
-  for (let lane = 0; lane < RING_LANES; lane++) {
-    for (let i = 0; i < N_RING / RING_LANES; i++) {
-      ringDots.push({ lane, a: (i / (N_RING / RING_LANES)) * Math.PI * 2 + lane * 0.011,
-                      sz: 0.5 + Math.random() * 0.45 });
-    }
-  }
+  // The torus waveform (from the previous orb): particles in a tube around a
+  // main ring, plus a fainter cross-tilted orbit, with layered wave strokes.
+  const N_PARTICLES = 1300;
+  const parts = Array.from({ length: N_PARTICLES }, (_, i) => {
+    const sparkle = Math.random() < 0.07;
+    return {
+      ring: i % 7 === 0 ? 1 : 0,
+      a:   Math.random() * Math.PI * 2,
+      phi: Math.random() * Math.PI * 2,
+      rr:  Math.sqrt(Math.random()),
+      spd: (0.25 + Math.random() * 0.55) * (Math.random() < 0.5 ? 1 : -1),
+      sz:  sparkle ? 1.6 + Math.random() * 1.1 : 0.55 + Math.random() * 0.85,
+      base:sparkle ? 0.55 + Math.random() * 0.4 : 0.18 + Math.random() * 0.38,
+      sparkle,
+    };
+  });
+  const N_PATH = 320;
 
   function wave(angle, t) {
     return (
@@ -222,6 +232,21 @@
     return { x: cx + sx, y: cy + sy, d: z2, k };
   }
 
+  // Ring-local point (radius rad at angle a, height y) → screen + depth.
+  function projectRing(rad, a, y, pitch, roll, F) {
+    const x = rad * Math.cos(a), z = rad * Math.sin(a);
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const h = -y * cp - z * sp;
+    const d =  z * cp - y * sp;
+    const k = F / (F + d);
+    let sx = x * k, sy = h * k;
+    if (roll) {
+      const cr = Math.cos(roll), sr = Math.sin(roll);
+      [sx, sy] = [sx * cr - sy * sr, sx * sr + sy * cr];
+    }
+    return { x: cx + sx, y: cy + sy, d, k };
+  }
+
   const LIGHT = (() => { const v = [-0.5, 0.6, -0.62], m = Math.hypot(...v); return v.map(c => c / m); })();
   let lastTime = 0, yaw = 0, ringSpin = 0, rippleT = 0;
   const pts = [];
@@ -240,7 +265,7 @@
     let env = amplitude;
     if (_state === 'speaking' && amplitude > 0.2) env = amplitude * (0.25 + 0.75 * _speechEnvelope(t));
 
-    const SR = 80 * S, RING_R = 114 * S, F = 560 * S;
+    const SR = 74 * S, RING_R = 112 * S, F = 560 * S;
     const breathe = 1 + Math.sin(t * 1.4) * 0.012 + env * 0.05;
     const pitch = 0.30 + Math.sin(t * 0.27) * 0.06;
     const ringPitch = 0.36 + Math.sin(t * 0.31) * 0.05, ringRoll = -0.14;
@@ -279,28 +304,65 @@
                  s: p.sz * S * P.k * (0.7 + 0.4 * n) * (1 + lift * 0.4) * (p.sparkle ? 1.4 : 1) });
     }
 
-    // Waveform ring: dots trace the voice wave, displaced perpendicular to the
-    // ring's plane (like a scope trace wrapped around the sphere). Lanes are
-    // phase-shifted copies, so it reads as a ribbon.
-    const waveAmp = (2.5 + env * 16) * S;
-    for (const q of ringDots) {
-      const ang = q.a + ringSpin;
-      const w = wave(q.a, phaseT + q.lane * 0.55);
-      const h = w * waveAmp * (1 - q.lane * 0.22);
-      const rad = RING_R + q.lane * 3 * S + Math.abs(w) * env * 3 * S;
-      const P = project(rad * Math.cos(ang), h, rad * Math.sin(ang), 0, ringPitch, ringRoll, F);
-      const n = near(P.d, RING_R);
-      const a = Math.min(0.95, (0.30 + 0.45 * Math.abs(w) * (0.4 + env)) * (0.3 + 0.7 * n) *
-                               (1 - q.lane * 0.25) * (0.5 + env * 0.5));
-      pts.push({ x: P.x, y: P.y, d: P.d, a,
-                 s: q.sz * S * P.k * (0.7 + 0.4 * n) * (1 + env * 0.25) });
+    // Torus waveform around the sphere.
+    const BASE_R = 112 * S, TUBE_R = 15 * S;
+    const rings = [
+      { pitch: ringPitch + 0.14, roll: -0.10, r: BASE_R,        alpha: 1.0 },
+      { pitch: 1.15 + Math.sin(t * 0.23) * 0.04, roll: 0.62, r: BASE_R * 0.9, alpha: 0.5 },
+    ];
+    const maxD = TUBE_R * 0.45 + env * TUBE_R * 2.4;
+
+    function strokes(front) {
+      const ring = rings[0];
+      for (let layer = 2; layer >= 0; layer--) {
+        const pOff = layer * 0.65, rOff = layer * 3.5 * S;
+        const alp  = (0.58 - layer * 0.14) * (0.22 + amplitude * 0.78) * (front ? 1 : 0.45);
+        ctx.beginPath();
+        let pen = false;
+        for (let i = 0; i <= N_PATH; i++) {
+          const ang = (i / N_PATH) * Math.PI * 2;
+          const rad = ring.r + TUBE_R * 0.65 + rOff + wave(ang, phaseT + pOff) * maxD;
+          const P = projectRing(rad, ang + ringSpin, 0, ring.pitch, ring.roll, F);
+          if ((P.d <= 0) === front) { pen ? ctx.lineTo(P.x, P.y) : ctx.moveTo(P.x, P.y); pen = true; }
+          else pen = false;
+        }
+        ctx.strokeStyle = `rgba(${r},${g},${b},${alp})`;
+        ctx.lineWidth   = (1.2 + env * 0.9) * S * (front ? 1.15 : 0.8);
+        ctx.stroke();
+      }
     }
 
-    pts.sort((u, v) => v.d - u.d);              // far → near
+    const ringPts = [];
+    for (const p of parts) {
+      p.a += p.spd * 0.001 * (1 + amplitude * 2.8) * dt;
+      const ring = rings[p.ring];
+      const wv   = wave(p.a, phaseT) * maxD * (p.ring ? 0.5 : 1);
+      const tube = TUBE_R * p.rr * (p.ring ? 0.5 : 1);
+      const rad  = ring.r + tube * Math.cos(p.phi) + wv;
+      const P    = projectRing(rad, p.a + ringSpin * (p.ring ? -0.7 : 1), tube * Math.sin(p.phi) * 0.8,
+                               ring.pitch, ring.roll, F);
+      const dispFactor = Math.min(Math.abs(wv) / (maxD + 1), 1);
+      const n = near(P.d, BASE_R);
+      const a = Math.min(p.base * (0.3 + env * 0.7) + dispFactor * 0.35 +
+                         (p.sparkle ? 0.1 : 0), 0.95) * (0.3 + 0.7 * n) * ring.alpha;
+      ringPts.push({ x: P.x, y: P.y, front: P.d <= 0, a,
+                     s: p.sz * (0.75 + env * 0.45) * S * P.k * (0.8 + 0.4 * n) });
+    }
+    function ringParticles(front) {
+      for (const q of ringPts) {
+        if (q.front !== front) continue;
+        ctx.fillStyle = `rgba(${r},${g},${b},${q.a})`;
+        ctx.beginPath(); ctx.arc(q.x, q.y, q.s, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    strokes(false); ringParticles(false);       // far half of the ring
+    pts.sort((u, v) => v.d - u.d);              // dot sphere, far → near
     for (const q of pts) {
       ctx.fillStyle = `rgba(${r},${g},${b},${q.a})`;
       ctx.beginPath(); ctx.arc(q.x, q.y, q.s, 0, Math.PI * 2); ctx.fill();
     }
+    strokes(true); ringParticles(true);         // near half
 
     requestAnimationFrame(draw);
   }
