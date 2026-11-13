@@ -4,6 +4,8 @@ Falls back to Home Assistant only if HA_TOKEN is configured.
 """
 
 import os
+from urllib.parse import quote
+
 import aiohttp
 from langchain_core.tools import tool
 
@@ -12,20 +14,33 @@ HA_TOKEN = os.environ.get("HA_TOKEN")
 
 
 @tool
-async def get_weather(entity_id: str = "weather.home") -> str:
-    """Get the current weather and forecast.
+async def get_weather(location: str = "", entity_id: str = "weather.home") -> str:
+    """Get the current weather and forecast for a place.
 
-    Fetches weather via web search (wttr.in) by default.
-    Falls back to Home Assistant if HA_TOKEN is configured.
+    Pass a city to look up somewhere specific (e.g. "weather in Chicago" ->
+    location="Chicago"). Leave location empty to use the user's saved profile
+    location. Fetches weather via wttr.in; falls back to Home Assistant if
+    HA_TOKEN is configured.
 
     Args:
+        location: City or place name, e.g. 'Chicago' or 'Paris, France'.
+                  Empty = the user's profile location.
         entity_id: Weather entity ID in Home Assistant, e.g. 'weather.home'
                    (only used when HA_TOKEN is set)
     """
     # --- Primary: use wttr.in JSON API (no auth needed) ---
     try:
-        location = os.environ.get("WEATHER_LOCATION", "")
-        url = f"https://wttr.in/{location}?format=j1"
+        location = (location or "").strip()
+        if not location:
+            try:
+                from .profile import _load_profile
+
+                location = str(_load_profile().get("location") or "").strip()
+            except Exception:
+                location = ""
+        if not location:
+            location = os.environ.get("WEATHER_LOCATION", "").strip() or "Austin, TX"
+        url = f"https://wttr.in/{quote(location)}?format=j1"
 
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -81,8 +96,7 @@ async def get_weather(entity_id: str = "weather.home") -> str:
     if not HA_TOKEN:
         return (
             "Unable to fetch weather from web service. "
-            "Home Assistant is also not configured (HA_TOKEN missing). "
-            "Please set WEATHER_LOCATION in your .env for accurate results."
+            "Home Assistant is also not configured (HA_TOKEN missing)."
         )
 
     headers = {
