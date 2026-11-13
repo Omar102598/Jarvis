@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Jarvis HUD — a Meta Ray-Ban Display Web App (600×600, Chromium runtime).
+     Black is transparent on the waveguide, so the page is black with light
+     text. Input is the Neural Band / touchpad: arrow keys move focus, Enter
+     clicks. Web Apps can't open the mic, but activating a text field opens
+     the system composer, which has dictation — so the "Talk" control IS a
+     text field: press it, speak, and the dictated text goes to Jarvis.
+     Served by mobile_gateway at /hud. The API key arrives once in the install
+     URL's #k=… fragment (never sent to the server), then lives in localStorage. -->
+<meta name="viewport" content="width=600, height=600, initial-scale=1">
+<meta name="mrbd-web-app-capable" content="yes">
+<title>Jarvis</title>
+<style>
+  :root { --blue: #00d4ff; --dim: #6fa8bb; --gold: #f0a020; --red: #ff5a5a; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 600px; height: 600px; background: #000; color: #e8f7ff; overflow: hidden;
+               font: 400 26px/1.35 -apple-system, "Helvetica Neue", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; padding: 28px 32px 26px; gap: 16px; }
+
+  header { display: flex; align-items: center; gap: 14px; }
+  .j { width: 46px; height: 46px; border-radius: 50%; border: 2px solid var(--blue);
+       display: grid; place-items: center; color: var(--blue); font-weight: 700; font-size: 24px; }
+  body.thinking .j { animation: pulse 1.1s ease-in-out infinite; }
+  body.speaking .j { background: rgba(0,212,255,.18); }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 10px rgba(0,212,255,0); border-color: #7feaff; }
+                     0%  { box-shadow: 0 0 0 0 rgba(0,212,255,.45); } }
+  #status { font-size: 20px; letter-spacing: 3px; text-transform: uppercase; color: var(--dim); }
+  #clock { margin-left: auto; font-size: 22px; color: var(--dim); font-variant-numeric: tabular-nums; }
+
+  main { flex: 1; overflow-y: auto; scrollbar-width: none; }
+  main::-webkit-scrollbar { display: none; }
+  #heard { font-size: 20px; color: var(--dim); margin-bottom: 10px; min-height: 1em; }
+  #heard:not(:empty)::before { content: "You: "; color: #4a7a8a; }
+  #title { font-size: 34px; font-weight: 700; color: var(--blue); line-height: 1.15; margin-bottom: 8px; }
+  #body { white-space: pre-wrap; }
+  #body.error { color: var(--red); }
+
+  footer { display: flex; gap: 12px; }
+  /* Focus ring: the browser moves focus spatially between these. */
+  .ctl { height: 78px; border-radius: 39px; border: 2px solid #1c4a58; background: #04141a;
+         color: #e8f7ff; font: inherit; outline: none; }
+  .ctl:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(0,212,255,.35); }
+  #talk { flex: 1; padding: 0 30px; font-size: 26px; caret-color: var(--blue); }
+  #talk::placeholder { color: var(--blue); }
+  #repeat { width: 78px; font-size: 28px; color: var(--dim); }
+  body.thinking #talk { border-color: var(--gold); }
+</style>
+</head>
+<body>
+  <header>
+    <div class="j">J</div>
+    <div id="status">Ready</div>
+    <div id="clock"></div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div id="heard"></div>
+    <div id="title">Jarvis</div>
+    <div id="body">Press Talk and speak.</div>
+  </main>
+
+  <footer>
+    <input id="talk" class="ctl" type="text" placeholder="🎙  Talk to Jarvis"
+           enterkeyhint="send" autocomplete="off" autocapitalize="sentences" autofocus>
+    <button id="repeat" class="ctl" aria-label="Say it again">↻</button>
+  </footer>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const talk = $('talk'), main = $('main');
+
+  // ── key: #k=… once (fragment never reaches the server), then localStorage ──
+  const m = location.hash.match(/k=([^&]+)/);
+  if (m) { localStorage.setItem('jarvis_key', decodeURIComponent(m[1]));
+           history.replaceState(null, '', location.pathname); }
+  const KEY = localStorage.getItem('jarvis_key') || '';
+
+  function setState(s, label) {
+    document.body.className = s;
+    $('status').textContent = label || s;
+  }
+  function show(title, body, isError) {
+    $('title').textContent = title || '';
+    $('body').textContent = body || '';
+    $('body').classList.toggle('error', !!isError);
+    main.scrollTop = 0;
+  }
+  const clock = () => { $('clock').textContent =
+    new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
+  clock(); setInterval(clock, 15000);
+
+  // ── speech out: Jarvis's own voice (gateway WAV) if the runtime plays audio,
+  //    else the system voice (speechSynthesis is documented for Web Apps) ──
+  let lastSpeech = '', lastAudio = '';
+  function systemSay(text) {
+    if (!('speechSynthesis' in window) || !text) return setState('', 'Ready');
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.onend = u.onerror = () => setState('', 'Ready');
+    setState('speaking', 'Speaking');
+    speechSynthesis.speak(u);
+  }
+  function say(text, audioB64) {
+    lastSpeech = text; lastAudio = audioB64 || '';
+    if (!audioB64) return systemSay(text);
+    const a = new Audio('data:audio/wav;base64,' + audioB64);
+    a.onended = () => setState('', 'Ready');
+    setState('speaking', 'Speaking');
+    a.play().catch(() => systemSay(text));
+  }
+
+  // ── ask ──
+  let busy = false;
+  async function ask(text) {
+    text = text.trim();
+    if (!text || busy) return;
+    if (!KEY) return show('Not paired', 'Reinstall from the link with the key (#k=…).', true);
+    busy = true;
+    $('heard').textContent = text;
+    show('', '');
+    setState('thinking', 'Thinking');
+    try {
+      const resp = await fetch('/ask/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': KEY },
+        body: JSON.stringify({ text, source: 'glasses', speak: true }),
+      });
+      if (!resp.ok) throw new Error(resp.status === 401 ? 'Key rejected — re-pair.' : 'Gateway error ' + resp.status);
+      const data = await resp.json();
+      const d = data.display || {};
+      show(d.title || 'Jarvis', d.body || data.text || '');
+      say(data.text || d.body || '', data.audio_b64);
+    } catch (e) {
+      show('Can’t reach Jarvis', String(e.message || e), true);
+      setState('', 'Offline');
+    } finally {
+      busy = false;
+      talk.focus();
+    }
+  }
+
+  // The composer writes into the field; a dictation "send" fires change/Enter.
+  talk.addEventListener('change', () => { const v = talk.value; talk.value = ''; ask(v); });
+  talk.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && talk.value.trim()) { e.preventDefault(); talk.blur(); }   // blur → change
+  });
+  talk.addEventListener('focus', () => { if (!busy) setState('', 'Ready'); });
+  $('repeat').addEventListener('click', () => say(lastSpeech, lastAudio));
+
+  // Long replies: up/down scroll the reply while focus stays on the controls.
+  document.addEventListener('keydown', (e) => {
+    if (document.activeElement === talk && talk.value) return;
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      const before = main.scrollTop;
+      main.scrollTop += (e.key === 'ArrowDown' ? 1 : -1) * 140;
+      if (main.scrollTop !== before) e.preventDefault();
+    }
+  });
+
+  if (!KEY) show('Not paired', 'Open the install link that includes #k=<your key>.', true);
+})();
+</script>
+</body>
+</html>

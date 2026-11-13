@@ -35,7 +35,7 @@ from typing import Optional
 import paho.mqtt.client as mqtt
 import redis as _redis_lib
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from faster_whisper import WhisperModel
 from pydantic import BaseModel
 
@@ -1242,6 +1242,18 @@ async def debug_audio(request: Request):
         "looks_like_base64": is_b64,
         "base64_decoded_size": decoded_size,
     }
+
+
+_HUD_PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud", "index.html")
+
+
+@app.get("/hud", summary="[Meta Ray-Ban Display] Jarvis HUD web app")
+async def hud_page():
+    """The glasses Web App (hud/index.html). No auth on the page itself: it holds
+    no data, and the key it sends to /ask/query comes from the install link's
+    #k= fragment, which browsers never send to the server."""
+    return FileResponse(_HUD_PAGE, media_type="text/html",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/health", summary="Health check")
