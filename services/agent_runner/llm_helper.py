@@ -10,6 +10,8 @@ agent_runner doesn't depend on LangChain). Supports Anthropic and OpenAI.
 
 import os
 
+CLAUDE_MIN_MAX_TOKENS = int(os.environ.get("CLAUDE_MIN_MAX_TOKENS", "16000"))
+
 
 def _resolve_model() -> str:
     model = os.environ.get("LLM_MODEL", "").strip()
@@ -45,14 +47,25 @@ async def complete(system: str, user: str, max_tokens: int = 800,
         # The parameter stays in this function's signature: callers pass it, and
         # the OpenAI-compatible path below (local models via Ollama) still
         # honours it.
+        # Claude 5.x thinks by default (Sonnet 5.5 can't turn it off), and
+        # thinking counts against max_tokens. Callers size max_tokens for the
+        # ANSWER, so a 1400 cap was spent entirely on thinking: an empty reply,
+        # and Remy silently shopped from his fallback list for weeks. Unused
+        # headroom costs nothing, so give every call room to think AND answer.
         resp = await client.messages.create(
             model=model,
-            max_tokens=max_tokens,
+            max_tokens=max(max_tokens, CLAUDE_MIN_MAX_TOKENS),
             system=system,
             messages=[{"role": "user", "content": user}],
         )
         _record_usage(model, getattr(resp, "usage", None), "anthropic")
-        return "".join(block.text for block in resp.content if hasattr(block, "text"))
+        text = "".join(block.text for block in resp.content
+                       if getattr(block, "type", "") == "text")
+        if not text.strip():
+            print(f"[llm_helper] ⚠ {model} returned no text "
+                  f"(stop_reason={resp.stop_reason}, blocks={[b.type for b in resp.content]})",
+                  flush=True)
+        return text
 
     from openai import AsyncOpenAI
 
@@ -201,7 +214,7 @@ async def complete_with_search(system: str, user: str, max_tokens: int = 1200,
         for _ in range(_SEARCH_MAX_CONTINUATIONS + 1):
             resp = await client.messages.create(
                 model=model,
-                max_tokens=max_tokens,
+                max_tokens=max(max_tokens, CLAUDE_MIN_MAX_TOKENS),   # room to think too
                 system=system,
                 tools=[tool],
                 messages=messages,

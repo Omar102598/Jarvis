@@ -413,6 +413,34 @@ def _cache_field(store_key: str, item: str) -> str:
     return f"{store_key}:{_norm_item(item)}"
 
 
+def _squash(s: str) -> str:
+    return re.sub(r"[^a-z0-9%]+", " ", str(s).lower()).strip()
+
+
+def _usual_match(r, store_key: str, item: str, cands: list[dict]) -> Optional[dict]:
+    """A search result that IS a product the user has bought at this store
+    (their past-order title appears in the result's card text), and that the
+    searched item is about. Most-ordered wins. None = no such result."""
+    want = set(_squash(item).split())
+    best, best_n = None, 0
+    for u in _load_usual_order(r):
+        if u.get("store") != store_key or u.get("kind") == "household":
+            continue
+        title = _squash(u.get("title") or "")
+        # Most of the searched words must be in the product's name, so
+        # "ground beef" can't land on a beef jerky that showed up in results.
+        if len(title) < 6 or len(want & set(title.split())) * 2 < len(want):
+            continue
+        n = int(u.get("count") or u.get("qty") or 1)
+        if n <= best_n:
+            continue
+        for c in cands:
+            if title in _squash(c.get("title") or ""):
+                best, best_n = c, n
+                break
+    return best
+
+
 def _cached_href(r, key: str, store_key: str, item: str) -> Optional[str]:
     try:
         raw = r.hget(key, _cache_field(store_key, item))
@@ -655,7 +683,9 @@ async def _llm_pick_products(item: str, cands_by_store: dict[str, list[dict]]) -
         "store's search results. Prefer the plain, basic, raw staple version over "
         "prepared, flavored, pre-cooked, frozen, or organic-premium variants UNLESS "
         "the item name asks for them. Prefer a normal grocery pack size and a "
-        "sensible price. Never pick an obviously unrelated product.\n"
+        "sensible price. Never pick an obviously unrelated product. A result marked "
+        "'Buy it again' is a product the user already buys: when it fits the item, "
+        "pick it over anything else.\n"
         "Return ONLY JSON mapping each store to the chosen candidate index, e.g. "
         '{"target": {"index": 2}, "amazon": {"index": 0}}. '
         "Use index -1 for a store if none of its candidates is an acceptable match."
@@ -702,6 +732,12 @@ async def _resolve_item(
         fav = _cached_href(r, _FAVORITES_KEY, store_key, item)
         if fav and fav in href_index:
             chosen[store_key] = {**href_index[fav], "from_cache": True}
+            continue
+        # 1b) the exact product the user has ordered before at this store
+        usual = _usual_match(r, store_key, item, cands)
+        if usual is not None:
+            chosen[store_key] = {**usual, "from_cache": True}
+            _cache_put(r, store_key, item, usual["href"], usual["title"])
             continue
         # 2) previously-resolved product, if still on the page
         cached = _cached_href(r, _PRODUCT_MAP_KEY, store_key, item)
@@ -1406,18 +1442,28 @@ async def _generate_smart_list(
 
     pref_block = ""
     usual_order = [u for u in (usual_order or []) if u.get("kind", "food") != "household"]
+    usual_order.sort(key=lambda u: -int(u.get("count") or u.get("qty") or 1))
     if usual_order:
         staples = ", ".join(
-            f"{u.get('name') or u.get('title')} (x{u.get('qty', 1)})"
+            f"{u.get('title') or u.get('name')} ({u.get('count') or 1} orders)"
             for u in usual_order[:25]
         )
         pref_block += (
-            "The user's USUAL ORDER — items they habitually buy, learned from their own "
-            f"Amazon Fresh cart, with typical quantities: {staples}.\n"
+            "The user's USUAL ORDER — products they actually buy, learned from their past "
+            f"orders at H-E-B, Target and Amazon, most-ordered first: {staples}.\n"
             "This is the STRONGEST signal of what they actually eat. Build the week's "
             "meals and list AROUND these staples first (skip any that conflict with the "
             "avoid list), then add only what's needed to complete the meals and hit the "
-            "macro targets.\n"
+            "macro targets. When a list item IS one of these products and it's a NATIONAL "
+            "brand (Herdez, PuraVida, Kodiak, Chobani, Barilla...), name it with brand and "
+            "product, minus the size ('PuraVida Vegetable Melange', not 'vegetable "
+            "melange'), so the store finds that exact product. For STORE brands (H-E-B, "
+            "Hill Country Fare, Central Market, Amazon Grocery, 365 by Whole Foods, Good & "
+            "Gather, Market Pantry) and for produce, use the plain generic name ('93% lean "
+            "ground beef', 'sliced baby bella mushrooms', 'zucchini'): other stores don't "
+            "carry those brands, and Remy matches each store's own version of what the "
+            "user bought there. Don't list two versions of the same thing (one kind of "
+            "eggs).\n"
         )
     if fav_meals:
         pref_block += f"The user EATS THESE MEALS OFTEN — feature them prominently: {'; '.join(fav_meals)}.\n"
