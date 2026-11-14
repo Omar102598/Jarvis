@@ -129,7 +129,8 @@ from tools.workout import (get_todays_workout, get_workout_plan, plan_workout_we
                            skip_workout_day, set_workout_split)
 from tools.grocery import (
     approve_grocery_order, get_grocery_status, get_usual_order,
-    learn_fresh_cart, pin_favorite_product, suggest_meals, trigger_grocery_run,
+    learn_fresh_cart, pin_favorite_product, remove_grocery_items, suggest_meals,
+    trigger_grocery_run,
 )
 from tools.classpass import (
     book_class,
@@ -315,6 +316,7 @@ _core_tools = [
     get_spending_insights,
     # Grocery agent control
     get_grocery_status, approve_grocery_order, trigger_grocery_run, suggest_meals,
+    remove_grocery_items,
     learn_fresh_cart, get_usual_order, pin_favorite_product,
     # Workout coach (Apollo) + fused readiness score + Atlas health overview
     load_skill,

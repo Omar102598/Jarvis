@@ -1047,6 +1047,233 @@ def _load_usual_order(r: redis_lib.Redis) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Cart removal + order-history learning, all four stores
+#
+# Every store labels each cart line's remove control with the product name:
+#   HEB      <button aria-label="Remove {title}">          (ItemAction)
+#   Target   <button data-test="cartItem-deleteBtn" aria-label="Remove {title} from cart">
+#   Amazon   <input aria-label="Delete {title}">  (+ a stepper "Remove {title}")
+# So one DOM pass both lists the cart and finds the button for an item, no
+# matter who added it. Skipped on purpose: HEB's quantity "Remove product"
+# stepper, Target's saved-for-later "removeFromSFLBtn", Amazon's Rufus pill.
+# ---------------------------------------------------------------------------
+
+_REMOVE_BUTTONS_JS = r"""
+(function(target, click) {
+  function norm(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
+  var found = {}, order = [];
+  // Amazon's cart page also lists saved-for-later lines with the same labels;
+  // only the active cart counts.
+  var root = document.querySelector('[data-name="Active Items"], #sc-active-cart') || document;
+  root.querySelectorAll('button, input[type=submit], input[type=button], [role=button]').forEach(function(b) {
+    var label = norm(b.getAttribute('aria-label'));
+    var m = label.match(/^(Remove|Delete)\s+(.+?)(\s+from (your )?cart)?$/i);
+    if (!m) return;
+    var tid = (b.getAttribute('data-testid') || '') + ' ' + (b.getAttribute('data-test') || '');
+    if (/quantity-counter|removeFromSFL/i.test(tid)) return;
+    if (/selected text context|^product$/i.test(m[2])) return;
+    var tmp = document.createElement('textarea'); tmp.innerHTML = m[2];
+    var name = norm(tmp.value);
+    var isDelete = /^delete$/i.test(m[1]);
+    // Amazon renders both "Remove X" (stepper) and "Delete X"; prefer Delete.
+    if (!found[name]) { found[name] = b; order.push(name); }
+    else if (isDelete) { found[name] = b; }
+  });
+  if (target === null) return order;
+  var hit = found[target];
+  if (!hit) return 'missing';
+  if (click) { hit.scrollIntoView({block: 'center'}); hit.click(); }
+  return 'ok';
+})(%s, %s);
+"""
+
+
+def _remove_js(target: Optional[str] = None, click: bool = False) -> str:
+    return _REMOVE_BUTTONS_JS % (json.dumps(target), "true" if click else "false")
+
+
+async def _list_cart_names(session: aiohttp.ClientSession, store_key: str,
+                           navigate: bool = True) -> Optional[list[str]]:
+    """Product names in a store's cart, read from the remove buttons.
+    None = couldn't load the page; [] = loaded, and the cart is empty."""
+    if navigate:
+        nav = await _bridge_post(session, "/browser/navigate",
+                                 {"url": STORES[store_key]["cart_url"]}, timeout=40)
+        if "error" in nav:
+            _log(f"  ✗ {STORES[store_key]['name']} cart nav failed: {nav['error']}")
+            return None
+    names: list[str] = []
+    for attempt in range(5):
+        await asyncio.sleep(5 if attempt == 0 else 4)
+        res = await _bridge_post(session, "/browser/js", {"script": _remove_js()}, timeout=20)
+        raw = res.get("result")
+        if isinstance(raw, list):
+            names = [str(n) for n in raw if n]
+            if names:
+                return names
+    return names
+
+
+async def _match_requested(requested: list[str], names: list[str]) -> list[str]:
+    """Map the user's words ("the chicken", "poppi") to exact cart names."""
+    if not requested or not names:
+        return []
+    exact = [n for n in names if any(r.lower() == n.lower() for r in requested)]
+    if len(exact) == len(requested):
+        return exact
+    try:
+        resp = await complete(
+            system=("You match a shopper's removal request to the exact items in their "
+                    "cart. Return ONLY a JSON array of cart item names copied EXACTLY "
+                    "from the cart list, one for each requested item that clearly "
+                    "matches (a request can match several lines, e.g. 'all the poppi'). "
+                    "Leave out anything you are not sure about. No other text."),
+            user=json.dumps({"requested": requested, "cart": names}),
+            max_tokens=800,
+        )
+        match = re.search(r"\[.*\]", resp or "", re.DOTALL)
+        picked = json.loads(match.group()) if match else []
+    except Exception as exc:
+        _log(f"  ⚠ Matching failed ({exc}); using exact matches only.")
+        return exact
+    return [n for n in picked if n in names]
+
+
+async def _remove_from_cart(session: aiohttp.ClientSession, store_key: str,
+                            requested: list[str] | str) -> dict:
+    """Remove items from one store's cart. `requested` is a list of item
+    descriptions, or "all". Returns {"removed", "failed", "unmatched", "error"}."""
+    store = STORES[store_key]["name"]
+    out = {"store": store, "removed": [], "failed": [], "unmatched": [], "error": ""}
+    names = await _list_cart_names(session, store_key)
+    if names is None:
+        out["error"] = f"couldn't open the {store} cart"
+        return out
+    if not names:
+        out["error"] = f"the {store} cart is empty (or not signed in)"
+        return out
+    if requested == "all":
+        targets = list(names)
+    else:
+        targets = await _match_requested(list(requested), names)
+        if not targets:
+            out["unmatched"] = list(requested)
+    _log(f"  {store}: removing {len(targets)} of {len(names)} item(s)")
+    for name in targets:
+        ok = False
+        for attempt in range(2):
+            res = await _bridge_post(session, "/browser/js",
+                                     {"script": _remove_js(name, click=True)}, timeout=20)
+            if res.get("result") == "missing":
+                ok = attempt > 0          # already gone after a previous click
+                break
+            await asyncio.sleep(4)        # Amazon reloads the cart; HEB/Target re-render
+            now = await _list_cart_names(session, store_key, navigate=False)
+            if now is not None and name not in now:
+                ok = True
+                break
+        (out["removed"] if ok else out["failed"]).append(name)
+        _log(f"    {'✓' if ok else '✗'} {name}")
+    return out
+
+
+# Order history: where each store lists past orders, and how to spot the
+# links to individual orders on that page.
+_ORDER_PAGES = {
+    "heb":    {"list": ["https://www.heb.com/my-account/your-orders",
+                        "https://www.heb.com/my-account/your-orders?page=2"],
+               "detail": r"/my-account/order-history/(HEB\d+)"},
+    "target": {"list": ["https://www.target.com/orders"],
+               "detail": r"/orders/(\d{12,})$"},
+}
+ORDERS_PER_STORE = int(os.environ.get("GROCERY_ORDERS_PER_STORE", "12"))
+_LEARNED_ORDERS_KEY = "grocery:learned_orders"     # set of "{store}:{order id}" already counted
+
+_LINKS_JS = "Array.from(document.querySelectorAll('a[href]')).map(a => a.getAttribute('href'))"
+
+# HEB's order page spells each line out: "Item, <title>. Quantity: 2 eachs. Price: $3.94."
+_HEB_ITEM_RE = re.compile(r"Item, (.+?)\. Quantity: (\d+) [^.]*\. Price: \$([\d.,]+)\.")
+
+_ORDER_TEXT_PROMPT = (
+    "The text below is one past order from a store's order-details page. Extract the "
+    "items that were actually received (skip canceled or out-of-stock lines, "
+    "recommendations, totals, addresses). Return ONLY a JSON array like "
+    '[{"title": "Good & Gather Large Eggs, 12ct", "qty": 1}] -- empty if none.'
+)
+
+
+async def _order_ids(session, store_key: str) -> list[tuple[str, str]]:
+    """[(order id, absolute url)] newest first, up to ORDERS_PER_STORE."""
+    conf = _ORDER_PAGES[store_key]
+    seen: dict[str, str] = {}
+    for url in conf["list"]:
+        nav = await _bridge_post(session, "/browser/navigate", {"url": url}, timeout=40)
+        if "error" in nav:
+            break
+        await asyncio.sleep(7)
+        res = await _bridge_post(session, "/browser/js", {"script": _LINKS_JS}, timeout=20)
+        for href in res.get("result") or []:
+            m = re.search(conf["detail"], str(href).split("?")[0])
+            if m and m.group(1) not in seen:
+                full = href if str(href).startswith("http") else STORES[store_key]["product_base"] + href
+                seen[m.group(1)] = full
+        if len(seen) >= ORDERS_PER_STORE:
+            break
+    return list(seen.items())[:ORDERS_PER_STORE]
+
+
+async def _order_items(session, store_key: str, url: str) -> list[dict]:
+    nav = await _bridge_post(session, "/browser/navigate", {"url": url}, timeout=40)
+    if "error" in nav:
+        return []
+    text = ""
+    for _ in range(4):
+        await asyncio.sleep(5)
+        text = str((await _bridge_get(session, "/browser/read", timeout=25)).get("text") or "")
+        if (store_key == "heb" and "Item, " in text) or (store_key != "heb" and len(text) > 1500):
+            break
+    if store_key == "heb":
+        return [{"title": t.strip()[:120], "qty": int(q)}
+                for t, q, price in _HEB_ITEM_RE.findall(text)
+                if price.replace(",", "") not in ("0.00", "0")]   # $0.00 = out of stock, substituted
+    try:
+        resp = await complete(_ORDER_TEXT_PROMPT, text[:9000], max_tokens=1500)
+        match = re.search(r"\[.*\]", resp or "", re.DOTALL)
+        raw = json.loads(match.group()) if match else []
+    except Exception as exc:
+        _log(f"    ⚠ couldn't read order ({exc})")
+        return []
+    return [{"title": str(i.get("title", "")).strip()[:120], "qty": int(i.get("qty", 1) or 1)}
+            for i in raw if isinstance(i, dict) and str(i.get("title", "")).strip()]
+
+
+async def _classify_titles(titles: list[str]) -> dict[str, dict]:
+    """{title: {"name": short searchable name, "kind": "food" | "household"}}.
+    Household items (trash bags, litter) are kept -- they're part of the usual
+    order -- but meal planning only uses food."""
+    out: dict[str, dict] = {}
+    for i in range(0, len(titles), 50):
+        batch = titles[i:i + 50]
+        try:
+            resp = await complete(
+                system=("For each product title, give a short plain name a store search "
+                        "box would find (keep a distinctive brand; drop sizes and counts) "
+                        "and its kind: 'food' (anything eaten or drunk, incl. supplements "
+                        "and electrolyte mixes) or 'household' (everything else). Return "
+                        'ONLY a JSON array of {"title": <exact input>, "name": ..., '
+                        '"kind": ...}, same order. No other text.'),
+                user=json.dumps(batch), max_tokens=3000)
+            match = re.search(r"\[.*\]", resp or "", re.DOTALL)
+            for row in json.loads(match.group()) if match else []:
+                if isinstance(row, dict) and row.get("title") in batch:
+                    out[row["title"]] = {"name": str(row.get("name") or row["title"])[:80],
+                                         "kind": "household" if row.get("kind") == "household" else "food"}
+        except Exception as exc:
+            _log(f"  ⚠ Naming batch failed ({exc}) — using raw titles.")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # LLM meal planning + grocery list generation (fitness-aware, cohesive)
 # ---------------------------------------------------------------------------
 async def _generate_smart_list(
@@ -1080,6 +1307,7 @@ async def _generate_smart_list(
     avoid      = profile.get("avoid_items", [])
 
     pref_block = ""
+    usual_order = [u for u in (usual_order or []) if u.get("kind", "food") != "household"]
     if usual_order:
         staples = ", ".join(
             f"{u.get('name') or u.get('title')} (x{u.get('qty', 1)})"
@@ -1837,6 +2065,8 @@ class GroceryAgent(BaseAgent):
             return await self._run_learn_cart()
         if action == "learn_orders":
             return await self._run_learn_orders()
+        if action == "remove":
+            return await self._run_remove()
         return await self._run_full()
 
     # ------------------------------------------------------------------
@@ -1934,62 +2164,127 @@ class GroceryAgent(BaseAgent):
         _log(f"  ✓ {report}")
         return report
 
+    def _req_stores(self, default: str = "all") -> list[str]:
+        req = (self.params or {}).get("stores") or default
+        if req == "all" or req == ["all"]:
+            return list(STORE_KEYS)
+        req = req if isinstance(req, list) else [req]
+        want = [str(w).lower().replace("-", "").replace(" ", "_").replace("amazon_fresh", "amazon")
+                for w in req]
+        return [k for k in STORE_KEYS if k in want]
+
+    async def _run_remove(self) -> str:
+        """Remove items from carts -- any item, whoever added it.
+        params: stores ("all" or list), items (list of descriptions, or "all")."""
+        items = (self.params or {}).get("items") or []
+        if isinstance(items, str) and items.strip().lower() != "all":
+            items = [items]
+        if not items:
+            return "Nothing to remove: no items were named."
+        stores = self._req_stores()
+        _log(f"=== Grocery Agent | remove: {items} from {', '.join(stores)} ===")
+        lines = []
+        async with aiohttp.ClientSession() as session:
+            if not await _check_bridge(session):
+                return f"Mac Bridge unreachable at {MAC_BRIDGE_URL}. Cannot edit carts."
+            for sk in stores:
+                res = await _remove_from_cart(session, sk, "all" if items == "all" else items)
+                if res["error"]:
+                    if len(stores) == 1 or items == "all":
+                        lines.append(f"{res['store']}: {res['error']}.")
+                    continue
+                if res["removed"]:
+                    lines.append(f"{res['store']}: removed {', '.join(res['removed'])}.")
+                if res["failed"]:
+                    lines.append(f"{res['store']}: couldn't remove {', '.join(res['failed'])}.")
+        if not lines:
+            return (f"I couldn't find {', '.join(items) if items != 'all' else 'anything'} "
+                    f"in the {', '.join(STORES[s]['name'] for s in stores)} cart(s).")
+        return " ".join(lines)
+
     async def _run_learn_orders(self) -> str:
-        """Learn the usual order from the user's Amazon ORDER HISTORY (past
-        purchases) instead of the current cart — food items only."""
-        _log("=== Grocery Agent | learn_orders: reading Amazon order history ===")
+        """Learn the usual order from past orders at every store.
+
+        Each order is counted once (grocery:learned_orders remembers which), so
+        an item's count is the number of orders it was in, and re-running only
+        adds new orders. Amazon (Fresh + Whole Foods) has no stable order ids
+        in the list we read, so it's read as before: titles on the first page.
+        """
+        stores = self._req_stores()
+        _log(f"=== Grocery Agent | learn_orders: {', '.join(stores)} ===")
+        seen_titles: dict[str, dict] = {}    # norm title -> {title, store, orders, qty}
+        per_store: dict[str, int] = {}
+        new_order_keys: list[str] = []
         async with aiohttp.ClientSession() as session:
             if not await _check_bridge(session):
                 return f"Mac Bridge unreachable at {MAC_BRIDGE_URL}. Cannot read order history."
 
-            titles = await _fetch_amazon_order_history(session)
-            if not titles:
-                return (
-                    "I couldn't read your Amazon order history. Open the Jarvis "
-                    "browser and sign in to Amazon once, then try again."
-                )
+            for sk in stores:
+                if sk in _ORDER_PAGES:
+                    ids = await _order_ids(session, sk)
+                    fresh = [(oid, url) for oid, url in ids
+                             if not self.r.sismember(_LEARNED_ORDERS_KEY, f"{sk}:{oid}")]
+                    _log(f"  {STORES[sk]['name']}: {len(ids)} order(s) found, {len(fresh)} new")
+                    n = 0
+                    for oid, url in fresh:
+                        lines = await _order_items(session, sk, url)
+                        _log(f"    order {oid}: {len(lines)} item(s)")
+                        if not lines:
+                            continue      # unread orders stay unlearned and are retried next time
+                        new_order_keys.append(f"{sk}:{oid}")
+                        n += 1
+                        for it in {_norm_title(i["title"]): i for i in lines}.values():
+                            e = seen_titles.setdefault(_norm_title(it["title"]),
+                                                       {"title": it["title"], "store": sk, "orders": 0, "qty": 0})
+                            e["orders"] += 1
+                            e["qty"] = max(e["qty"], it["qty"])
+                    per_store[sk] = n
+                elif sk == "amazon":
+                    titles = await _fetch_amazon_order_history(session)
+                    for g in await _filter_grocery_titles(titles):
+                        e = seen_titles.setdefault(_norm_title(g["title"]),
+                                                   {"title": g["title"], "store": "amazon", "orders": 0, "qty": 1})
+                        e["orders"] += 1
+                    per_store[sk] = len(titles)
 
-            grocery = await _filter_grocery_titles(titles)
-            if not grocery:
-                return (
-                    f"I read {len(titles)} recent order item(s), but none looked like "
-                    "Amazon Fresh groceries (they may be older, or non-food). Try again, "
-                    "or build a Fresh cart and say 'learn my Fresh cart'."
-                )
+            if not seen_titles:
+                return ("I didn't find any new orders to learn from"
+                        + (" (" + ", ".join(STORES[k]["name"] + f": {v}" for k, v in per_store.items()) + ")"
+                           if per_store else "")
+                        + ". Either everything is already learned, or the Jarvis browser isn't signed in.")
 
-            # Merge into the persistent usual-order profile (same shape as learn_cart).
             try:
                 data = json.loads(self.r.get(USUAL_ORDER_KEY) or "{}")
             except Exception:
                 data = {}
-            by_norm = {_norm_title(e.get("title", "")): e
-                       for e in (data.get("items", []) or [])}
+            by_norm = {_norm_title(e.get("title", "")): e for e in (data.get("items", []) or [])}
+            new_titles = [v["title"] for k, v in seen_titles.items() if k not in by_norm]
+            meta = await _classify_titles(new_titles)
             now = datetime.now(timezone.utc).isoformat()
             added = updated = 0
-            for item in grocery:
-                key = _norm_title(item["title"])
+            for key, v in seen_titles.items():
                 if key in by_norm:
                     entry = by_norm[key]
-                    entry["count"] = int(entry.get("count", 1)) + 1
+                    entry["count"] = int(entry.get("count", 1)) + v["orders"]
                     entry["last_seen"] = now
-                    entry.setdefault("store", "amazon")
                     updated += 1
                 else:
-                    by_norm[key] = {
-                        "title": item["title"], "name": item["name"],
-                        "asin": "", "store": "amazon", "qty": 1, "count": 1,
-                        "first_seen": now, "last_seen": now,
-                    }
+                    m = meta.get(v["title"], {})
+                    by_norm[key] = {"title": v["title"], "name": m.get("name", v["title"]),
+                                    "kind": m.get("kind", "food"), "asin": "", "store": v["store"],
+                                    "qty": v["qty"] or 1, "count": v["orders"],
+                                    "first_seen": now, "last_seen": now}
                     added += 1
-            items = sorted(by_norm.values(), key=lambda e: -int(e.get("count", 1)))[:120]
+            items = sorted(by_norm.values(), key=lambda e: -int(e.get("count", 1)))[:200]
             self.r.set(USUAL_ORDER_KEY, json.dumps({"items": items, "updated": now}))
+            if new_order_keys:
+                self.r.sadd(_LEARNED_ORDERS_KEY, *new_order_keys)
 
-        names = ", ".join(i["name"] for i in items[:12] if i.get("name"))
-        report = (
-            f"Learned from your Amazon order history: {added} new grocery item(s), "
-            f"{updated} already known — {len(items)} staples on file now. "
-            f"Top items: {names}. Future weekly lists will be built around these."
-        )
+        top = ", ".join(f"{i.get('name') or i['title']} ({i.get('count', 1)}×)"
+                        for i in items[:12])
+        where = ", ".join(f"{STORES[k]['name']} {v}" for k, v in per_store.items())
+        report = (f"Learned from past orders ({where}): {added} new item(s), {updated} "
+                  f"seen again; {len(items)} items on file. Most ordered: {top}.")
         _log(f"  ✓ {report}")
         return report
 

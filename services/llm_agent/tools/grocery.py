@@ -7,6 +7,8 @@ import paho.mqtt.publish as mqtt_publish
 import redis
 from langchain_core.tools import tool
 
+from .dispatch import ACTIVE_ROOM   # so Remy announces his result in the room that asked
+
 _r = redis.Redis(
     host=os.environ.get("REDIS_HOST", "redis"),
     decode_responses=True,
@@ -137,7 +139,7 @@ def trigger_grocery_run(stores: str = "", budget: float = 0, notes: str = "") ->
         notes: Anything else the user asked for, in their words ("use what's
             already in the cart as a reference", "no fish this week").
     """
-    params = {}
+    params = {"notify_room": ACTIVE_ROOM.get("room", "")}
     if stores.strip():
         params["stores"] = [x.strip() for x in stores.split(",") if x.strip()]
     if budget and budget > 0:
@@ -157,6 +159,38 @@ def trigger_grocery_run(stores: str = "", budget: float = 0, notes: str = "") ->
     where = f" at {', '.join(params['stores'])}" if params.get("stores") else ""
     return (f"Remy is building the cart{where}, sir. He adds only (nothing removed, "
             "no checkout) and reports when done -- usually 5-10 minutes.")
+
+
+@tool
+def remove_grocery_items(items: str, stores: str = "all") -> str:
+    """Remove items from grocery carts -- any item, whoever added it (the
+    user, Remy, or someone else). Use when the user asks to take something
+    out of a cart or to empty a cart.
+
+    Args:
+        items: What to remove, comma-separated, in the user's words ("the
+            poppi, chicken thighs"); Remy matches them to the exact cart
+            lines. Use "all" ONLY when the user explicitly asks to empty the
+            cart(s).
+        stores: 'heb', 'target', 'amazon' (Fresh), 'whole_foods', comma-
+            separated, or 'all' (default) to look in every cart.
+    """
+    want = "all" if items.strip().lower() in ("all", "everything") else \
+        [x.strip() for x in items.split(",") if x.strip()]
+    if not want:
+        return "Which items should I remove?"
+    st = stores.strip().lower() or "all"
+    params = {"action": "remove", "items": want, "notify_room": ACTIVE_ROOM.get("room", ""),
+              "stores": "all" if st == "all" else [x.strip() for x in st.split(",") if x.strip()]}
+    try:
+        mqtt_publish.single("jarvis/agents/grocery/trigger",
+                            json.dumps({"source": "llm", "params": params}),
+                            hostname=MQTT_HOST, port=MQTT_PORT)
+    except Exception as exc:
+        return f"Failed to reach Remy: {exc}"
+    what = "everything" if want == "all" else ", ".join(want)
+    return (f"Remy is removing {what} from the {'carts' if st == 'all' else st + ' cart'}, sir. "
+            "He'll report what he took out; ask for the grocery agent's report in a minute.")
 
 
 _USUAL_ORDER_KEY = "grocery:usual_order"
@@ -256,39 +290,38 @@ def pin_favorite_product(item: str, action: str = "pin") -> str:
 
 
 @tool
-def learn_fresh_cart(store: str = "amazon", source: str = "cart") -> str:
-    """Learn the user's usual grocery order — from their current cart OR their
-    past Amazon order history.
+def learn_fresh_cart(store: str = "", source: str = "cart") -> str:
+    """Learn the user's usual order, from a store's current cart OR from past
+    orders. The learned items bias every future grocery list.
 
-    Use when the user says "learn my Fresh cart", "scan my Target cart", or
-    "learn from my past Amazon orders" / "what have I ordered before?". The
-    learned staples bias every future weekly grocery list. Safe to run
-    repeatedly — items seen across multiple scans rank higher.
+    Use when the user says "learn my Fresh cart", "scan my Target cart",
+    "learn what I usually order", "read my past orders". Safe to re-run:
+    past orders already learned are skipped, so counts stay honest.
 
     Args:
-        store: Which cart to scan for source='cart' — 'amazon' (Fresh, default),
-            'whole_foods', 'target', 'heb', or 'all'. Ignored for source='orders'.
-        source: 'cart' (default) scans the current cart the user built; 'orders'
-            reads the user's Amazon order HISTORY and keeps only grocery/food
-            items (Amazon only). Use 'orders' when the user wants to learn from
-            what they've bought before rather than building a new cart.
+        store: 'amazon' (Fresh), 'whole_foods', 'target', 'heb', or 'all'.
+            Empty = 'amazon' for a cart scan, all stores for past orders.
+        source: 'cart' scans the current cart; 'orders' reads past orders
+            (H-E-B and Target order pages, Amazon order history), counts how
+            many orders each item was in, and keeps household items too
+            (meal planning only uses food).
     """
     source = source.strip().lower()
     if source in ("orders", "order", "history", "past", "past_orders", "order_history"):
+        stores = store.strip().lower() or "all"
         try:
             mqtt_publish.single(
                 "jarvis/agents/grocery/trigger",
-                json.dumps({"params": {"action": "learn_orders"}}),
+                json.dumps({"params": {"action": "learn_orders", "stores": stores,
+                                       "notify_room": ACTIVE_ROOM.get("room", "")}}),
                 hostname=MQTT_HOST,
                 port=MQTT_PORT,
             )
         except Exception as exc:
             return f"Failed to trigger the order-history scan: {exc}"
-        return (
-            "On it, sir — Remy is reading your Amazon order history and keeping the "
-            "grocery items as your usual order. This needs the Jarvis browser signed "
-            "in to Amazon. Ask for the grocery agent's report in a minute."
-        )
+        return ("On it, sir: Remy is reading your past orders "
+                f"({'all stores' if stores == 'all' else stores}) to learn what you usually "
+                "buy. It takes a few minutes; ask for the grocery agent's report after.")
 
     store = store.strip().lower() or "amazon"
     if store not in ("amazon", "whole_foods", "target", "heb", "all"):
