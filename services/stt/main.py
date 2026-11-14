@@ -1,8 +1,11 @@
 """JARVIS Speech-to-Text Service.
 
-Subscribes to wake word events. When triggered, records audio from the mic
-until silence is detected, then transcribes using faster-whisper and publishes
-the text to MQTT.
+Subscribes to wake word events. When triggered, records audio from the mic and
+streams it to ElevenLabs Scribe (scribe.py), which transcribes as you speak and
+decides when you've finished from what you said, not just from silence. If
+Scribe is unavailable (no key, quota, network) or errors mid-take, the same
+audio is endpointed locally on silence and transcribed with faster-whisper.
+STT_ENGINE=whisper skips Scribe entirely.
 
 The raw command audio is also written to a shared volume (AUDIO_DIR) and
 its path is included in the MQTT payload so downstream services (speaker
@@ -24,6 +27,14 @@ import numpy as np
 import paho.mqtt.client as mqtt
 import pyaudio
 from faster_whisper import WhisperModel
+
+import scribe
+
+STT_ENGINE = os.environ.get("STT_ENGINE", "scribe").strip().lower()   # scribe | whisper
+# While Scribe is deciding the turn, the local silence limit is only a safety
+# net (Scribe's own silence backstop is STT_SCRIBE_VAD_SILENCE, 1.5s). If we
+# reach this, we force a commit.
+SCRIBE_LOCAL_SILENCE = float(os.environ.get("STT_SCRIBE_LOCAL_SILENCE", "4.0"))
 
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
@@ -235,8 +246,10 @@ class Endpointer:
     """Decides when an utterance is over, from per-chunk RMS. Pure logic, so it
     can be tested without a microphone."""
 
-    def __init__(self, threshold: float = 0.5, no_speech_timeout: float | None = None):
+    def __init__(self, threshold: float = 0.5, no_speech_timeout: float | None = None,
+                 silence: float | None = None):
         self.threshold = threshold
+        self.silence_chunks = int((SILENCE_DURATION if silence is None else silence) * _CPS)
         self.no_speech_timeout = NO_SPEECH_TIMEOUT if no_speech_timeout is None else no_speech_timeout
         self.loud = 0          # consecutive chunks above threshold
         self.silent = 0        # consecutive chunks below, after speech
@@ -257,7 +270,7 @@ class Endpointer:
             self.loud = 0
             if self.speech:
                 self.silent += 1
-                if self.silent >= int(SILENCE_DURATION * _CPS):
+                if self.silent >= self.silence_chunks:
                     return "silence"
         if not self.speech and self.n >= int(self.no_speech_timeout * _CPS):
             return "no_speech"
@@ -324,10 +337,39 @@ def _get_scorer():
     return _scorer
 
 
-def capture_command_audio(preroll: bool = True,
-                          no_speech_timeout: float | None = None) -> io.BytesIO:
-    """Record one utterance and return it as WAV. `preroll` prepends the audio
-    from just before the call (the words right after the wake word)."""
+def _wav(frames: list[bytes]) -> io.BytesIO:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(b"".join(frames))
+    buf.seek(0)
+    return buf
+
+
+def _open_scribe(previous_text: str):
+    if STT_ENGINE != "scribe" or not scribe.available():
+        return None
+    t = time.time()
+    try:
+        sess = scribe.Session(SAMPLE_RATE, previous_text=previous_text)
+        print(f"[STT] Scribe connected in {time.time() - t:.2f}s")
+        return sess
+    except Exception as exc:
+        print(f"[STT] Scribe unavailable ({type(exc).__name__}: {str(exc)[:160]}) — using Whisper")
+        return None
+
+
+def listen(preroll: bool = True, no_speech_timeout: float | None = None,
+           previous_text: str = "") -> tuple[str, io.BytesIO, str]:
+    """Record one utterance. Returns (text, wav, engine).
+
+    `text` is Scribe's committed transcript, or "" when Whisper must
+    transcribe `wav` (engine "whisper"), or "" with engine "none" when nobody
+    spoke. `preroll` prepends the audio from just before the call (the words
+    right after the wake word).
+    """
     global _mic
     if _mic is None:
         _mic = MicStream()
@@ -342,13 +384,17 @@ def capture_command_audio(preroll: bool = True,
     else:
         threshold = min(THRESHOLD_MAX, max(THRESHOLD_MIN, floor * NOISE_MULTIPLIER))
         level = _rms
-    ep = Endpointer(threshold, no_speech_timeout)
     t0 = time.time()
-    pre, q = _mic.start(preroll)
+    pre, q = _mic.start(preroll)     # the queue fills while Scribe connects
+    sess = _open_scribe(previous_text)
+    ep = Endpointer(threshold, no_speech_timeout,
+                    silence=SCRIBE_LOCAL_SILENCE if sess else None)
     frames = list(pre)
     for c in pre:          # warm the VAD's context window; doesn't drive endpointing
         if scorer is not None:
             scorer(c)
+        if sess:
+            sess.send(c)
     why = "cap"
     try:
         for _ in range(int(MAX_RECORD_SECONDS * _CPS)):
@@ -358,6 +404,17 @@ def capture_command_audio(preroll: bool = True,
                 why = "mic stalled"
                 break
             frames.append(data)
+            if sess:
+                sess.send(data)
+                if sess.done.is_set():
+                    if sess.text:
+                        why = "scribe turn" if (sess.turn_prob or 0) >= 0.9 else "scribe silence"
+                        break
+                    # Scribe failed mid-take: finish this take on local silence.
+                    print(f"[STT] Scribe error ({sess.error}) — finishing with Whisper")
+                    sess.close()
+                    sess = None
+                    ep.silence_chunks = int(SILENCE_DURATION * _CPS)
             r = ep.feed(level(data))
             if r:
                 why = r
@@ -365,18 +422,53 @@ def capture_command_audio(preroll: bool = True,
     finally:
         _mic.stop()
 
-    print(f"[STT] Recorded {time.time() - t0:.1f}s (+{len(pre) / _CPS:.1f}s pre-roll), "
-          f"stop={why}, speech={'yes' if ep.speech else 'no'}, "
-          f"{'vad' if scorer is not None else f'rms floor {floor:.0f}'} threshold {threshold:g}")
+    engine = "whisper"
+    text = ""
+    if sess:
+        if why in ("scribe turn", "scribe silence"):
+            engine, text = "scribe", sess.text
+        elif why == "no_speech":
+            engine = "none"
+        else:   # local safety net / cap: force a commit, take what Scribe has
+            sess.finish()
+            if sess.text:
+                engine, text = "scribe", sess.text
+            elif sess.error:
+                print(f"[STT] Scribe error ({sess.error}) — using Whisper")
+        sess.close()
+    elif why == "no_speech":
+        engine = "none"
 
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(b"".join(frames))
+    tp = f", turn_prob {sess.turn_prob:.2f}" if sess and sess.turn_prob is not None else ""
+    print(f"[STT] Recorded {time.time() - t0:.1f}s (+{len(pre) / _CPS:.1f}s pre-roll), "
+          f"stop={why}, engine={engine}{tp}, speech={'yes' if ep.speech else 'no'}, "
+          f"{'vad' if scorer is not None else f'rms floor {floor:.0f}'} threshold {threshold:g}")
+    return text, _wav(frames), engine
+
+
+def _transcribe(text: str, buf: io.BytesIO, engine: str) -> str:
+    if engine == "scribe":
+        return text
+    if engine == "none":
+        return ""
     buf.seek(0)
-    return buf
+    segments, _info = model.transcribe(buf, language="en", vad_filter=True)
+    return " ".join(s.text for s in segments).strip()
+
+
+def _last_reply() -> str:
+    """Jarvis's last reply, as context for a follow-up (helps turn prediction
+    tell an answer from a pause)."""
+    if _r is None:
+        return ""
+    try:
+        for raw in reversed(_r.lrange("conversation:default", -4, -1)):
+            m = json.loads(raw)
+            if m.get("role") == "assistant":
+                return str(m.get("content", ""))[-500:]
+    except Exception:
+        pass
+    return ""
 
 
 # Pre-roll can catch the tail of the wake phrase itself.
@@ -476,12 +568,10 @@ def on_tts_done(client, userdata, msg):
 
     # The window is how long to wait for the user to START a follow-up; once
     # they speak, normal endpointing ends the take.
-    audio_buf = capture_command_audio(preroll=False, no_speech_timeout=FOLLOWUP_WINDOW)
+    raw, audio_buf, engine = listen(preroll=False, no_speech_timeout=FOLLOWUP_WINDOW,
+                                    previous_text=_last_reply())
     audio_path = cache_audio(audio_buf, room)
-    audio_buf.seek(0)
-
-    segments, info = model.transcribe(audio_buf, language="en", vad_filter=True)
-    text = " ".join([s.text for s in segments]).strip()
+    text = _transcribe(raw, audio_buf, engine)
 
     if text and not _is_hallucination(text):
         # Closers ("thanks", "that's all") are no longer swallowed silently here —
@@ -504,12 +594,9 @@ def on_wake_word(client, userdata, msg):
     if BEEP:
         _beep()
 
-    audio_buf = capture_command_audio(preroll=True)
+    raw, audio_buf, engine = listen(preroll=True)
     audio_path = cache_audio(audio_buf, room)
-    audio_buf.seek(0)
-
-    segments, info = model.transcribe(audio_buf, language="en", vad_filter=True)
-    text = _strip_wake(" ".join([s.text for s in segments]).strip())
+    text = _strip_wake(_transcribe(raw, audio_buf, engine))
 
     if text and not _is_hallucination(text):
         print(f"[STT] Transcribed ({room}): '{text}'")
