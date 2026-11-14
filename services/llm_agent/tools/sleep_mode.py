@@ -39,6 +39,13 @@ THERMOSTAT = os.environ.get("SLEEP_THERMOSTAT_ENTITY", "climate.thermostat")
 BEDROOM_LAMP = os.environ.get("SLEEP_LAMP_ENTITY", "light.bedroom_lamp")
 LAMP_EFFECT = os.environ.get("SLEEP_LAMP_EFFECT", "Night Light")
 LAMP_BRIGHTNESS = int(os.environ.get("SLEEP_LAMP_BRIGHTNESS", "25"))   # percent
+# Govee's own "Sleeping" timer lives only in the Govee app (it isn't one of the
+# lamp's effects in HA), so Jarvis does the same fade itself: this colour at
+# SLEEP_LAMP_FADE_START %, dimming each minute to off over FADE_MINUTES.
+# FADE_MINUTES=0 goes back to the static SLEEP_LAMP_EFFECT.
+LAMP_FADE_MIN = int(os.environ.get("SLEEP_LAMP_FADE_MINUTES", "20"))
+LAMP_FADE_START = int(os.environ.get("SLEEP_LAMP_FADE_START", "30"))   # percent
+LAMP_RGB = [int(x) for x in os.environ.get("SLEEP_LAMP_RGB", "45,115,185").split(",")]
 SLEEP_TEMP = int(os.environ.get("SLEEP_TEMP_F", "69"))
 SLEEP_MINUTES = int(os.environ.get("SLEEP_MUSIC_MINUTES", "45"))
 SLEEP_TRACK = os.environ.get("SLEEP_TRACK", "")        # set this to your loop song
@@ -52,6 +59,7 @@ TV_SPOTIFY_NAME = os.environ.get("SLEEP_TV_SPOTIFY_DEVICE", "").strip()
 SLEEP_TRACK_NAME = os.environ.get("SLEEP_TRACK_NAME", "") or SLEEP_TRACK
 
 _STOP_KEY = "jarvis:sleep:stop_at"
+_FADE_KEY = "jarvis:sleep:fade"   # present while the lamp fade runs; deleting it stops the fade
 _TV_KEY = "jarvis:sleep:tv"      # set while the timer should also turn the TV off
 
 _r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -109,6 +117,8 @@ async def _set_lamp(session: aiohttp.ClientSession) -> str:
                                 timeout=aiohttp.ClientTimeout(total=20)) as _:
             pass
         await asyncio.sleep(1.5)
+        if LAMP_FADE_MIN > 0:
+            return await _start_fade(session)
         payload = {"entity_id": BEDROOM_LAMP,
                    "brightness": max(1, min(255, round(LAMP_BRIGHTNESS / 100 * 255)))}
         if LAMP_EFFECT:
@@ -127,6 +137,56 @@ async def _set_lamp(session: aiohttp.ClientSession) -> str:
         return f"⚠ lamp: sent, but it reports '{now}'"
     except Exception as exc:
         return f"✗ lamp: {type(exc).__name__}"
+
+
+def _pct(p: float) -> int:
+    return max(1, min(255, round(p / 100 * 255)))
+
+
+async def _start_fade(session: aiohttp.ClientSession) -> str:
+    """Set the sleep colour, then dim to off in the background."""
+    async with session.post(f"{HA_URL}/api/services/light/turn_on", headers=_ha_headers(),
+                            json={"entity_id": BEDROOM_LAMP, "rgb_color": LAMP_RGB,
+                                  "brightness": _pct(LAMP_FADE_START)},
+                            timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        if resp.status != 200:
+            return f"✗ lamp: HTTP {resp.status}"
+    try:
+        _r.set(_FADE_KEY, "1", ex=LAMP_FADE_MIN * 60 + 600)
+    except Exception:
+        pass
+
+    async def _fade() -> None:
+        steps = LAMP_FADE_MIN          # one step a minute: well inside Govee's rate limit
+        try:
+            async with aiohttp.ClientSession() as s2:
+                for i in range(1, steps + 1):
+                    await asyncio.sleep(60)
+                    if not _r.get(_FADE_KEY):
+                        return                 # sleep mode cancelled
+                    async with s2.get(f"{HA_URL}/api/states/{BEDROOM_LAMP}", headers=_ha_headers(),
+                                      timeout=aiohttp.ClientTimeout(total=15)) as chk:
+                        if chk.status == 200 and (await chk.json()).get("state") == "off":
+                            return             # someone turned it off already
+                    if i == steps:
+                        await s2.post(f"{HA_URL}/api/services/light/turn_off", headers=_ha_headers(),
+                                      json={"entity_id": BEDROOM_LAMP},
+                                      timeout=aiohttp.ClientTimeout(total=20))
+                    else:
+                        await s2.post(f"{HA_URL}/api/services/light/turn_on", headers=_ha_headers(),
+                                      json={"entity_id": BEDROOM_LAMP,
+                                            "brightness": _pct(LAMP_FADE_START * (1 - i / steps))},
+                                      timeout=aiohttp.ClientTimeout(total=20))
+        except Exception:
+            pass
+        finally:
+            try:
+                _r.delete(_FADE_KEY)
+            except Exception:
+                pass
+
+    asyncio.get_running_loop().create_task(_fade())
+    return f"✓ lamp → {LAMP_FADE_START}%, fading to off over {LAMP_FADE_MIN} min"
 
 
 async def _ha_call(session: aiohttp.ClientSession, service: str, data: dict) -> int:
@@ -319,7 +379,8 @@ def _arm_timer(minutes: int, tv: bool = False) -> None:
 
 @tool
 async def sleep_mode(action: str = "on", minutes: int = 0) -> str:
-    """Run the bedtime routine: cool the house, dim the bedroom lamp, wake the
+    """Run the bedtime routine: cool the house, fade the bedroom lamp to off
+    (20 min, like Govee's Sleeping timer), wake the
     bedroom TV and loop the sleep track on it (the Mac if the TV can't be
     reached), then stop the music and turn the TV off automatically. It does
     the TV wake-up itself, so don't call spotify_control or control_device
@@ -354,7 +415,7 @@ async def sleep_mode(action: str = "on", minutes: int = 0) -> str:
     if action in ("off", "cancel", "stop"):
         try:
             tv_on = bool(_r.get(_TV_KEY))
-            _r.delete(_STOP_KEY, _TV_KEY)
+            _r.delete(_STOP_KEY, _TV_KEY, _FADE_KEY)
         except Exception:
             tv_on = False
         from .spotify import spotify_control

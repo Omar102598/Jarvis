@@ -385,6 +385,10 @@ services:
       # open, while .env suggests it is protected.
       - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-}
       - DASHBOARD_SESSION_TTL_S=${DASHBOARD_SESSION_TTL_S:-2592000}
+      # /chat proxies typed + click-to-speak input to the gateway's existing
+      # /ask/query endpoints; the API key is added server-side.
+      - GATEWAY_INTERNAL_URL=${GATEWAY_INTERNAL_URL:-http://mobile_gateway:8080}
+      - MOBILE_API_KEY=${MOBILE_API_KEY:-}
     volumes:
       - ./services/dashboard/widgets:/app/widgets
       - ./services/dashboard/templates:/app/templates
