@@ -112,7 +112,10 @@ async def _synth_elevenlabs(text: str, out_path: str) -> bool:
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as r:
                 if r.status in (401, 402, 429):
-                    print(f"[TTS] ElevenLabs quota/auth ({r.status}) — "
+                    # ElevenLabs says WHY (quota_exceeded, invalid_api_key,
+                    # missing_permissions…) in the body; it never echoes the key.
+                    why = (await r.text())[:240].replace("\n", " ")
+                    print(f"[TTS] ElevenLabs quota/auth ({r.status}): {why} — "
                           "using Ryan for the next 10 minutes")
                     _el_down_until = _time.time() + 600
                     return False
