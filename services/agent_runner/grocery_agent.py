@@ -1108,6 +1108,27 @@ def _remove_js(target: Optional[str] = None, click: bool = False) -> str:
     return _REMOVE_BUTTONS_JS % (json.dumps(target), "true" if click else "false")
 
 
+# Some stores ask "Are you sure you want to remove this item?" after the
+# remove click (HEB: Cancel / Remove, data-qe-id="itemConfirmRemove"). The
+# first button vanishes when the question appears, so the line *looks* gone
+# until the page reloads. Answer the question; "none" = there wasn't one.
+_CONFIRM_REMOVE_JS = r"""
+(() => {
+  var b = document.querySelector('[data-qe-id="itemConfirmRemove"]');
+  if (!b) {
+    var vis = [].slice.call(document.querySelectorAll('button')).filter(function(x) {
+      return x.offsetParent !== null && /^(remove|delete|yes,? remove|confirm)$/i.test((x.innerText || '').trim())
+        && !/^(remove|delete) /i.test(x.getAttribute('aria-label') || '');
+    });
+    if (vis.length === 1 && /are you sure|remove this item|delete this item/i.test(document.body.innerText)) b = vis[0];
+  }
+  if (!b) return 'none';
+  b.scrollIntoView({block: 'center'}); b.click();
+  return 'confirmed';
+})()
+"""
+
+
 async def _list_cart_names(session: aiohttp.ClientSession, store_key: str,
                            navigate: bool = True) -> Optional[list[str]]:
     """Product names in a store's cart, read from the remove buttons.
@@ -1229,11 +1250,17 @@ async def _remove_from_cart(session: aiohttp.ClientSession, store_key: str,
         for attempt in range(2):
             res = await _bridge_post(session, "/browser/js",
                                      {"script": _remove_js(name, click=True)}, timeout=20)
-            if res.get("result") == "missing":
-                ok = attempt > 0          # already gone after a previous click
-                break
-            await asyncio.sleep(4)        # Amazon reloads the cart; HEB/Target re-render
-            now = await _list_cart_names(session, store_key, navigate=False)
+            if res.get("result") == "missing" and attempt == 0:
+                break                     # not on the page at all
+            if res.get("result") == "ok":
+                await asyncio.sleep(1.5)
+                conf = await _bridge_post(session, "/browser/js",
+                                          {"script": _CONFIRM_REMOVE_JS}, timeout=20)
+                _log(f"    confirm: {conf.get('result')}")
+            await asyncio.sleep(4)        # let the store save it
+            # Reload before checking: a line hidden by a confirm prompt or an
+            # optimistic re-render isn't removed until the server says so.
+            now = await _list_cart_names(session, store_key, navigate=True)
             if now is not None and name not in now:
                 ok = True
                 break
