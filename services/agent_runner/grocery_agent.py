@@ -1088,6 +1088,22 @@ _REMOVE_BUTTONS_JS = r"""
 """
 
 
+_CHALLENGE_RE = re.compile(r"press (&|and) hold|verify (that )?you are (a )?human|"
+                           r"are you a robot|access to this page has been denied", re.I)
+
+
+class HumanCheck(Exception):
+    """The store showed a bot check. Remy never tries to get past one: he
+    stops and asks the user to do it in the Jarvis browser."""
+
+
+async def _check_challenge(session, store_key: str) -> None:
+    page = await _bridge_get(session, "/browser/read", timeout=20)
+    if _CHALLENGE_RE.search(str(page.get("text") or "")[:3000]):
+        raise HumanCheck(f"{STORES[store_key]['name']} is showing a human check "
+                         "(press and hold) in the Jarvis browser")
+
+
 def _remove_js(target: Optional[str] = None, click: bool = False) -> str:
     return _REMOVE_BUTTONS_JS % (json.dumps(target), "true" if click else "false")
 
@@ -1111,6 +1127,7 @@ async def _list_cart_names(session: aiohttp.ClientSession, store_key: str,
             names = [str(n) for n in raw if n]
             if names:
                 return names
+    await _check_challenge(session, store_key)
     return names
 
 
@@ -1212,6 +1229,9 @@ async def _order_ids(session, store_key: str) -> list[tuple[str, str]]:
             break
         await asyncio.sleep(7)
         res = await _bridge_post(session, "/browser/js", {"script": _LINKS_JS}, timeout=20)
+        if not res.get("result") or not any(re.search(conf["detail"], str(h).split("?")[0])
+                                            for h in res.get("result") or []):
+            await _check_challenge(session, store_key)
         for href in res.get("result") or []:
             m = re.search(conf["detail"], str(href).split("?")[0])
             if m and m.group(1) not in seen:
@@ -1232,6 +1252,9 @@ async def _order_items(session, store_key: str, url: str) -> list[dict]:
         text = str((await _bridge_get(session, "/browser/read", timeout=25)).get("text") or "")
         if (store_key == "heb" and "Item, " in text) or (store_key != "heb" and len(text) > 1500):
             break
+        if _CHALLENGE_RE.search(text[:3000]):
+            raise HumanCheck(f"{STORES[store_key]['name']} is showing a human check "
+                             "(press and hold) in the Jarvis browser")
     if store_key == "heb":
         return [{"title": t.strip()[:120], "qty": int(q)}
                 for t, q, price in _HEB_ITEM_RE.findall(text)
@@ -2188,7 +2211,11 @@ class GroceryAgent(BaseAgent):
             if not await _check_bridge(session):
                 return f"Mac Bridge unreachable at {MAC_BRIDGE_URL}. Cannot edit carts."
             for sk in stores:
-                res = await _remove_from_cart(session, sk, "all" if items == "all" else items)
+                try:
+                    res = await _remove_from_cart(session, sk, "all" if items == "all" else items)
+                except HumanCheck as hc:
+                    lines.append(f"{hc}. Do that once, then ask me again.")
+                    continue
                 if res["error"]:
                     if len(stores) == 1 or items == "all":
                         lines.append(f"{res['store']}: {res['error']}.")
@@ -2215,19 +2242,28 @@ class GroceryAgent(BaseAgent):
         seen_titles: dict[str, dict] = {}    # norm title -> {title, store, orders, qty}
         per_store: dict[str, int] = {}
         new_order_keys: list[str] = []
+        blocked: list[str] = []
         async with aiohttp.ClientSession() as session:
             if not await _check_bridge(session):
                 return f"Mac Bridge unreachable at {MAC_BRIDGE_URL}. Cannot read order history."
 
             for sk in stores:
                 if sk in _ORDER_PAGES:
-                    ids = await _order_ids(session, sk)
+                    try:
+                        ids = await _order_ids(session, sk)
+                    except HumanCheck as hc:
+                        blocked.append(str(hc))
+                        continue
                     fresh = [(oid, url) for oid, url in ids
                              if not self.r.sismember(_LEARNED_ORDERS_KEY, f"{sk}:{oid}")]
                     _log(f"  {STORES[sk]['name']}: {len(ids)} order(s) found, {len(fresh)} new")
                     n = 0
                     for oid, url in fresh:
-                        lines = await _order_items(session, sk, url)
+                        try:
+                            lines = await _order_items(session, sk, url)
+                        except HumanCheck as hc:
+                            blocked.append(str(hc))
+                            break
                         _log(f"    order {oid}: {len(lines)} item(s)")
                         if not lines:
                             continue      # unread orders stay unlearned and are retried next time
@@ -2248,6 +2284,8 @@ class GroceryAgent(BaseAgent):
                     per_store[sk] = len(titles)
 
             if not seen_titles:
+                if blocked:
+                    return "; ".join(blocked) + ". Do that once, then ask me again."
                 return ("I didn't find any new orders to learn from"
                         + (" (" + ", ".join(STORES[k]["name"] + f": {v}" for k, v in per_store.items()) + ")"
                            if per_store else "")
@@ -2285,6 +2323,9 @@ class GroceryAgent(BaseAgent):
         where = ", ".join(f"{STORES[k]['name']} {v}" for k, v in per_store.items())
         report = (f"Learned from past orders ({where}): {added} new item(s), {updated} "
                   f"seen again; {len(items)} items on file. Most ordered: {top}.")
+        if blocked:
+            report += (" Stopped early: " + "; ".join(blocked)
+                       + ". Do that once and ask again to pick up the rest.")
         _log(f"  ✓ {report}")
         return report
 
