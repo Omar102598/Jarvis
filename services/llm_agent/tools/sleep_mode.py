@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -66,6 +67,24 @@ _FADE_KEY = "jarvis:sleep:fade"   # present while the lamp fade runs; deleting i
 _TV_KEY = "jarvis:sleep:tv"      # set while the timer should also turn the TV off
 
 _r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+
+
+# The brain runs every turn in its own asyncio.run(), which cancels any task
+# still pending when the reply ends -- so a create_task() timer never fires.
+# The lamp fade and music timer run on this loop instead, which lives as long
+# as the container.
+_bg_loop: Optional[asyncio.AbstractEventLoop] = None
+_bg_lock = threading.Lock()
+
+
+def _run_in_background(coro) -> None:
+    global _bg_loop
+    with _bg_lock:
+        if _bg_loop is None or _bg_loop.is_closed():
+            _bg_loop = asyncio.new_event_loop()
+            threading.Thread(target=_bg_loop.run_forever, name="sleep-mode-timers",
+                             daemon=True).start()
+    asyncio.run_coroutine_threadsafe(coro, _bg_loop)
 
 
 def _ha_headers() -> dict:
@@ -188,7 +207,7 @@ async def _start_fade(session: aiohttp.ClientSession) -> str:
             except Exception:
                 pass
 
-    asyncio.get_running_loop().create_task(_fade())
+    _run_in_background(_fade())
     return f"✓ lamp → {LAMP_FADE_START}%, fading to off over {LAMP_FADE_MIN} min"
 
 
@@ -395,10 +414,7 @@ def _arm_timer(minutes: int, tv: bool = False) -> None:
         except asyncio.CancelledError:
             pass
 
-    try:
-        asyncio.get_running_loop().create_task(_stop_later())
-    except RuntimeError:
-        pass   # no loop (sync caller) -- watchdog remains the backstop
+    _run_in_background(_stop_later())
 
 
 @tool
