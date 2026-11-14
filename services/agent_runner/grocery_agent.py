@@ -1131,6 +1131,51 @@ async def _list_cart_names(session: aiohttp.ClientSession, store_key: str,
     return names
 
 
+# Every item Remy adds to a cart, so "remove what Remy added today" works.
+# The cart itself doesn't say who added a line.
+_ADDED_LOG_KEY = "grocery:added_log"
+
+
+def _record_added(r, entries: list[dict]) -> None:
+    if not entries:
+        return
+    at = datetime.now(timezone.utc).isoformat()
+    try:
+        r.rpush(_ADDED_LOG_KEY, *[json.dumps({**e, "at": at}) for e in entries])
+        r.ltrim(_ADDED_LOG_KEY, -1000, -1)
+        r.expire(_ADDED_LOG_KEY, 60 * 86400)
+    except Exception as exc:
+        _log(f"  ⚠ Couldn't record the added items: {exc}")
+
+
+def _added_since(r, since: str) -> dict[str, list[str]]:
+    """Products Remy added, per store, since `since`: "today", "last" (the
+    most recent run only) or a local date YYYY-MM-DD."""
+    tz = ZoneInfo(USER_TZ)
+    rows = []
+    for raw in r.lrange(_ADDED_LOG_KEY, 0, -1) or []:
+        try:
+            e = json.loads(raw)
+            e["_at"] = datetime.fromisoformat(e["at"])
+            rows.append(e)
+        except Exception:
+            continue
+    if not rows:
+        return {}
+    if since == "last":
+        last = max(e["at"] for e in rows)
+        rows = [e for e in rows if e["at"] == last]
+    else:
+        day = datetime.now(tz).date() if since in ("", "today") else \
+            datetime.strptime(since, "%Y-%m-%d").date()
+        rows = [e for e in rows if e["_at"].astimezone(tz).date() >= day]
+    out: dict[str, list[str]] = defaultdict(list)
+    for e in rows:
+        if e["product"] not in out[e["store_key"]]:
+            out[e["store_key"]].append(e["product"])
+    return dict(out)
+
+
 async def _match_requested(requested: list[str], names: list[str]) -> list[str]:
     """Map the user's words ("the chicken", "poppi") to exact cart names."""
     if not requested or not names:
@@ -1144,6 +1189,9 @@ async def _match_requested(requested: list[str], names: list[str]) -> list[str]:
                     "cart. Return ONLY a JSON array of cart item names copied EXACTLY "
                     "from the cart list, one for each requested item that clearly "
                     "matches (a request can match several lines, e.g. 'all the poppi'). "
+                    "A requested item may be raw product-card text with promo and "
+                    "price words in front ('Coupon $1.55 each ($0.10 / oz) H-E-B "
+                    "Frozen Broccoli Florets'): match on the product name in it. "
                     "Leave out anything you are not sure about. No other text."),
             user=json.dumps({"requested": requested, "cart": names}),
             max_tokens=800,
@@ -2198,13 +2246,43 @@ class GroceryAgent(BaseAgent):
 
     async def _run_remove(self) -> str:
         """Remove items from carts -- any item, whoever added it.
-        params: stores ("all" or list), items (list of descriptions, or "all")."""
-        items = (self.params or {}).get("items") or []
-        if isinstance(items, str) and items.strip().lower() != "all":
-            items = [items]
-        if not items:
-            return "Nothing to remove: no items were named."
+        params: stores ("all" or list), items (list of descriptions, or "all"),
+        added_by_remy ("today", "last", or YYYY-MM-DD: remove what Remy put
+        in the carts since then, from grocery:added_log)."""
+        p = self.params or {}
+        since = str(p.get("added_by_remy") or "").strip().lower()
         stores = self._req_stores()
+        per_store: dict[str, list[str] | str] = {}
+        if since:
+            try:
+                added = _added_since(self.r, since)
+            except ValueError:
+                return f"I didn't understand the date {since!r}; use YYYY-MM-DD."
+            if not added and since in ("today", "last"):
+                # Runs from before the log existed: the last run's pending order.
+                try:
+                    pend = json.loads(self.r.get(PENDING_ORDER_KEY) or "{}")
+                    when = datetime.fromisoformat(pend["created_at"]).astimezone(ZoneInfo(USER_TZ))
+                    if since == "last" or when.date() == datetime.now(ZoneInfo(USER_TZ)).date():
+                        for it in pend.get("items", []):
+                            if it.get("status") == "added" and it.get("store_key"):
+                                added.setdefault(it["store_key"], []).append(it.get("product") or it["item"])
+                except Exception:
+                    pass
+            per_store = {sk: added[sk] for sk in stores if added.get(sk)}
+            if not per_store:
+                return (f"I have no record of adding anything to the "
+                        f"{', '.join(STORES[s]['name'] for s in stores)} cart(s) "
+                        f"{'in my last run' if since == 'last' else 'since ' + since}.")
+            stores = list(per_store)
+            items = [x for v in per_store.values() for x in v]
+        else:
+            items = p.get("items") or []
+            if isinstance(items, str) and items.strip().lower() != "all":
+                items = [items]
+            if not items:
+                return "Nothing to remove: no items were named."
+            per_store = {sk: ("all" if items == "all" else items) for sk in stores}
         _log(f"=== Grocery Agent | remove: {items} from {', '.join(stores)} ===")
         lines = []
         async with aiohttp.ClientSession() as session:
@@ -2212,7 +2290,7 @@ class GroceryAgent(BaseAgent):
                 return f"Mac Bridge unreachable at {MAC_BRIDGE_URL}. Cannot edit carts."
             for sk in stores:
                 try:
-                    res = await _remove_from_cart(session, sk, "all" if items == "all" else items)
+                    res = await _remove_from_cart(session, sk, per_store[sk])
                 except HumanCheck as hc:
                     lines.append(f"{hc}. Do that once, then ask me again.")
                     continue
@@ -2224,6 +2302,9 @@ class GroceryAgent(BaseAgent):
                     lines.append(f"{res['store']}: removed {', '.join(res['removed'])}.")
                 if res["failed"]:
                     lines.append(f"{res['store']}: couldn't remove {', '.join(res['failed'])}.")
+        if not lines and since:
+            return (f"None of the {len(items)} item(s) I added are in the "
+                    f"{', '.join(STORES[s]['name'] for s in stores)} cart(s) any more.")
         if not lines:
             return (f"I couldn't find {', '.join(items) if items != 'all' else 'anything'} "
                     f"in the {', '.join(STORES[s]['name'] for s in stores)} cart(s).")
@@ -2533,6 +2614,9 @@ class GroceryAgent(BaseAgent):
             }
             self.r.set(PENDING_ORDER_KEY, json.dumps(pending), ex=604800)
             _log("  ✓ Pending order stored in Redis.")
+            _record_added(self.r, [
+                {"store_key": r.assigned_store, "product": r.title or r.item, "item": r.item}
+                for r in order_results if r.status == "added" and r.assigned_store])
 
             # ── 10. Deliver report ─────────────────────────────────────
             _log("Step 8: Delivering report…")

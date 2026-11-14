@@ -22,6 +22,11 @@ Chrome usually isn't signed in to grocery sites).
 - remove_grocery_items(items, stores): take items out of any cart, whoever
   added them. items in the user's words, comma-separated; "all" only when
   they explicitly ask to empty a cart. stores defaults to all carts.
+  To undo Remy's own shopping ("remove what Remy added today", "keep my
+  items, take out his"), use added_by_remy="today" / "last" / "YYYY-MM-DD"
+  and leave items empty: Remy logs what he adds, so the user's items stay.
+  Never describe "what Remy added" in items -- the cart can't tell who
+  added a line, only the log can.
 - learn_fresh_cart(store, source="orders"): "learn what I usually order",
   "read my past orders" -- reads past orders at all stores (store="all").
 - get_grocery_status: what Remy built last, the total, and whether it's pending.

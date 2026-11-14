@@ -162,7 +162,7 @@ def trigger_grocery_run(stores: str = "", budget: float = 0, notes: str = "") ->
 
 
 @tool
-def remove_grocery_items(items: str, stores: str = "all") -> str:
+def remove_grocery_items(items: str = "", stores: str = "all", added_by_remy: str = "") -> str:
     """Remove items from grocery carts -- any item, whoever added it (the
     user, Remy, or someone else). Use when the user asks to take something
     out of a cart or to empty a cart.
@@ -171,24 +171,33 @@ def remove_grocery_items(items: str, stores: str = "all") -> str:
         items: What to remove, comma-separated, in the user's words ("the
             poppi, chicken thighs"); Remy matches them to the exact cart
             lines. Use "all" ONLY when the user explicitly asks to empty the
-            cart(s).
+            cart(s). Leave empty when using added_by_remy.
         stores: 'heb', 'target', 'amazon' (Fresh), 'whole_foods', comma-
             separated, or 'all' (default) to look in every cart.
+        added_by_remy: To undo Remy's own shopping ("remove what Remy added",
+            "take out today's run, keep my stuff"): 'today', 'last' (his most
+            recent run only), or a date 'YYYY-MM-DD' (everything since then).
+            Remy keeps a log of what he adds, so the user's own items stay.
     """
+    since = added_by_remy.strip().lower()
     want = "all" if items.strip().lower() in ("all", "everything") else \
         [x.strip() for x in items.split(",") if x.strip()]
-    if not want:
+    if not want and not since:
         return "Which items should I remove?"
     st = stores.strip().lower() or "all"
     params = {"action": "remove", "items": want, "notify_room": ACTIVE_ROOM.get("room", ""),
               "stores": "all" if st == "all" else [x.strip() for x in st.split(",") if x.strip()]}
+    if since:
+        params["added_by_remy"] = since
+        want = f"what he added ({since})"
     try:
         mqtt_publish.single("jarvis/agents/grocery/trigger",
                             json.dumps({"source": "llm", "params": params}),
                             hostname=MQTT_HOST, port=MQTT_PORT)
     except Exception as exc:
         return f"Failed to reach Remy: {exc}"
-    what = "everything" if want == "all" else ", ".join(want)
+    what = want if isinstance(want, str) and want != "all" else \
+        ("everything" if want == "all" else ", ".join(want))
     return (f"Remy is removing {what} from the {'carts' if st == 'all' else st + ' cart'}, sir. "
             "He'll report what he took out; ask for the grocery agent's report in a minute.")
 
