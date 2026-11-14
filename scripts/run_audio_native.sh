@@ -169,7 +169,7 @@ cmd_start() {
     "torchaudio>=2.0.0" \
     "soundfile>=0.12.0" \
     "redis>=5.0" \
-    "edge-tts>=6.1.9"
+    "edge-tts>=7.3.1"
 
   mkdir -p "$AUDIO_DIR" "$MODEL_DIR"
 

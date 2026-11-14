@@ -32,6 +32,7 @@ MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 TTS_VOICE = os.environ.get("TTS_VOICE", "en-GB-RyanNeural")
 TTS_RATE  = os.environ.get("TTS_RATE",  "-5%")
 TTS_PITCH = os.environ.get("TTS_PITCH", "-5Hz")
+MAC_SAY_VOICE = os.environ.get("MAC_SAY_VOICE", "Daniel")   # last-resort `say` voice
 
 # Rooms with a real physical speaker — comma-separated, matches ROOM_NAME
 # across the voice pipeline (wake_word/stt). Anything else (mobile-*,
@@ -82,8 +83,8 @@ def _strip_markdown(text: str) -> str:
 
 # ---------------------------------------------------------------------------
 # ElevenLabs — premium voice tier (optional). Chain: ElevenLabs → edge-tts
-# (Ryan) → nothing. Quota/auth failures trip a 10-minute cooldown so we don't
-# hammer a drained account on every sentence.
+# (Ryan) → macOS `say` (Daniel). Quota/auth failures trip a 10-minute cooldown
+# so we don't hammer a drained account on every sentence.
 # ---------------------------------------------------------------------------
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "onwK4e9ZLuTAKqWW03F9")  # "Daniel" — deep British
@@ -133,8 +134,16 @@ async def _speak_async(text: str) -> None:
         tmp_path = f.name
     try:
         if not await _synth_elevenlabs(text, tmp_path):
-            communicate = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
-            await communicate.save(tmp_path)
+            try:
+                communicate = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
+                await communicate.save(tmp_path)
+            except Exception as e:
+                # Last resort: macOS's built-in British voice. Never fails for
+                # network reasons, so a reply is always heard. (edge-tts breaks
+                # whenever Microsoft rotates its token check; upgrade it then.)
+                print(f"[TTS] edge-tts failed ({e}) — using macOS say")
+                subprocess.run(["say", "-v", MAC_SAY_VOICE, text], check=False, timeout=180)
+                return
         subprocess.run(["afplay", tmp_path], check=False, timeout=180)
     finally:
         try:
@@ -162,7 +171,12 @@ def _tts_worker() -> None:
             mqtt_client, room, text, is_final = _tts_queue.get()
             if text:
                 print(f"[TTS] Speaking (is_final={is_final}): {text[:80]}...")
-                speak(text)
+                try:
+                    speak(text)
+                except Exception as e:
+                    # Still fall through to /done: without it the voice state
+                    # stays "speaking" for 5 minutes and the orb looks stuck.
+                    print(f"[TTS] Speak failed: {e}")
             # Only signal after the very last sentence so STT opens the follow-up
             # window only after the complete response has been spoken.
             if is_final:
