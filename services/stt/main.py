@@ -56,10 +56,11 @@ CHUNK_SIZE = 1600  # 100ms at 16kHz
 SILENCE_DURATION = float(os.environ.get("STT_SILENCE_DURATION", "0.7"))  # silence AFTER speech that ends a take
 # (STT_SILENCE_THRESHOLD / STT_INITIAL_GRACE are gone: the threshold now tracks the
 # room noise floor and silence only counts after speech -- see MicStream below.)
-# Hard ceiling on one utterance. With the VAD, a take normally ends on 0.7s of
-# silence, so this only matters for long requests: 10s cut off a spoken meal
-# log ("...30 grams of") mid-sentence. 30s fits a full meal or a list.
-MAX_RECORD_SECONDS = float(os.environ.get("STT_MAX_RECORD_SECONDS", "30"))
+# Hard ceiling on one utterance -- a safety net only. Scribe ends the turn
+# (turn prediction, or its silence backstop) and the local 4s-silence check
+# catches the rest, so this fires only if something keeps the mic "hearing
+# speech" forever (TV, music). 30s still cut off a real request.
+MAX_RECORD_SECONDS = float(os.environ.get("STT_MAX_RECORD_SECONDS", "120"))
 # Seconds after TTS finishes to keep an open mic for follow-ups (0 = disabled)
 FOLLOWUP_WINDOW = float(os.environ.get("STT_FOLLOWUP_WINDOW", "25.0"))
 
