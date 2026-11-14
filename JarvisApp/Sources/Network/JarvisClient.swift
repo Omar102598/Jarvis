@@ -62,9 +62,11 @@ final class JarvisClient {
 
     // MARK: Text query → QueryResponse
 
-    func askText(_ text: String, speak: Bool = true) async throws -> QueryResponse {
-        let body = TextQueryRequest(text: text, speak: speak)
-        return try await post(path: "/ask/query", body: body)
+    func askText(_ text: String, speak: Bool = true,
+                 requestID: String = "") async throws -> QueryResponse {
+        let body = TextQueryRequest(text: text, speak: speak, requestID: requestID)
+        // Turns that search the web run 30-60s; the 60s default cut some off.
+        return try await post(path: "/ask/query", body: body, timeout: 180)
     }
 
     // MARK: Audio query → QueryResponse
@@ -352,8 +354,11 @@ final class JarvisClient {
         return req
     }
 
-    private func post<Body: Encodable, Response: Decodable>(path: String, body: Body) async throws -> Response {
+    private func post<Body: Encodable, Response: Decodable>(
+        path: String, body: Body, timeout: TimeInterval? = nil
+    ) async throws -> Response {
         var request = try baseRequest(path: path)
+        if let timeout { request.timeoutInterval = timeout }
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)

@@ -85,7 +85,9 @@ MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 PIPER_MODEL = os.environ.get("PIPER_MODEL", "en_GB-alan-medium")
-LLM_TIMEOUT = float(os.environ.get("MOBILE_LLM_TIMEOUT", "45"))
+# Turns that search the web (a restaurant's menu, a product page) take 30-60s;
+# 45s cut those off with a 504 even though the brain finished and saved them.
+LLM_TIMEOUT = float(os.environ.get("MOBILE_LLM_TIMEOUT", "150"))
 API_KEY = os.environ.get("MOBILE_API_KEY", "")
 
 _redis = _redis_lib.Redis(host=REDIS_HOST, decode_responses=True)
@@ -96,6 +98,8 @@ _redis = _redis_lib.Redis(host=REDIS_HOST, decode_responses=True)
 
 _pending_lock = threading.Lock()
 pending_requests: dict[str, asyncio.Future] = {}
+# Sentences received so far for each pending room (see _on_mqtt_message).
+_pending_sentences: dict[str, list[str]] = {}
 _event_loop: asyncio.AbstractEventLoop | None = None
 
 # Connected WebSocket clients for push display payloads
@@ -424,8 +428,21 @@ def _on_mqtt_message(client, userdata, msg):
         room = data.get("room", "")
         text = data.get("text", "")
 
+        # The brain publishes a reply ONE SENTENCE PER MESSAGE (that's what the
+        # speakers play as it streams). Resolving on the first message handed
+        # the app only the opening line -- a "## heading" -- and the rest only
+        # appeared when a history refresh replaced it. Wait for is_final, and
+        # prefer full_text (the reply with its newlines/markdown intact) over
+        # the joined sentences. Messages without is_final are single-shot.
         with _pending_lock:
             future = pending_requests.get(room)
+            if future is not None:
+                parts = _pending_sentences.setdefault(room, [])
+                parts.append(text)
+                if not data.get("is_final", True):
+                    return
+                text = data.get("full_text") or " ".join(p for p in parts if p)
+                _pending_sentences.pop(room, None)
 
         if future is not None and _event_loop is not None:
             _event_loop.call_soon_threadsafe(
@@ -546,14 +563,18 @@ async def _run_pipeline_text(text: str, source: str = "mobile") -> str:
     return response_text
 
 
-async def _run_pipeline_text_turn(text: str, source: str = "mobile") -> tuple[str, str]:
+async def _run_pipeline_text_turn(text: str, source: str = "mobile",
+                                  request_id: str = "") -> tuple[str, str]:
     """As _run_pipeline_text, but also returns the room, which is the turn id.
 
     The brain stamps every tool event of this request with the room, so handing
     it back lets a client attach that turn's tool calls to the exact message it
     just received — no guessing from timing.
     """
-    request_id = uuid.uuid4().hex[:12]
+    # A client-chosen id lets the app find this turn in /history if its
+    # connection dies first (iOS suspends a backgrounded app mid-request).
+    if not re.fullmatch(r"[0-9a-f]{8,32}", request_id or ""):
+        request_id = uuid.uuid4().hex[:12]
     room = f"{source}-{request_id}"
 
     future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
@@ -579,6 +600,7 @@ async def _run_pipeline_text_turn(text: str, source: str = "mobile") -> tuple[st
     finally:
         with _pending_lock:
             pending_requests.pop(room, None)
+            _pending_sentences.pop(room, None)
 
 
 # Speech cleanup (mirrors tts_mac): strip markdown/emoji/decoration so the
@@ -618,7 +640,8 @@ def _turn_cards(turn_id: str) -> list:
         return []
 
 
-async def _run_pipeline_json(text: str, speak: bool = True, source: str = "glasses") -> dict:
+async def _run_pipeline_json(text: str, speak: bool = True, source: str = "glasses",
+                             request_id: str = "") -> dict:
     """Run the full pipeline and return a JSON-friendly dict with display payload.
 
     Used by the native iOS app endpoints.
@@ -633,7 +656,8 @@ async def _run_pipeline_json(text: str, speak: bool = True, source: str = "glass
     typed, so it has nothing to play.
     """
     source = source if source in ("app", "glasses") else "glasses"
-    response_text, turn_id = await _run_pipeline_text_turn(text, source=source)
+    response_text, turn_id = await _run_pipeline_text_turn(text, source=source,
+                                                           request_id=request_id)
     response_text = _CARD_MARKER.sub("", response_text).strip()
     payload = parse_display_response(response_text)
     # The app shows the whole reply; the glasses only ever get the spoken part.
@@ -756,6 +780,9 @@ class QueryRequest(BaseModel):
     # is not just a UX choice — it avoids paying ElevenLabs per character and
     # removes TTS from the response latency for text turns.
     speak: bool = True
+    # Optional lowercase-hex id from the client; the turn id becomes
+    # "{source}-{request_id}", so the app can recover the reply from /history.
+    request_id: str = ""
 
 
 @app.post("/ask/query", summary="[iOS app] Text query → JSON with display payload")
@@ -769,7 +796,8 @@ async def ask_query(request: QueryRequest, x_api_key: str = Header(default="")):
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="text must not be empty")
     print(f"[Gateway] /ask/query: '{request.text}' (speak={request.speak})")
-    return await _run_pipeline_json(request.text, speak=request.speak, source=request.source)
+    return await _run_pipeline_json(request.text, speak=request.speak, source=request.source,
+                                    request_id=request.request_id)
 
 
 @app.post("/ask/query/siri", summary="[Siri App Intent] Text query → plain text, no audio synthesis")

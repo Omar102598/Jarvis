@@ -8,6 +8,15 @@ struct TextQueryRequest: Encodable {
     /// Modality matching: typed messages get a typed reply, so the server skips
     /// synthesis (saves TTS spend and latency). Voice turns keep speaking.
     var speak: Bool = true
+    /// Lowercase hex chosen by the app. The server's turn id becomes
+    /// "app-<requestID>", so a reply whose connection died (iOS suspends a
+    /// backgrounded app) can still be found in /history.
+    var requestID: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case text, source, speak
+        case requestID = "request_id"
+    }
 }
 
 struct VideoQueryRequest: Encodable {

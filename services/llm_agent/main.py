@@ -1407,10 +1407,12 @@ def _handle_request(client, data):
     for i, sentence in enumerate(_sentence_queue):
         is_final = (i == len(_sentence_queue) - 1)
         _record_reply(sentence)   # remember it so the echo doesn't loop back
-        client.publish(
-            f"jarvis/tts/{room}/speak",
-            json.dumps({"text": sentence, "room": room, "is_final": is_final}),
-        )
+        msg = {"text": sentence, "room": room, "is_final": is_final}
+        if is_final:
+            # The whole reply, newlines intact, for callers that show text (the
+            # mobile gateway) rather than speak it sentence by sentence.
+            msg["full_text"] = response or " ".join(_sentence_queue)
+        client.publish(f"jarvis/tts/{room}/speak", json.dumps(msg))
 
     print(f"[LLM] Tier={tier}, {len(_sentence_queue)} sentence(s): '{response[:80]}...'")
 

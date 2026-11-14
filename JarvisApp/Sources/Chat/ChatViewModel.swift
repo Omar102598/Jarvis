@@ -286,10 +286,20 @@ final class ChatViewModel: ObservableObject {
         isProcessing = true
         defer { isProcessing = false }
 
+        // Locking the phone or switching apps mid-answer used to lose the reply:
+        // iOS suspends the app within seconds and kills the request, even though
+        // Jarvis finishes and saves the answer. Ask for background time (about
+        // 30s) and, if the connection dies anyway, fetch the saved reply.
+        let requestID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            .lowercased().prefix(16).description
+        let bgTask = UIApplication.shared.beginBackgroundTask(withName: "jarvis-ask")
+        defer { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) } }
+
         do {
             // Typed in, so reply in text only — no synthesis requested, nothing
             // to play. Holding the mic button (sendVoice) still speaks.
-            let response = try await JarvisClient.shared.askText(text, speak: false)
+            let response = try await JarvisClient.shared.askText(text, speak: false,
+                                                                 requestID: requestID)
             // The chat is the "app" surface: response.text is the whole reply.
             // display.body is the one-line glasses HUD summary — showing it
             // here is what made phone answers look truncated.
@@ -297,9 +307,38 @@ final class ChatViewModel: ObservableObject {
                           cards: response.cards)
             await glassesManager?.send(response.display.hudState)
         } catch {
+            if Self.replyMayStillArrive(error),
+               let saved = await recoverReply(turnID: "app-\(requestID)") {
+                finishLoading(loadingId, text: saved.text, turnID: saved.turnID,
+                              cards: saved.cards)
+                await glassesManager?.send(.idle)
+                return
+            }
             finishLoading(loadingId, text: "Error: \(error.localizedDescription)")
             await glassesManager?.send(.error(message: error.localizedDescription))
         }
+    }
+
+    /// The connection died (suspended app, network blip, gateway 504) but the
+    /// brain may still finish and save the answer.
+    private static func replyMayStillArrive(_ error: Error) -> Bool {
+        if error is URLError { return true }
+        if case JarvisError.httpError(504, _) = error { return true }
+        return false
+    }
+
+    /// Wait for a turn's saved reply in /history after the live request died.
+    /// The brain keeps working when the app's connection drops, so the answer
+    /// usually lands within a minute or two. Polls every 3s for up to 3 min.
+    private func recoverReply(turnID: String) async -> JarvisClient.HistoryMessage? {
+        for _ in 0..<60 {
+            if let history = try? await JarvisClient.shared.fetchHistory(),
+               let hit = history.last(where: { $0.role == "assistant" && $0.turnID == turnID }) {
+                return hit
+            }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        }
+        return nil
     }
 
     // MARK: Voice query (from PTT button)
