@@ -126,7 +126,7 @@
 // ══════════════════════════════════════════════════════════
 const ORB_STYLE = new URLSearchParams(location.search).get('style') || 'dots';
 (function () {
-  if (ORB_STYLE === 'arc') return;          // the arc sphere below draws instead
+  if (ORB_STYLE !== 'dots') return;         // an arc sphere below draws instead
   const canvas = document.getElementById('orb-canvas');
   const ctx    = canvas.getContext('2d');
   const scene  = document.getElementById('orb-scene');
@@ -379,9 +379,8 @@ const ORB_STYLE = new URLSearchParams(location.search).get('style') || 'dots';
 //  easing to gold while Jarvis speaks; the voice spins the gimbals up,
 //  breathes the rings outward and brightens them.
 // ══════════════════════════════════════════════════════════
-(function () {
-  if (ORB_STYLE !== 'arc') return;
-  const canvas = document.getElementById('orb-canvas');
+// Also the fallback for ?style=arcgl when WebGL or the three.js CDN fails.
+function startArc2D(canvas) {
   const ctx    = canvas.getContext('2d');
   const scene  = document.getElementById('orb-scene');
 
@@ -551,7 +550,10 @@ const ORB_STYLE = new URLSearchParams(location.search).get('style') || 'dots';
     requestAnimationFrame(draw);
   }
   requestAnimationFrame(draw);
-})();
+}
+if (ORB_STYLE === 'arc') startArc2D(document.getElementById('orb-canvas'));
+// arcgl: the module below takes over; queue states until it's ready.
+if (ORB_STYLE === 'arcgl') window._setOrbState = (st) => { window._pendingOrbState = st; };
 
 // ══════════════════════════════════════════════════════════
 //  VOICE STATE  (orb only — polled here, nowhere else)
@@ -562,7 +564,7 @@ const STATE_COLORS = {
   thinking:  'rgba(0,180,255,0.8)',
   ready:     'rgba(0,212,255,0.5)',
 };
-if (ORB_STYLE === 'arc') STATE_COLORS.speaking = 'rgb(255,178,48)';   // matches the gold sphere
+if (ORB_STYLE.startsWith('arc')) STATE_COLORS.speaking = 'rgb(255,178,48)';   // matches the gold sphere
 function setState(state, thinkingWord) {
   document.body.classList.remove('speaking', 'listening', 'thinking');
   if (['speaking','listening','thinking'].includes(state)) document.body.classList.add(state);
@@ -594,5 +596,221 @@ async function pollVoiceState() {
 }
 pollVoiceState();
 setInterval(pollVoiceState, 1200);
+</script>
+<!-- ══════════════════════════════════════════════════════════
+     ARC SPHERE, WebGL (?style=arcgl) — the same gyroscope of broken arcs,
+     rendered with three.js and an UnrealBloom pass so bright lines bleed light
+     like the film hologram. Fat lines (Line2) with a dim-tail → bright-head
+     ramp, fog to dim the far side, additive sparks, a soft core sprite.
+     The canvas renders on black and uses mix-blend-mode: screen, so black
+     drops out and the bloom glows over the page (WebGL bloom can't keep a
+     transparent background). Falls back to the 2D arc sphere on any failure.
+     ══════════════════════════════════════════════════════════ -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }
+</script>
+<script type="module">
+if (ORB_STYLE === 'arcgl') {
+  const canvas = document.getElementById('orb-canvas');
+  const fallback = (err) => {
+    console.warn('[orb] WebGL arc sphere unavailable, using 2D:', err);
+    const fresh = canvas.cloneNode(false);          // a canvas that never had a GL context
+    canvas.replaceWith(fresh);
+    window._setOrbState = () => {};
+    startArc2D(fresh);
+    if (window._pendingOrbState) window._setOrbState(window._pendingOrbState);
+  };
+  try {
+    const THREE = await import('three');
+    const { Line2 }          = await import('three/addons/lines/Line2.js');
+    const { LineGeometry }   = await import('three/addons/lines/LineGeometry.js');
+    const { LineMaterial }   = await import('three/addons/lines/LineMaterial.js');
+    const { EffectComposer } = await import('three/addons/postprocessing/EffectComposer.js');
+    const { RenderPass }     = await import('three/addons/postprocessing/RenderPass.js');
+    const { UnrealBloomPass }= await import('three/addons/postprocessing/UnrealBloomPass.js');
+    const { OutputPass }     = await import('three/addons/postprocessing/OutputPass.js');
+    start(THREE, { Line2, LineGeometry, LineMaterial, EffectComposer, RenderPass, UnrealBloomPass, OutputPass });
+  } catch (e) { fallback(e); }
+
+  function start(THREE, X) {
+    const scene = document.getElementById('orb-scene');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    renderer.setClearColor(0x000000, 1);
+    canvas.style.mixBlendMode = 'screen';
+    // Fade the square canvas out radially, so the bloom haze has no edges.
+    canvas.style.maskImage = canvas.style.webkitMaskImage =
+      'radial-gradient(circle closest-side, #000 72%, transparent 100%)';
+    const coreEl = document.getElementById('orb-core');
+    if (coreEl) coreEl.style.background = 'radial-gradient(circle, rgba(0,4,10,.5) 25%, transparent 70%)';
+    const DPR = Math.min(window.devicePixelRatio || 1, 1.5);
+    renderer.setPixelRatio(DPR);
+
+    const world = new THREE.Scene();
+    world.fog = new THREE.Fog(0x000000, 3.0, 5.4);         // far side of the sphere dims
+    const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 50);
+    camera.position.set(0, 1.25, 3.85);
+    camera.lookAt(0, 0, 0);
+
+    const composer = new X.EffectComposer(renderer);
+    composer.addPass(new X.RenderPass(world, camera));
+    const bloom = new X.UnrealBloomPass(new THREE.Vector2(512, 512), 0.8, 0.45, 0.05);
+    composer.addPass(bloom);
+    composer.addPass(new X.OutputPass());
+
+    const lineMats = [], a_heads = [];
+    function resize() {
+      const box = Math.max(Math.min(scene.clientWidth, scene.clientHeight), 120);
+      renderer.setSize(box, box, false);
+      canvas.style.width = canvas.style.height = box + 'px';
+      composer.setSize(box, box);
+      bloom.resolution.set(box * DPR, box * DPR);
+      for (const m of lineMats) m.resolution.set(box * DPR, box * DPR);
+      sizeScale = box / 600;
+    }
+    let sizeScale = 1;
+
+    // ── helpers ──
+    const rnd = (a, b) => a + Math.random() * (b - a);
+    const randUnit = () => new THREE.Vector3().randomDirection();
+    function glowTexture() {
+      const c = document.createElement('canvas'); c.width = c.height = 64;
+      const g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+      gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.3, 'rgba(255,255,255,.45)');
+      gr.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+      return new THREE.CanvasTexture(c);
+    }
+    const GLOW = glowTexture();
+    const tint = new THREE.Color(0x00d4ff);                  // shared, eased per frame
+
+    // ── gimbals: three groups turning about different axes ──
+    const gimbals = [
+      { axis: new THREE.Vector3(0.15, 1, 0.1).normalize(),  speed: 0.0042 },
+      { axis: new THREE.Vector3(1, 0.25, -0.2).normalize(), speed: -0.0031 },
+      { axis: new THREE.Vector3(-0.4, 0.5, 1).normalize(),  speed: 0.0055 },
+    ].map(g => { g.group = new THREE.Group(); world.add(g.group); return g; });
+
+    // ── arcs ──
+    const arcs = [];
+    const Z = new THREE.Vector3(0, 0, 1);
+    for (let i = 0; i < 56; i++) {
+      const hero = i < 6, outer = i >= 50;
+      const r = hero ? rnd(0.92, 1.04) : outer ? rnd(1.12, 1.26) : Math.random() < 0.6 ? rnd(0.86, 1.06) : rnd(0.45, 0.85);
+      const span = hero ? rnd(2.2, 4.6) : rnd(0.35, 2.6);
+      const n = Math.max(8, Math.round(span * 22));
+      const pos = [], col = [];
+      for (let k = 0; k <= n; k++) {
+        const th = span * k / n;
+        pos.push(Math.cos(th) * r, Math.sin(th) * r, 0);
+        const b = 0.12 + 0.88 * Math.pow(k / n, 1.6);       // dim tail → bright head
+        col.push(b, b, b);
+      }
+      const geo = new X.LineGeometry(); geo.setPositions(pos); geo.setColors(col);
+      const mat = new X.LineMaterial({
+        color: 0xffffff, linewidth: hero ? rnd(2.6, 3.6) : outer ? rnd(0.8, 1.2) : rnd(1.0, 2.0),
+        vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+        dashed: outer || (!hero && Math.random() < 0.28), dashSize: 0.07, gapSize: 0.05, fog: true,
+      });
+      lineMats.push(mat);
+      const line = new X.Line2(geo, mat); line.computeLineDistances();
+      const spinObj = new THREE.Object3D(); spinObj.add(line);
+      spinObj.rotation.z = rnd(0, Math.PI * 2);
+      if (hero) {                                            // bright head
+        const head = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW, color: 0xffffff,
+          blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+        head.position.set(Math.cos(span) * r, Math.sin(span) * r, 0);
+        head.scale.setScalar(0.09);
+        spinObj.add(head);
+        a_heads.push(head);
+      }
+      const orient = new THREE.Object3D();
+      orient.quaternion.setFromUnitVectors(Z, randUnit());
+      orient.add(spinObj);
+      gimbals[i % 3].group.add(orient);
+      arcs.push({ spinObj, mat, base: hero ? 1.0 : rnd(0.45, 0.85),
+                  spin: rnd(0.002, 0.009) * (Math.random() < 0.5 ? 1 : -1), phase: rnd(0, Math.PI * 2) });
+    }
+
+    // ── internal chords ──
+    const chordPos = [];
+    for (let i = 0; i < 12; i++) { const a = randUnit().multiplyScalar(0.98), b = randUnit().multiplyScalar(0.98);
+                                   chordPos.push(a.x, a.y, a.z, b.x, b.y, b.z); }
+    const chordGeo = new THREE.BufferGeometry();
+    chordGeo.setAttribute('position', new THREE.Float32BufferAttribute(chordPos, 3));
+    const chordMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12,
+      blending: THREE.AdditiveBlending, depthWrite: false });
+    gimbals[1].group.add(new THREE.LineSegments(chordGeo, chordMat));
+
+    // ── sparks ──
+    const N_SPARK = 220, sparkPos = new Float32Array(N_SPARK * 3), sparkCol = new Float32Array(N_SPARK * 3), tw = [];
+    for (let i = 0; i < N_SPARK; i++) {
+      const p = randUnit().multiplyScalar(rnd(0.7, 1.1));
+      sparkPos.set([p.x, p.y, p.z], i * 3); tw.push(rnd(0, Math.PI * 2));
+    }
+    const sparkGeo = new THREE.BufferGeometry();
+    sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3));
+    sparkGeo.setAttribute('color', new THREE.BufferAttribute(sparkCol, 3));
+    const sparkMat = new THREE.PointsMaterial({ size: 0.035, map: GLOW, vertexColors: true, transparent: true,
+      blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
+    gimbals[2].group.add(new THREE.Points(sparkGeo, sparkMat));
+
+    // ── core glow ──
+    const core = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW, transparent: true,
+      blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.35 }));
+    core.scale.setScalar(1.15);
+    world.add(core);
+
+    resize();
+    window.addEventListener('resize', resize);
+
+    // ── state ──
+    let state = 'ready', amp = 0.05, targetAmp = 0.05;
+    window._setOrbState = (s) => {
+      state = s;
+      targetAmp = s === 'speaking' ? 1.0 : s === 'listening' ? 0.6 : s === 'thinking' ? 0.35 : 0.05;
+    };
+    if (window._pendingOrbState) window._setOrbState(window._pendingOrbState);
+
+    const CYAN = new THREE.Color(0x00d4ff), GOLD = new THREE.Color(0xffb230);
+    const speechEnv = (t) => Math.min(Math.abs(Math.sin(t * 3.7)) * 0.38 + Math.abs(Math.sin(t * 5.1)) * 0.28 +
+                                      Math.abs(Math.sin(t * 2.3)) * 0.2 + Math.abs(Math.sin(t * 7.9)) * 0.14, 1);
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min((now - last) / 16.67, 3); last = now;
+      const t = now * 0.001;
+      amp += (targetAmp - amp) * 0.06 * dt;
+      const env = state === 'speaking' && amp > 0.2 ? amp * (0.3 + 0.7 * speechEnv(t)) : amp;
+      tint.lerp(state === 'speaking' ? GOLD : CYAN, 0.05 * dt);
+
+      const spinMul = 1 + amp * 2.2 + (state === 'thinking' ? 1.6 : 0);
+      for (const g of gimbals) g.group.rotateOnWorldAxis(g.axis, g.speed * spinMul * dt);
+      const swell = 1 + env * 0.06 + (state === 'listening' ? 0.04 : 0);
+
+      const bright = 0.5 + env * 0.55;                       // >1 feeds the bloom harder
+      for (const a of arcs) {
+        a.spinObj.rotation.z += a.spin * spinMul * dt;
+        a.spinObj.scale.setScalar(swell * (1 + env * 0.1 * Math.sin(a.phase + t * 2.4)));
+        a.mat.color.copy(tint).multiplyScalar(a.base * bright);
+      }
+      for (const h of a_heads) h.material.color.copy(tint).multiplyScalar(1.4 + env);
+      chordMat.color.copy(tint); chordMat.opacity = 0.08 + env * 0.12;
+      for (let i = 0; i < N_SPARK; i++) {
+        const b = (0.25 + 0.6 * (0.5 + 0.5 * Math.sin(t * 3 + tw[i]))) * (0.5 + env * 0.9);
+        sparkCol[i * 3] = tint.r * b; sparkCol[i * 3 + 1] = tint.g * b; sparkCol[i * 3 + 2] = tint.b * b;
+      }
+      sparkGeo.attributes.color.needsUpdate = true;
+      sparkMat.size = 0.03 * (1 + env * 0.5);
+      core.material.color.copy(tint); core.material.opacity = 0.10 + env * 0.12;
+
+      bloom.strength = 0.75 + env * 0.5;
+      bloom.radius = 0.4 + env * 0.15;
+      composer.render();
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+}
 </script>
 {% endblock %}
