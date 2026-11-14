@@ -54,6 +54,9 @@ SLEEP_VOLUME = int(os.environ.get("SLEEP_VOLUME", "25"))
 # The bedroom Apple TV. Sleep mode wakes it and opens Spotify on it so the
 # music plays there; "" turns that off and plays on SLEEP_SPOTIFY_DEVICE.
 TV_ENTITY = os.environ.get("SLEEP_TV_ENTITY", "media_player.bedroom_bedroom").strip()
+# Volume for the bedroom TV, set through the Apple TV (works when the Apple TV
+# controls the TV's volume over HDMI-CEC, or plays to AirPlay speakers).
+TV_VOLUME = int(os.environ.get("SLEEP_TV_VOLUME", "10"))   # percent
 TV_SPOTIFY_NAME = os.environ.get("SLEEP_TV_SPOTIFY_DEVICE", "").strip()
 # Spoken aloud, so never read the raw spotify: URI back to the user.
 SLEEP_TRACK_NAME = os.environ.get("SLEEP_TRACK_NAME", "") or SLEEP_TRACK
@@ -268,16 +271,37 @@ async def _start_music(minutes: int) -> str:
         if r1:
             return f"✗ music: {r1}{note}"
         await asyncio.sleep(2)
-        # Some Spotify clients (the Apple TV app among them) refuse remote
-        # volume; that's not worth failing bedtime over.
-        await _player_put(session, headers, "volume",
-                          {"volume_percent": SLEEP_VOLUME, "device_id": target["id"]})
+        on_tv = where == "bedroom TV"
+        if on_tv:
+            note += await _set_tv_volume(session)
+        else:
+            await _player_put(session, headers, "volume",
+                              {"volume_percent": SLEEP_VOLUME, "device_id": target["id"]})
         await _player_put(session, headers, "repeat",
                           {"state": "track", "device_id": target["id"]})
 
-    _arm_timer(minutes, tv=bool(where == "bedroom TV"))
+    _arm_timer(minutes, tv=on_tv)
     return (f"✓ music → '{SLEEP_TRACK_NAME}' looping on the {where}{note}, "
             f"stops in {minutes} min")
+
+
+async def _set_tv_volume(session: aiohttp.ClientSession) -> str:
+    """Bedroom TV volume via the Apple TV. Returns a note for the report."""
+    try:
+        status = await _ha_call(session, "media_player.volume_set",
+                                {"entity_id": TV_ENTITY, "volume_level": TV_VOLUME / 100})
+        if status != 200:
+            return f", couldn't set the TV volume (HTTP {status})"
+        await asyncio.sleep(2)
+        async with session.get(f"{HA_URL}/api/states/{TV_ENTITY}", headers=_ha_headers(),
+                               timeout=aiohttp.ClientTimeout(total=15)) as ver:
+            got = (await ver.json()).get("attributes", {}).get("volume_level") if ver.status == 200 else None
+        if got is not None and abs(float(got) * 100 - TV_VOLUME) < 2:
+            return f", TV volume {TV_VOLUME}"
+        return (f", TV volume asked for {TV_VOLUME}, the Apple TV reports "
+                f"{'nothing' if got is None else round(float(got) * 100)}")
+    except Exception as exc:
+        return f", couldn't set the TV volume ({type(exc).__name__})"
 
 
 async def _player_put(session, headers, path: str, params: dict) -> int:

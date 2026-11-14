@@ -35,6 +35,14 @@ async def control_device(entity_id: str, action: str, params: dict = None) -> st
                 climate.set_temperature: {"temperature": 70} in FAHRENHEIT.
                 climate.set_hvac_mode:   {"hvac_mode": "cool"|"heat"|"off"}.
                 climate.set_fan_mode:    {"fan_mode": "auto"|"on"|"Circulate"}.
+        Media players (the Apple TVs: 'media_player.omar_s_living_room' in the
+                living room, 'media_player.bedroom_bedroom' in the bedroom):
+                action 'volume_set' with {"volume_level": 0.0-1.0} (0.2 = 20%),
+                'volume_up' / 'volume_down' (one step, no params),
+                'turn_on' / 'turn_off', 'media_play_pause',
+                'select_source' with {"source": "<app name, e.g. Netflix>"}.
+                Volume only works when the Apple TV controls the TV's
+                volume (HDMI-CEC) or plays to AirPlay speakers.
 
     Thermostat notes: the house thermostat is 'climate.thermostat'
     (renamed from climate.home on 2026-10-21). Read its current/target
