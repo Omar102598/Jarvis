@@ -23,6 +23,7 @@ import asyncio
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import aiohttp
 import redis
@@ -43,10 +44,15 @@ SLEEP_MINUTES = int(os.environ.get("SLEEP_MUSIC_MINUTES", "45"))
 SLEEP_TRACK = os.environ.get("SLEEP_TRACK", "")        # set this to your loop song
 SLEEP_DEVICE = os.environ.get("SLEEP_SPOTIFY_DEVICE", "MacBook")
 SLEEP_VOLUME = int(os.environ.get("SLEEP_VOLUME", "25"))
+# The bedroom Apple TV. Sleep mode wakes it and opens Spotify on it so the
+# music plays there; "" turns that off and plays on SLEEP_SPOTIFY_DEVICE.
+TV_ENTITY = os.environ.get("SLEEP_TV_ENTITY", "media_player.bedroom_bedroom").strip()
+TV_SPOTIFY_NAME = os.environ.get("SLEEP_TV_SPOTIFY_DEVICE", "").strip()
 # Spoken aloud, so never read the raw spotify: URI back to the user.
 SLEEP_TRACK_NAME = os.environ.get("SLEEP_TRACK_NAME", "") or SLEEP_TRACK
 
 _STOP_KEY = "jarvis:sleep:stop_at"
+_TV_KEY = "jarvis:sleep:tv"      # set while the timer should also turn the TV off
 
 _r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
@@ -123,70 +129,147 @@ async def _set_lamp(session: aiohttp.ClientSession) -> str:
         return f"✗ lamp: {type(exc).__name__}"
 
 
-async def _start_music(minutes: int) -> str:
-    """Start the loop track on the Mac, set repeat, and arm the stop timer."""
-    from .spotify import spotify_control  # reuse the configured client
+async def _ha_call(session: aiohttp.ClientSession, service: str, data: dict) -> int:
+    domain, name = service.split(".", 1)
+    async with session.post(f"{HA_URL}/api/services/{domain}/{name}",
+                            headers=_ha_headers(), json=data,
+                            timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        return resp.status
 
-    call = getattr(spotify_control, "func", None) or getattr(
-        spotify_control, "coroutine", None) or spotify_control
+
+async def _wake_tv_for_spotify(session: aiohttp.ClientSession,
+                               sp_headers: dict) -> tuple[Optional[dict], str]:
+    """Wake the bedroom Apple TV and open Spotify on it, so it shows up as a
+    Spotify Connect device. Returns (device, note).
+
+    A sleeping Apple TV is not a Connect device at all: Spotify only lists it
+    while the Spotify app is open on it. So: power it on (HDMI-CEC brings the
+    TV up with it), launch the Spotify app through HA's select_source, then
+    wait for the device to appear.
+
+    Both Apple TVs call themselves "Apple TV" in Spotify, so the bedroom one
+    can't be found by name. It is the tv-type device that wasn't listed before
+    we woke it. SLEEP_TV_SPOTIFY_DEVICE (a name) is used only if it was
+    already listed, e.g. Spotify was left open on it.
+    """
+    from .spotify import _get_devices, _match_device
+
+    before = {d.get("id") for d in await _get_devices(session, sp_headers)}
+    if await _ha_call(session, "media_player.turn_on", {"entity_id": TV_ENTITY}) != 200:
+        return None, f"couldn't wake {TV_ENTITY}"
+    await asyncio.sleep(3)
+    await _ha_call(session, "media_player.select_source",
+                   {"entity_id": TV_ENTITY, "source": "Spotify"})
+
+    for _ in range(15):                       # up to ~30s for the app to register
+        await asyncio.sleep(2)
+        devices = await _get_devices(session, sp_headers)
+        new = [d for d in devices if d.get("id") not in before
+               and (d.get("type") or "").lower() == "tv"]
+        if new:
+            return new[0], "bedroom TV"
+        named = _match_device(devices, TV_SPOTIFY_NAME) if TV_SPOTIFY_NAME else None
+        if named:
+            return named, "bedroom TV"
+    return None, "the bedroom TV woke but Spotify never showed up on it"
+
+
+async def _start_music(minutes: int) -> str:
+    """Pick the device (bedroom TV, else the Mac), loop the track, arm the timer."""
+    from .spotify import _access_token, _get_devices, _match_device
 
     if not SLEEP_TRACK.strip():
         return ("✗ music: no SLEEP_TRACK configured — set SLEEP_TRACK in .env to "
                 "the song you want looped")
 
-    out = []
-    if SLEEP_TRACK.strip().startswith("spotify:"):
-        # Play the exact URI rather than searching. "twilight zone" returns two
-        # near-identical Ariana Grande entries from different album editions, so
-        # a search would pick whichever ranked first that night -- fine most of
-        # the time, wrong silently the rest. A pinned URI cannot drift.
-        r1 = await _play_uri(SLEEP_TRACK.strip())
-    else:
-        r1 = await call(action="search_play", query=SLEEP_TRACK, device=SLEEP_DEVICE)
-    out.append(str(r1))
-    if str(r1).startswith("✗") or "couldn't" in str(r1).lower() \
-            or "no spotify device" in str(r1).lower():
-        return "✗ music: " + str(r1)
-
-    await asyncio.sleep(2)
-    await call(action="volume", query=str(SLEEP_VOLUME), device=SLEEP_DEVICE)
-    r2 = await call(action="repeat", query="track", device=SLEEP_DEVICE)
-    out.append(str(r2))
-
-    _arm_timer(minutes)
-    return (f"✓ music → '{SLEEP_TRACK_NAME}' looping at {SLEEP_VOLUME}%, "
-            f"stops in {minutes} min")
-
-
-async def _play_uri(uri: str) -> str:
-    """Start an exact track/playlist URI on the sleep device."""
-    from .spotify import (_API, _access_token, _get_devices, _match_device,
-                          _set_media_flag)
     async with aiohttp.ClientSession() as session:
         token = await _access_token(session)
         if not token:
-            return "✗ Spotify auth failed"
+            return "✗ music: Spotify auth failed"
         headers = {"Authorization": f"Bearer {token}"}
-        devices = await _get_devices(session, headers)
-        target = _match_device(devices, SLEEP_DEVICE) if SLEEP_DEVICE else None
-        if SLEEP_DEVICE and target is None:
-            names = ", ".join(d.get("name", "?") for d in devices) or "none"
-            return (f"✗ no Spotify device matching '{SLEEP_DEVICE}' "
-                    f"(available: {names}) — open Spotify on the Mac first")
-        params = {"device_id": target["id"]} if target else {}
-        body = ({"context_uri": uri} if ":playlist:" in uri or ":album:" in uri
-                else {"uris": [uri]})
-        async with session.put(f"{_API}/me/player/play", headers=headers,
-                               params=params, json=body,
-                               timeout=aiohttp.ClientTimeout(total=20)) as resp:
-            if resp.status in (200, 204):
-                _set_media_flag(True)
-                where = f" on {target['name']}" if target else ""
-                return f"started{where}"
-            return f"✗ play failed (HTTP {resp.status})"
+
+        target, where, note = None, "", ""
+        if TV_ENTITY:
+            target, why = await _wake_tv_for_spotify(session, headers)
+            if target:
+                where = why
+            else:
+                note = f" ({why}, so it's on the Mac instead)"
+        if target is None:
+            devices = await _get_devices(session, headers)
+            target = _match_device(devices, SLEEP_DEVICE) if SLEEP_DEVICE else None
+            if target is None:
+                names = ", ".join(d.get("name", "?") for d in devices) or "none"
+                return (f"✗ music: no Spotify device matching '{SLEEP_DEVICE}' "
+                        f"(available: {names}){note}")
+            where = target.get("name", SLEEP_DEVICE)
+
+        r1 = await _play(session, headers, target["id"])
+        if r1:
+            return f"✗ music: {r1}{note}"
+        await asyncio.sleep(2)
+        # Some Spotify clients (the Apple TV app among them) refuse remote
+        # volume; that's not worth failing bedtime over.
+        await _player_put(session, headers, "volume",
+                          {"volume_percent": SLEEP_VOLUME, "device_id": target["id"]})
+        await _player_put(session, headers, "repeat",
+                          {"state": "track", "device_id": target["id"]})
+
+    _arm_timer(minutes, tv=bool(where == "bedroom TV"))
+    return (f"✓ music → '{SLEEP_TRACK_NAME}' looping on the {where}{note}, "
+            f"stops in {minutes} min")
 
 
-def _arm_timer(minutes: int) -> None:
+async def _player_put(session, headers, path: str, params: dict) -> int:
+    from .spotify import _API
+    try:
+        async with session.put(f"{_API}/me/player/{path}", headers=headers, params=params,
+                               timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            return resp.status
+    except Exception:
+        return 0
+
+
+async def _play(session, headers, device_id: str) -> str:
+    """Start SLEEP_TRACK on the device. Returns '' on success, else the error.
+
+    A spotify: URI is played exactly. "twilight zone" returns two near-identical
+    Ariana Grande entries from different album editions, so a search would pick
+    whichever ranked first that night. A pinned URI cannot drift.
+    """
+    from .spotify import _API, _set_media_flag
+    uri = SLEEP_TRACK.strip()
+    if not uri.startswith("spotify:"):
+        async with session.get(f"{_API}/search", headers=headers,
+                               params={"q": uri, "type": "track", "limit": 1}) as resp:
+            items = ((await resp.json()).get("tracks", {}).get("items", [])
+                     if resp.status == 200 else [])
+        if not items:
+            return f"no Spotify track found for '{uri}'"
+        uri = items[0]["uri"]
+    body = ({"context_uri": uri} if ":playlist:" in uri or ":album:" in uri
+            else {"uris": [uri]})
+    async with session.put(f"{_API}/me/player/play", headers=headers,
+                           params={"device_id": device_id}, json=body,
+                           timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        if resp.status in (200, 204):
+            _set_media_flag(True)
+            return ""
+        return f"play failed (HTTP {resp.status})"
+
+
+async def _tv_off() -> None:
+    """Put the bedroom Apple TV (and, over CEC, the TV) back to sleep."""
+    if not TV_ENTITY:
+        return
+    try:
+        async with aiohttp.ClientSession() as session:
+            await _ha_call(session, "media_player.turn_off", {"entity_id": TV_ENTITY})
+    except Exception:
+        pass
+
+
+def _arm_timer(minutes: int, tv: bool = False) -> None:
     """Record the deadline, then schedule the precise in-process stop.
 
     The Redis key is the durable half: watchdog.sh pauses Spotify once the
@@ -197,6 +280,10 @@ def _arm_timer(minutes: int) -> None:
     deadline = datetime.now(timezone.utc) + timedelta(minutes=minutes)
     try:
         _r.set(_STOP_KEY, deadline.isoformat(), ex=minutes * 60 + 3600)
+        if tv:
+            _r.set(_TV_KEY, "1", ex=minutes * 60 + 3600)
+        else:
+            _r.delete(_TV_KEY)
     except Exception:
         pass   # the asyncio task below still covers the normal case
 
@@ -215,9 +302,12 @@ def _arm_timer(minutes: int) -> None:
                 spotify_control, "coroutine", None) or spotify_control
             await call(action="pause")
             try:
-                _r.delete(_STOP_KEY)
+                tv_on = bool(_r.get(_TV_KEY))
+                _r.delete(_STOP_KEY, _TV_KEY)
             except Exception:
-                pass
+                tv_on = tv
+            if tv_on:
+                await _tv_off()
         except asyncio.CancelledError:
             pass
 
@@ -229,8 +319,11 @@ def _arm_timer(minutes: int) -> None:
 
 @tool
 async def sleep_mode(action: str = "on", minutes: int = 0) -> str:
-    """Run the bedtime routine: cool the house, dim the bedroom lamp, loop the
-    sleep track, and stop the music automatically.
+    """Run the bedtime routine: cool the house, dim the bedroom lamp, wake the
+    bedroom TV and loop the sleep track on it (the Mac if the TV can't be
+    reached), then stop the music and turn the TV off automatically. It does
+    the TV wake-up itself, so don't call spotify_control or control_device
+    first.
 
     Use this for "activate sleep mode", "sleep mode", "bedtime", "goodnight",
     "I'm going to bed".
@@ -260,13 +353,17 @@ async def sleep_mode(action: str = "on", minutes: int = 0) -> str:
 
     if action in ("off", "cancel", "stop"):
         try:
-            _r.delete(_STOP_KEY)
+            tv_on = bool(_r.get(_TV_KEY))
+            _r.delete(_STOP_KEY, _TV_KEY)
         except Exception:
-            pass
+            tv_on = False
         from .spotify import spotify_control
         call = getattr(spotify_control, "func", None) or getattr(
             spotify_control, "coroutine", None) or spotify_control
         res = await call(action="pause")
+        if tv_on:
+            await _tv_off()
+            res += " Bedroom TV off."
         return f"Sleep mode off. {res}"
 
     mins = minutes if minutes and minutes > 0 else SLEEP_MINUTES
