@@ -277,14 +277,44 @@ class Endpointer:
         return None
 
 
+
+def pick_input_device(pa) -> tuple:
+    """(index, name) of the mic to use. MIC_DEVICE (a name fragment) wins.
+    Otherwise the system default -- unless that's a phone or Bluetooth headset
+    (AirPods become the default input whenever they connect, and send pure
+    silence while they're in the case), in which case the first other mic."""
+    want = os.environ.get("MIC_DEVICE", "").strip().lower()
+    skip = [s.strip().lower() for s in os.environ.get(
+        "MIC_SKIP", "airpods,iphone,beats,headphones,headset").split(",") if s.strip()]
+    mics = [pa.get_device_info_by_index(i) for i in range(pa.get_device_count())]
+    mics = [d for d in mics if d.get("maxInputChannels", 0) > 0]
+    if want:
+        for d in mics:
+            if want in d["name"].lower():
+                return d["index"], d["name"]
+    try:
+        default = pa.get_default_input_device_info()
+        if not any(s in default["name"].lower() for s in skip):
+            return default["index"], default["name"]
+    except Exception:
+        pass
+    for d in mics:
+        if not any(s in d["name"].lower() for s in skip):
+            return d["index"], d["name"]
+    return None, "system default"
+
+
 class MicStream:
     """One always-open input stream. Keeps the last few seconds of RMS for the
     noise floor and the last PREROLL_SECONDS of audio for pre-roll."""
 
     def __init__(self):
         self._pa = pyaudio.PyAudio()
+        idx, name = pick_input_device(self._pa)
+        print(f"[STT] Mic: '{name}'")
         self._stream = self._pa.open(format=pyaudio.paInt16, channels=1, rate=SAMPLE_RATE,
-                                     input=True, frames_per_buffer=CHUNK_SIZE)
+                                     input=True, input_device_index=idx,
+                                     frames_per_buffer=CHUNK_SIZE)
         self._ring = collections.deque(maxlen=max(1, int(PREROLL_SECONDS * _CPS)))
         self._levels = collections.deque(maxlen=5 * _CPS)
         self._listener: queue.Queue | None = None

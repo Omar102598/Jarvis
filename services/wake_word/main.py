@@ -28,6 +28,32 @@ SAMPLE_RATE = 16000
 CHUNK_SIZE = 1280  # 80ms at 16kHz
 
 
+
+def pick_input_device(pa) -> tuple:
+    """(index, name) of the mic to use. MIC_DEVICE (a name fragment) wins.
+    Otherwise the system default -- unless that's a phone or Bluetooth headset
+    (AirPods become the default input whenever they connect, and send pure
+    silence while they're in the case), in which case the first other mic."""
+    want = os.environ.get("MIC_DEVICE", "").strip().lower()
+    skip = [s.strip().lower() for s in os.environ.get(
+        "MIC_SKIP", "airpods,iphone,beats,headphones,headset").split(",") if s.strip()]
+    mics = [pa.get_device_info_by_index(i) for i in range(pa.get_device_count())]
+    mics = [d for d in mics if d.get("maxInputChannels", 0) > 0]
+    if want:
+        for d in mics:
+            if want in d["name"].lower():
+                return d["index"], d["name"]
+    try:
+        default = pa.get_default_input_device_info()
+        if not any(s in default["name"].lower() for s in skip):
+            return default["index"], default["name"]
+    except Exception:
+        pass
+    for d in mics:
+        if not any(s in d["name"].lower() for s in skip):
+            return d["index"], d["name"]
+    return None, "system default"
+
 def main():
     oww_model = Model(
         wakeword_models=["hey jarvis"],
@@ -71,15 +97,17 @@ def main():
     threading.Thread(target=_mqtt_supervisor, daemon=True).start()
 
     audio = pyaudio.PyAudio()
+    mic_index, mic_name = pick_input_device(audio)
     stream = audio.open(
         format=pyaudio.paInt16,
         channels=1,
         rate=SAMPLE_RATE,
         input=True,
+        input_device_index=mic_index,
         frames_per_buffer=CHUNK_SIZE,
     )
 
-    print(f"[WakeWord] Listening in '{ROOM}' (threshold={THRESHOLD}, cooldown={COOLDOWN}s)...")
+    print(f"[WakeWord] Listening in '{ROOM}' on '{mic_name}' (threshold={THRESHOLD}, cooldown={COOLDOWN}s)...")
 
     last_trigger = 0.0
 
