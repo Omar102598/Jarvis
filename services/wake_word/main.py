@@ -23,6 +23,9 @@ REDIS_PORT   = int(os.environ.get("REDIS_PORT",   "6380"))
 ROOM         = os.environ.get("ROOM_NAME",    "default")
 THRESHOLD    = float(os.environ.get("WAKE_THRESHOLD", "0.5"))
 COOLDOWN     = float(os.environ.get("WAKE_COOLDOWN",  "8.0"))
+# While Jarvis is speaking, the mic hears its voice, which can score just over
+# THRESHOLD (0.51 seen). A real "hey jarvis" scores ~0.99, so barge-in still works.
+THRESHOLD_SPEAKING = float(os.environ.get("WAKE_THRESHOLD_SPEAKING", "0.85"))
 
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 1280  # 80ms at 16kHz
@@ -33,7 +36,8 @@ def pick_input_device(pa) -> tuple:
     """(index, name) of the mic to use. MIC_DEVICE (a name fragment) wins.
     Otherwise the system default -- unless that's a phone or Bluetooth headset
     (AirPods become the default input whenever they connect, and send pure
-    silence while they're in the case), in which case the first other mic."""
+    silence while they're in the case), in which case the Mac's built-in mic,
+    which is there docked or not."""
     want = os.environ.get("MIC_DEVICE", "").strip().lower()
     skip = [s.strip().lower() for s in os.environ.get(
         "MIC_SKIP", "airpods,iphone,beats,headphones,headset").split(",") if s.strip()]
@@ -49,9 +53,12 @@ def pick_input_device(pa) -> tuple:
             return default["index"], default["name"]
     except Exception:
         pass
-    for d in mics:
-        if not any(s in d["name"].lower() for s in skip):
+    usable = [d for d in mics if not any(s in d["name"].lower() for s in skip)]
+    for d in usable:
+        if "macbook" in d["name"].lower() or "built-in" in d["name"].lower():
             return d["index"], d["name"]
+    if usable:
+        return usable[0]["index"], usable[0]["name"]
     return None, "system default"
 
 def main():
@@ -127,6 +134,17 @@ def main():
 
             for model_name, score in prediction.items():
                 if score > THRESHOLD:
+                    if score <= THRESHOLD_SPEAKING:
+                        try:
+                            talking = r.get(f"jarvis:voice:state:{ROOM}") == "speaking"
+                        except Exception:
+                            talking = False
+                        if talking:
+                            print(f"[WakeWord] Ignored '{model_name}' (score {score:.3f}) "
+                                  f"while Jarvis is speaking")
+                            last_trigger = now
+                            oww_model.reset()
+                            break
                     print(f"[WakeWord] Detected '{model_name}' (score: {score:.3f})")
                     last_trigger = now
                     oww_model.reset()

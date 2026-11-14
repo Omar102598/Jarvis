@@ -41,6 +41,9 @@ MIN_SILENCE_MS = os.environ.get("STT_SCRIBE_MIN_SILENCE_MS", "")
 # Server-side suppression of background voices (TV, music). Off by default
 # until tested: it changes the VAD defaults (vad_threshold 0.15).
 FILTER_BACKGROUND = os.environ.get("STT_SCRIBE_FILTER_BACKGROUND", "false").lower() in ("1", "true", "yes")
+# Pin the language: auto-detection turned a short pause into Japanese ("はい。").
+# "" = auto-detect.
+LANGUAGE = os.environ.get("STT_SCRIBE_LANGUAGE", "en").strip()
 CONNECT_TIMEOUT = float(os.environ.get("STT_SCRIBE_CONNECT_TIMEOUT", "3"))
 # After an auth/quota error, skip Scribe for this long instead of paying a
 # failed connection on every request.
@@ -64,6 +67,8 @@ def available() -> bool:
 def _url(sample_rate: int) -> str:
     q = {"model_id": MODEL, "audio_format": f"pcm_{sample_rate}",
          "commit_strategy": COMMIT_STRATEGY, "vad_silence_threshold_secs": VAD_SILENCE_SECS}
+    if LANGUAGE:
+        q["language_code"] = LANGUAGE
     if VAD_THRESHOLD:
         q["vad_threshold"] = VAD_THRESHOLD
     if MIN_SPEECH_MS:

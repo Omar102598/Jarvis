@@ -282,7 +282,8 @@ def pick_input_device(pa) -> tuple:
     """(index, name) of the mic to use. MIC_DEVICE (a name fragment) wins.
     Otherwise the system default -- unless that's a phone or Bluetooth headset
     (AirPods become the default input whenever they connect, and send pure
-    silence while they're in the case), in which case the first other mic."""
+    silence while they're in the case), in which case the Mac's built-in mic,
+    which is there docked or not."""
     want = os.environ.get("MIC_DEVICE", "").strip().lower()
     skip = [s.strip().lower() for s in os.environ.get(
         "MIC_SKIP", "airpods,iphone,beats,headphones,headset").split(",") if s.strip()]
@@ -298,9 +299,12 @@ def pick_input_device(pa) -> tuple:
             return default["index"], default["name"]
     except Exception:
         pass
-    for d in mics:
-        if not any(s in d["name"].lower() for s in skip):
+    usable = [d for d in mics if not any(s in d["name"].lower() for s in skip)]
+    for d in usable:
+        if "macbook" in d["name"].lower() or "built-in" in d["name"].lower():
             return d["index"], d["name"]
+    if usable:
+        return usable[0]["index"], usable[0]["name"]
     return None, "system default"
 
 
