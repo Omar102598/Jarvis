@@ -37,6 +37,10 @@ def spawn_task(task: str, agent: str = "task") -> str:
     research, multi-step gathering, "go find out and let me know". The task
     runs in the background; its result is saved and announced when ready.
 
+    NOT for the named specialist agents: they have their own tools and
+    logins, and a 'task' agent "acting as" one has neither. Groceries / Remy
+    -> trigger_grocery_run; ClassPass / Kai -> the classpass tools.
+
     ALL coding work goes to 'developer' (Forge): modifying Jarvis's own code,
     adding tools/features, fixing bugs, and any software project the user
     starts. Forge reads code, writes files, runs builds/tests, and rebuilds

@@ -118,28 +118,45 @@ def approve_grocery_order() -> str:
 
 
 @tool
-def trigger_grocery_run() -> str:
-    """Manually trigger the smart grocery agent to run a full weekly shop now.
+def trigger_grocery_run(stores: str = "", budget: float = 0, notes: str = "") -> str:
+    """Start Remy, the grocery agent, to build grocery carts now. This IS
+    "use Remy" / "build me a grocery cart" -- never hand groceries to
+    spawn_task, which has no store logins.
 
-    The agent will: fetch your Amazon order history, generate a fitness-aware
-    grocery list based on your profile, compare prices across Target, HEB,
-    Amazon Fresh, and Whole Foods, build carts, and send you a report.
+    Remy plans a week of meals from the user's nutrition profile and recomp
+    targets, finds each item at the stores, and ADDS it to the cart in the
+    Jarvis browser (signed in to H-E-B, Target, Amazon Fresh, Whole Foods). It
+    never removes what's already in the cart and never checks out; the user
+    approves the order separately (approve_grocery_order).
+
+    Args:
+        stores: Limit to these stores, comma-separated: 'heb', 'target',
+            'amazon', 'whole_foods'. Empty = compare all and pick the best 1-2.
+        budget: Spending cap in dollars for this shop. 0 = the profile's
+            weekly budget.
+        notes: Anything else the user asked for, in their words ("use what's
+            already in the cart as a reference", "no fish this week").
     """
+    params = {}
+    if stores.strip():
+        params["stores"] = [x.strip() for x in stores.split(",") if x.strip()]
+    if budget and budget > 0:
+        params["budget"] = budget
+    if notes.strip():
+        params["notes"] = notes.strip()
     try:
         mqtt_publish.single(
             "jarvis/agents/grocery/trigger",
-            json.dumps({}),
+            json.dumps({"source": "llm", "params": params}),
             hostname=MQTT_HOST,
             port=MQTT_PORT,
         )
     except Exception as exc:
         return f"Failed to trigger grocery agent: {exc}"
 
-    return (
-        "Grocery agent triggered, sir. I'll have your weekly cart ready "
-        "and send a report via iMessage and the Jarvis app. "
-        "This typically takes 5-10 minutes."
-    )
+    where = f" at {', '.join(params['stores'])}" if params.get("stores") else ""
+    return (f"Remy is building the cart{where}, sir. He adds only (nothing removed, "
+            "no checkout) and reports when done -- usually 5-10 minutes.")
 
 
 _USUAL_ORDER_KEY = "grocery:usual_order"

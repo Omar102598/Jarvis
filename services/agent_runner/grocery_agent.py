@@ -1097,6 +1097,9 @@ async def _generate_smart_list(
         pref_block += f"The user EATS THESE MEALS OFTEN — feature them prominently: {'; '.join(fav_meals)}.\n"
     if preferred:
         pref_block += f"Strongly PREFER these exact staples: {', '.join(preferred)}.\n"
+    if profile.get("_request_notes"):
+        pref_block += ("THE USER'S INSTRUCTIONS FOR THIS SHOP — follow them over the "
+                       f"defaults above: {profile['_request_notes']}\n")
     if avoid:
         pref_block += f"AVOID / substitute these (use the preferred alternative instead): {', '.join(avoid)}.\n"
 
@@ -1997,6 +2000,22 @@ class GroceryAgent(BaseAgent):
     async def _run_full(self) -> str:
         # ── 0. Load profile + targets ──────────────────────────────────
         profile = _load_user_profile(self.r)
+        # Per-run overrides from the brain ("H-E-B only, $150, keep what's in
+        # the cart"). Without these every request ran the generic 4-store shop.
+        req = self.params or {}
+        if req.get("budget"):
+            try:
+                profile["weekly_budget_usd"] = float(req["budget"])
+            except (TypeError, ValueError):
+                pass
+        store_keys = list(STORE_KEYS)
+        if req.get("stores"):
+            want = req["stores"] if isinstance(req["stores"], list) else [req["stores"]]
+            want = [str(w).lower().replace("-", "").replace(" ", "_").replace("amazon_fresh", "amazon")
+                    for w in want]
+            store_keys = [k for k in STORE_KEYS if k in want] or store_keys
+        if req.get("notes"):
+            profile["_request_notes"] = str(req["notes"])[:1000]
         budget  = float(profile.get("weekly_budget_usd", 150))
         targets = _calculate_targets(profile)
 
@@ -2035,12 +2054,12 @@ class GroceryAgent(BaseAgent):
             _log(f"  {len(meals)} meals planned; grocery list ({len(grocery_list)} items): {grocery_list}")
 
             # ── 4. Resolve each item to a real product across all stores ─
-            _log(f"Step 3: Resolving {len(grocery_list)} items × {len(STORE_KEYS)} stores "
+            _log(f"Step 3: Resolving {len(grocery_list)} items × {len(store_keys)} stores "
                  f"(cache-first, LLM only on miss)…")
             price_map: dict[str, list[PriceResult]] = {}
             for i, item in enumerate(grocery_list, 1):
                 _log(f"  [{i}/{len(grocery_list)}] {item}", kind="tool")
-                price_map[item] = await _resolve_item(session, item, STORE_KEYS, self.r)
+                price_map[item] = await _resolve_item(session, item, store_keys, self.r)
 
             priced = sum(
                 1 for prices in price_map.values()
