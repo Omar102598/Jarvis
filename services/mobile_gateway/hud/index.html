@@ -3,67 +3,151 @@
 <head>
 <meta charset="utf-8">
 <!-- Jarvis HUD — a Meta Ray-Ban Display Web App (600×600, Chromium runtime).
-     Black is transparent on the waveguide, so the page is black with light
-     text. Input is the Neural Band / touchpad: arrow keys move focus, Enter
-     clicks. Web Apps can't open the mic, but activating a text field opens
-     the system composer, which has dictation — so the "Talk" control IS a
-     text field: press it, speak, and the dictated text goes to Jarvis.
+     Styled after a helmet HUD: curved side brackets, arc gauges, numeric
+     readouts, angled panels, warning banners. Black is transparent on the
+     waveguide, so everything is light-on-black; lines are 2px+ and text 22px+
+     so it holds up in daylight. Animation only runs on state changes
+     (thinking ring, reply scan line) to spare the battery.
+     Input is the Neural Band / touchpad: arrow keys move focus, Enter clicks.
+     Web Apps can't open the mic, but activating a text field opens the system
+     composer, which has dictation — so the "Talk" control IS a text field:
+     press it, speak, and the dictated text goes to Jarvis.
      Served by mobile_gateway at /hud. The API key arrives once in the install
      URL's #k=… fragment (never sent to the server), then lives in localStorage. -->
 <meta name="viewport" content="width=600, height=600, initial-scale=1">
 <meta name="mrbd-web-app-capable" content="yes">
 <title>Jarvis</title>
 <style>
-  :root { --blue: #00d4ff; --dim: #6fa8bb; --gold: #f0a020; --red: #ff5a5a; }
+  :root { --c: #00d4ff; --c2: #7feaff; --dim: #5f9fb3; --line: rgba(0,212,255,.55);
+          --gold: #ffb230; --red: #ff4d4d; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { width: 600px; height: 600px; background: #000; color: #e8f7ff; overflow: hidden;
-               font: 400 26px/1.35 -apple-system, "Helvetica Neue", Roboto, sans-serif; }
-  body { display: flex; flex-direction: column; padding: 28px 32px 26px; gap: 16px; }
+  html, body { width: 600px; height: 600px; background: #000; color: #e6f8ff; overflow: hidden;
+               font: 400 25px/1.35 -apple-system, "Helvetica Neue", Roboto, sans-serif; }
+  .mono { font-variant-numeric: tabular-nums; letter-spacing: 2px; }
+  .cap  { text-transform: uppercase; letter-spacing: 4px; font-size: 15px; color: var(--dim); }
 
-  header { display: flex; align-items: center; gap: 14px; }
-  .j { width: 46px; height: 46px; border-radius: 50%; border: 2px solid var(--blue);
-       display: grid; place-items: center; color: var(--blue); font-weight: 700; font-size: 24px; }
-  body.thinking .j { animation: pulse 1.1s ease-in-out infinite; }
-  body.speaking .j { background: rgba(0,212,255,.18); }
-  @keyframes pulse { 50% { box-shadow: 0 0 0 10px rgba(0,212,255,0); border-color: #7feaff; }
-                     0%  { box-shadow: 0 0 0 0 rgba(0,212,255,.45); } }
-  #status { font-size: 20px; letter-spacing: 3px; text-transform: uppercase; color: var(--dim); }
-  #clock { margin-left: auto; font-size: 22px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  /* ── frame (SVG, behind everything) ── */
+  #frame { position: absolute; inset: 0; pointer-events: none; }
+  #frame .ln  { fill: none; stroke: var(--line); stroke-width: 2; }
+  #frame .dim { fill: none; stroke: rgba(0,212,255,.25); stroke-width: 2; }
+  #frame .tk  { stroke: var(--line); stroke-width: 2; }
+  body.speaking #frame .ln { stroke: rgba(255,178,48,.7); }
+  body.alert    #frame .ln { stroke: rgba(255,77,77,.75); }
 
-  main { flex: 1; overflow-y: auto; scrollbar-width: none; }
+  /* ── header: power gauge · identity/status · clock/link ── */
+  header { position: absolute; top: 34px; left: 74px; right: 74px; height: 86px;
+           display: flex; align-items: center; justify-content: space-between; }
+  .gauge { position: relative; width: 74px; height: 74px; }
+  .gauge svg { position: absolute; inset: 0; transform: rotate(135deg); }
+  .gauge .track { fill: none; stroke: rgba(0,212,255,.2); stroke-width: 5; }
+  .gauge .val   { fill: none; stroke: var(--c); stroke-width: 5; stroke-linecap: round;
+                  transition: stroke-dashoffset .6s; }
+  .gauge .num { position: absolute; inset: 0; display: grid; place-items: center;
+                font-size: 20px; font-weight: 700; color: var(--c2); }
+  .gauge .lbl { position: absolute; left: 0; right: 0; bottom: -18px; text-align: center; font-size: 12px; }
+  .gauge.low .val { stroke: var(--gold); }
+
+  .ident { text-align: center; }
+  .ident .name { font-size: 17px; letter-spacing: 7px; color: var(--c); font-weight: 600; }
+  .ident .row { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 6px; }
+  #ring { width: 22px; height: 22px; border-radius: 50%; border: 3px solid rgba(0,212,255,.3);
+          border-top-color: var(--c); opacity: 0; }
+  body.thinking #ring { opacity: 1; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #status { font-size: 19px; letter-spacing: 5px; text-transform: uppercase; color: var(--c2); }
+  body.speaking #status { color: var(--gold); }
+
+  .readout { text-align: right; }
+  #clock { font-size: 28px; color: var(--c2); font-weight: 600; }
+  #link  { font-size: 13px; margin-top: 2px; }
+
+  /* ── reply ── */
+  main { position: absolute; top: 146px; bottom: 132px; left: 78px; right: 78px;
+         overflow-y: auto; scrollbar-width: none; }
   main::-webkit-scrollbar { display: none; }
-  #heard { font-size: 20px; color: var(--dim); margin-bottom: 10px; min-height: 1em; }
-  #heard:not(:empty)::before { content: "You: "; color: #4a7a8a; }
-  #title { font-size: 34px; font-weight: 700; color: var(--blue); line-height: 1.15; margin-bottom: 8px; }
+  #heard { font-size: 18px; color: var(--dim); margin-bottom: 10px; min-height: 1em; }
+  #heard:not(:empty)::before { content: "▸ "; color: var(--c); }
+  #title { font-size: 33px; font-weight: 700; color: var(--c); line-height: 1.15; margin-bottom: 8px; }
   #body { white-space: pre-wrap; }
-  #body.error { color: var(--red); }
+  #scan { position: absolute; top: 146px; left: 60px; right: 60px; height: 3px; opacity: 0;
+          background: linear-gradient(90deg, transparent, var(--c2), transparent);
+          box-shadow: 0 0 12px var(--c); pointer-events: none; }
+  #scan.go { animation: scan .7s ease-out; }
+  @keyframes scan { 0% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(300px); opacity: 0; } }
 
-  footer { display: flex; gap: 12px; }
-  /* Focus ring: the browser moves focus spatially between these. */
-  .ctl { height: 78px; border-radius: 39px; border: 2px solid #1c4a58; background: #04141a;
-         color: #e8f7ff; font: inherit; outline: none; }
-  .ctl:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(0,212,255,.35); }
-  #talk { flex: 1; padding: 0 30px; font-size: 26px; caret-color: var(--blue); }
-  #talk::placeholder { color: var(--blue); }
-  #repeat { width: 78px; font-size: 28px; color: var(--dim); }
+  /* ── warning banner (errors) ── */
+  #banner { position: absolute; top: 146px; left: 110px; right: 110px; height: 54px; display: none;
+            align-items: center; justify-content: center; gap: 12px;
+            border: 2px solid var(--red); color: var(--red); font-weight: 700;
+            letter-spacing: 6px; text-transform: uppercase; font-size: 20px;
+            clip-path: polygon(16px 0, 100% 0, calc(100% - 16px) 100%, 0 100%);
+            background: rgba(255,77,77,.08); }
+  body.alert #banner { display: flex; animation: blink 1s steps(2) 3; }
+  body.alert main { top: 214px; }
+  @keyframes blink { 50% { opacity: .35; } }
+
+  /* ── controls: angled panels ── */
+  footer { position: absolute; left: 70px; right: 70px; bottom: 40px; height: 74px; display: flex; gap: 14px; }
+  .ctl { height: 74px; border: 2px solid rgba(0,212,255,.45); background: rgba(0,212,255,.06);
+         color: #e6f8ff; font: inherit; outline: none;
+         clip-path: polygon(22px 0, 100% 0, 100% calc(100% - 22px), calc(100% - 22px) 100%, 0 100%, 0 22px); }
+  .ctl:focus { border-color: var(--c2); background: rgba(0,212,255,.16); }
+  #talk { flex: 1; padding: 0 28px; font-size: 24px; letter-spacing: 3px; caret-color: var(--c); }
+  #talk::placeholder { color: var(--c); text-transform: uppercase; }
+  #repeat { width: 84px; font-size: 30px; color: var(--c2); }
   body.thinking #talk { border-color: var(--gold); }
 </style>
 </head>
 <body>
+  <svg id="frame" viewBox="0 0 600 600" aria-hidden="true">
+    <!-- side brackets curve like a visor edge -->
+    <path class="ln"  d="M 58 132 Q 22 300 58 468"/>
+    <path class="dim" d="M 44 168 Q 16 300 44 432"/>
+    <path class="ln"  d="M 542 132 Q 578 300 542 468"/>
+    <path class="dim" d="M 556 168 Q 584 300 556 432"/>
+    <g class="tk">
+      <line x1="40" y1="300" x2="56" y2="300"/><line x1="544" y1="300" x2="560" y2="300"/>
+      <line x1="47" y1="240" x2="57" y2="240"/><line x1="47" y1="360" x2="57" y2="360"/>
+      <line x1="543" y1="240" x2="553" y2="240"/><line x1="543" y1="360" x2="553" y2="360"/>
+    </g>
+    <!-- top arc with dashes, bottom rule -->
+    <path class="dim" d="M 120 22 Q 300 4 480 22" stroke-dasharray="26 10 6 10"/>
+    <path class="ln"  d="M 200 132 L 400 132" stroke-dasharray="2 8"/>
+    <!-- corner brackets -->
+    <path class="ln" d="M 20 60 L 20 20 L 60 20"/>
+    <path class="ln" d="M 540 20 L 580 20 L 580 60"/>
+    <path class="ln" d="M 20 540 L 20 580 L 60 580"/>
+    <path class="ln" d="M 540 580 L 580 580 L 580 540"/>
+  </svg>
+
   <header>
-    <div class="j">J</div>
-    <div id="status">Ready</div>
-    <div id="clock"></div>
+    <div class="gauge" id="pwr">
+      <svg viewBox="0 0 74 74"><circle class="track" cx="37" cy="37" r="31" stroke-dasharray="146 195"/>
+        <circle class="val" id="pwrval" cx="37" cy="37" r="31" stroke-dasharray="146 195" stroke-dashoffset="146"/></svg>
+      <div class="num mono" id="pwrnum">--</div>
+      <div class="lbl cap">PWR</div>
+    </div>
+    <div class="ident">
+      <div class="name">J.A.R.V.I.S</div>
+      <div class="row"><div id="ring"></div><div id="status">Online</div></div>
+    </div>
+    <div class="readout">
+      <div id="clock" class="mono"></div>
+      <div id="link" class="cap mono">LINK —</div>
+    </div>
   </header>
+
+  <div id="banner"><span>⚠</span><span id="bannertext">System failure</span></div>
+  <div id="scan"></div>
 
   <main id="main" tabindex="-1">
     <div id="heard"></div>
-    <div id="title">Jarvis</div>
+    <div id="title">Standing by</div>
     <div id="body">Press Talk and speak.</div>
   </main>
 
   <footer>
-    <input id="talk" class="ctl" type="text" placeholder="🎙  Talk to Jarvis"
+    <input id="talk" class="ctl" type="text" placeholder="◉ Talk"
            enterkeyhint="send" autocomplete="off" autocapitalize="sentences" autofocus>
     <button id="repeat" class="ctl" aria-label="Say it again">↻</button>
   </footer>
@@ -83,24 +167,41 @@
     document.body.className = s;
     $('status').textContent = label || s;
   }
-  function show(title, body, isError) {
+  function alertBanner(text) {
+    $('bannertext').textContent = text;
+    setState('alert', 'Offline');
+  }
+  function show(title, body) {
     $('title').textContent = title || '';
     $('body').textContent = body || '';
-    $('body').classList.toggle('error', !!isError);
     main.scrollTop = 0;
   }
+  function scan() { const s = $('scan'); s.classList.remove('go'); void s.offsetWidth; s.classList.add('go'); }
+
+  // ── readouts ──
   const clock = () => { $('clock').textContent =
-    new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
+    new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).replace(/\s?[AP]M$/i, ''); };
   clock(); setInterval(clock, 15000);
+  function setPower(level) {               // level 0..1, the glasses' own battery
+    const pct = Math.round(level * 100);
+    $('pwrnum').textContent = pct;
+    $('pwrval').setAttribute('stroke-dashoffset', String(146 * (1 - level)));
+    $('pwr').classList.toggle('low', pct <= 20);
+  }
+  if (navigator.getBattery) {
+    navigator.getBattery().then((b) => { setPower(b.level); b.addEventListener('levelchange', () => setPower(b.level)); })
+      .catch(() => {});
+  }
 
   // ── speech out: Jarvis's own voice (gateway WAV) if the runtime plays audio,
   //    else the system voice (speechSynthesis is documented for Web Apps) ──
   let lastSpeech = '', lastAudio = '';
+  const idle = () => setState('', 'Online');
   function systemSay(text) {
-    if (!('speechSynthesis' in window) || !text) return setState('', 'Ready');
+    if (!('speechSynthesis' in window) || !text) return idle();
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    u.onend = u.onerror = () => setState('', 'Ready');
+    u.onend = u.onerror = idle;
     setState('speaking', 'Speaking');
     speechSynthesis.speak(u);
   }
@@ -108,7 +209,7 @@
     lastSpeech = text; lastAudio = audioB64 || '';
     if (!audioB64) return systemSay(text);
     const a = new Audio('data:audio/wav;base64,' + audioB64);
-    a.onended = () => setState('', 'Ready');
+    a.onended = idle;
     setState('speaking', 'Speaking');
     a.play().catch(() => systemSay(text));
   }
@@ -118,25 +219,29 @@
   async function ask(text) {
     text = text.trim();
     if (!text || busy) return;
-    if (!KEY) return show('Not paired', 'Reinstall from the link with the key (#k=…).', true);
+    if (!KEY) return alertBanner('Not paired');
     busy = true;
     $('heard').textContent = text;
     show('', '');
     setState('thinking', 'Thinking');
+    const t0 = performance.now();
     try {
       const resp = await fetch('/ask/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': KEY },
         body: JSON.stringify({ text, source: 'glasses', speak: true }),
       });
-      if (!resp.ok) throw new Error(resp.status === 401 ? 'Key rejected — re-pair.' : 'Gateway error ' + resp.status);
+      if (!resp.ok) throw new Error(resp.status === 401 ? 'Key rejected' : 'Gateway ' + resp.status);
       const data = await resp.json();
+      $('link').textContent = 'LINK ' + ((performance.now() - t0) / 1000).toFixed(1) + 's';
       const d = data.display || {};
-      show(d.title || 'Jarvis', d.body || data.text || '');
-      say(data.text || d.body || '', data.audio_b64);
+      show(d.title || 'Jarvis', d.body || (d.title ? '' : data.text) || '');
+      scan();
+      say(data.text || d.body || d.title || '', data.audio_b64);
     } catch (e) {
-      show('Can’t reach Jarvis', String(e.message || e), true);
-      setState('', 'Offline');
+      $('link').textContent = 'LINK LOST';
+      show('Can’t reach Jarvis', String(e.message || e));
+      alertBanner('Link lost');
     } finally {
       busy = false;
       talk.focus();
@@ -148,7 +253,6 @@
   talk.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && talk.value.trim()) { e.preventDefault(); talk.blur(); }   // blur → change
   });
-  talk.addEventListener('focus', () => { if (!busy) setState('', 'Ready'); });
   $('repeat').addEventListener('click', () => say(lastSpeech, lastAudio));
 
   // Long replies: up/down scroll the reply while focus stays on the controls.
@@ -161,7 +265,7 @@
     }
   });
 
-  if (!KEY) show('Not paired', 'Open the install link that includes #k=<your key>.', true);
+  if (!KEY) { show('Not paired', 'Open the install link that includes #k=<your key>.'); alertBanner('Not paired'); }
 })();
 </script>
 </body>
