@@ -33,6 +33,7 @@ import redis as redis_lib
 from base_agent import BaseAgent
 from llm_helper import complete
 from prompt_files import agent_prompt
+import grocery_qty
 
 # An explicit MAC_BRIDGE_URL wins; otherwise build it from the vars compose
 # actually exports (MAC_HOST -> MAC_BRIDGE_HOST). Defaulting straight to
@@ -388,6 +389,7 @@ class OrderResult:
     all_prices:         list[PriceResult] = field(default_factory=list)
     title:              str = ""
     href:               str = ""
+    qty:                int = 1     # units put in the cart
 
 
 # ---------------------------------------------------------------------------
@@ -2023,6 +2025,7 @@ def _build_report(
     total_savings: float,
     cart_truth: dict | None = None,
     meals: list[dict] | None = None,
+    qty_flags: list[dict] | None = None,
 ) -> str:
     cart_truth = cart_truth or {}
     meals = meals or []
@@ -2068,6 +2071,8 @@ def _build_report(
         if s in store_lines:
             lines += ["", f"── {STORES[s]['name'].upper()} ──"]
             lines += store_lines[s]
+
+    lines += grocery_qty.report_section(qty_flags or [])
 
     if failed:
         lines += ["", f"NOT FOUND ({len(failed)} items)"]
@@ -2212,6 +2217,8 @@ class GroceryAgent(BaseAgent):
         except Exception:
             pass
         try:
+            if action == "confirm_quantities":
+                return self._confirm_quantities()
             if action == "checkout":
                 return await self._run_checkout()
             if action == "learn_cart":
@@ -2627,6 +2634,7 @@ class GroceryAgent(BaseAgent):
                     best_price=assigned_pr.price, status=status,
                     note=note, all_prices=prices,
                     title=assigned_pr.title, href=assigned_pr.href,
+                    qty=units_wanted,
                 ))
                 await asyncio.sleep(1)
 
@@ -2660,10 +2668,21 @@ class GroceryAgent(BaseAgent):
                 if len(valid_prices) >= 2 and r.best_price is not None:
                     total_savings += max(valid_prices) - r.best_price
 
+            # Quantity sanity check: anything above what the user usually
+            # orders must be confirmed before checkout. Quantities are never
+            # changed here, only flagged.
+            qty_flags = grocery_qty.find_quantity_flags(
+                [{"item": r.item, "product": r.title, "store_key": r.assigned_store,
+                  "store": r.assigned_store_name, "qty": r.qty}
+                 for r in order_results if r.status == "added"],
+                _load_usual_order(self.r))
+            if qty_flags:
+                _log(f"  ⚠ {len(qty_flags)} line(s) above the usual quantity")
+
             report = _build_report(
                 profile, targets, selected_stores,
                 order_results, total_spend, total_savings,
-                cart_truth, meals,
+                cart_truth, meals, qty_flags,
             )
 
             # Persist the week's meal plan so Jarvis can answer "what can I make?"
@@ -2681,6 +2700,8 @@ class GroceryAgent(BaseAgent):
                 "store_keys": selected_stores,
                 "cart_links": {s: STORES[s]["cart_url"] for s in selected_stores},
                 "cart_truth": cart_truth,
+                "qty_flags":  qty_flags,
+                "qty_confirmed": not qty_flags,
                 "meals":      meals,
                 "items":      [
                     {
@@ -2689,6 +2710,7 @@ class GroceryAgent(BaseAgent):
                         "store":     r.assigned_store_name,
                         "store_key": r.assigned_store,   # for pin_favorite_product
                         "price":     r.best_price,
+                        "qty":       r.qty,
                         "status":    r.status,
                         "url":     (STORES[r.assigned_store]["product_base"] + r.href)
                                    if r.href and not r.href.startswith("http") else r.href,
@@ -2701,6 +2723,8 @@ class GroceryAgent(BaseAgent):
             }
             self.r.set(PENDING_ORDER_KEY, json.dumps(pending), ex=604800)
             _log("  ✓ Pending order stored in Redis.")
+            if qty_flags:
+                self._file_qty_approval(qty_flags)
             _record_added(self.r, [
                 {"store_key": r.assigned_store, "product": r.title or r.item, "item": r.item}
                 for r in order_results if r.status == "added" and r.assigned_store])
@@ -2718,12 +2742,43 @@ class GroceryAgent(BaseAgent):
             f"Report sent via iMessage and Jarvis app. "
             f"Say 'approve grocery order' to proceed to checkout."
         )
+        if qty_flags:
+            summary += (f" HOLD ON: {len(qty_flags)} item(s) are above your usual quantity "
+                        "(e.g. " + grocery_qty.describe_flag(qty_flags[0]) + ") — "
+                        "they need your confirmation first.")
         _log(f"=== Grocery Agent v5.0 complete. ===")
         return summary
 
     # ------------------------------------------------------------------
     # Checkout mode (called after user approval)
     # ------------------------------------------------------------------
+
+    def _file_qty_approval(self, qty_flags: list[dict]) -> None:
+        """Put the flagged quantities in the Approval Inbox. Approving there
+        confirms the quantities (it does not check out)."""
+        try:
+            import approvals
+            lines = "\n".join("• " + grocery_qty.describe_flag(f) for f in qty_flags)
+            approvals.request_approval(
+                self.r, "grocery",
+                f"Remy: {len(qty_flags)} grocery quantity(ies) above your usual",
+                "Remy's cart has more than you usually order:\n" + lines +
+                "\nApprove to confirm these quantities, or deny and ask Remy to fix them. "
+                "Checkout stays blocked until confirmed.",
+                action={"type": "mqtt", "topic": "jarvis/agents/grocery/trigger",
+                        "payload": {"params": {"action": "confirm_quantities"}}},
+            )
+        except Exception as exc:
+            _log(f"  ✗ Could not file quantity approval: {exc}")
+
+    def _confirm_quantities(self) -> str:
+        raw = self.r.get(PENDING_ORDER_KEY)
+        if not raw:
+            return "No pending grocery order to confirm."
+        pending = json.loads(raw)
+        pending["qty_confirmed"] = True
+        self.r.set(PENDING_ORDER_KEY, json.dumps(pending), ex=604800)
+        return "Quantities confirmed, sir. Say 'approve grocery order' to check out."
 
     async def _run_checkout(self) -> str:
         _log("=== Grocery Agent: CHECKOUT MODE ===")
@@ -2736,6 +2791,11 @@ class GroceryAgent(BaseAgent):
         if pending.get("status") != "pending_approval":
             status = pending.get("status", "unknown")
             return f"Order is already in status '{status}' — no action needed."
+
+        held = grocery_qty.unconfirmed(pending)
+        if held and not (self.params or {}).get("confirm_quantities"):
+            return ("Checkout held, sir: " + "; ".join(grocery_qty.describe_flag(f) for f in held)
+                    + ". Confirm these quantities first.")
 
         store_keys  = pending.get("store_keys", [])
         store_names = pending.get("stores", [])
