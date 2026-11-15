@@ -1191,6 +1191,8 @@ async def _list_cart_names(session: aiohttp.ClientSession, store_key: str,
 # Every item Remy adds to a cart, so "remove what Remy added today" works.
 # The cart itself doesn't say who added a line.
 _ADDED_LOG_KEY = "grocery:added_log"
+# Set while Remy is using the Mac browser (see run()).
+BROWSER_BUSY_KEY = "browser:busy"
 
 
 def _record_added(r, entries: list[dict]) -> None:
@@ -2203,15 +2205,27 @@ class GroceryAgent(BaseAgent):
         _EMIT = self.log_event   # route _log() into the observability stream
         action = (self.params or {}).get("action", "")
 
-        if action == "checkout":
-            return await self._run_checkout()
-        if action == "learn_cart":
-            return await self._run_learn_cart()
-        if action == "learn_orders":
-            return await self._run_learn_orders()
-        if action == "remove":
-            return await self._run_remove()
-        return await self._run_full()
+        # Remy drives the shared Mac browser page; the brain's Uber Eats tools
+        # (tools/ubereats.py) use the same page and back off while this is set.
+        try:
+            self.r.set(BROWSER_BUSY_KEY, "remy", ex=3600)
+        except Exception:
+            pass
+        try:
+            if action == "checkout":
+                return await self._run_checkout()
+            if action == "learn_cart":
+                return await self._run_learn_cart()
+            if action == "learn_orders":
+                return await self._run_learn_orders()
+            if action == "remove":
+                return await self._run_remove()
+            return await self._run_full()
+        finally:
+            try:
+                self.r.delete(BROWSER_BUSY_KEY)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Learn the user's usual order from their current Amazon Fresh cart

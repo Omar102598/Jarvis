@@ -42,6 +42,10 @@ from llm_factory import TIER_MODELS, build_llm
 from plugin_registry import PluginRegistry
 from tools.agents import get_agent_report, trigger_agent
 from tools.amazon_cart import amazon_add_to_cart
+from tools.ubereats import (
+    ubereats_add_to_cart, ubereats_item_options, ubereats_menu, ubereats_remove_from_cart,
+    ubereats_search, ubereats_view_cart,
+)
 from tools.smart_home import control_device, get_device_states, get_presence, set_scene
 from tools.scenes import manage_scenes
 from tools.email_drafts import get_email_drafts
@@ -318,6 +322,9 @@ _core_tools = [
     get_grocery_status, approve_grocery_order, trigger_grocery_run, suggest_meals,
     remove_grocery_items,
     learn_fresh_cart, get_usual_order, pin_favorite_product,
+    # Uber Eats (Remy's signed-in browser; builds carts, never checks out)
+    ubereats_search, ubereats_menu, ubereats_item_options, ubereats_add_to_cart,
+    ubereats_view_cart, ubereats_remove_from_cart,
     # Workout coach (Apollo) + fused readiness score + Atlas health overview
     load_skill,
     get_todays_workout, get_workout_plan, plan_workout_week, skip_workout_day, set_workout_split, get_readiness,

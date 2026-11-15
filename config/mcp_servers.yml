@@ -462,8 +462,11 @@ servers:
     description: "MCP OpenTable — search + booking links (needs fetchproxy browser bridge)"
 
   # ---------------------------------------------------------------------------
-  # Uber Eats (OFFICIAL) — restaurant/dish search, menus, cart + order planning
-  # against YOUR Uber Eats account. The hosted server uses interactive OAuth,
+  # Uber Eats (OFFICIAL) — NOTE (checked 2026-11-15): search only (tools
+  # `search`, `publish_analytics`), no sign-in, no carts, and it answers 403
+  # "access denied" to anything but Anthropic's own Claude apps. Jarvis's real
+  # Uber Eats support is services/llm_agent/tools/ubereats.py (Remy's browser).
+  # The notes below are the original, incorrect assumptions. The hosted server uses interactive OAuth,
   # which a headless container can't do — so we bridge through mcp-remote,
   # which caches OAuth tokens in MCP_REMOTE_CONFIG_DIR (/data/mcp_auth, the
   # ./data volume). ONE-TIME SETUP on the Mac: scripts/authorize_food_mcps.sh
