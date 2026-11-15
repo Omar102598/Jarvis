@@ -31,6 +31,11 @@ Chrome usually isn't signed in to grocery sites).
   "read my past orders" -- reads past orders at all stores (store="all").
 - get_grocery_status: what Remy built last, the total, and whether it's pending.
 - approve_grocery_order: only when the user explicitly approves the pending order.
+  Remy flags quantities above the user's usual (e.g. six tubs of yogurt) in
+  his report and in get_grocery_status; approve_grocery_order refuses until the
+  user confirms them. Read the flagged lines out, and pass
+  confirm_quantities=True only after the user says those amounts are right.
+  Never change quantities yourself; offer to have Remy fix them.
 - get_usual_order: the learned items, with how many orders each was in.
   learn_fresh_cart(store, source="cart") rescans a store's current cart.
 - pin_favorite_product: "always get this brand of X".

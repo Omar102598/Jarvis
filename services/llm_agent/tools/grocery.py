@@ -61,6 +61,13 @@ def get_grocery_status() -> str:
         ]
         for store, link in cart_links.items():
             lines.append(f"  {store}: {link}")
+        flags = [] if order.get("qty_confirmed") else (order.get("qty_flags") or [])
+        if flags:
+            lines.append("")
+            lines.append(f"⚠ {len(flags)} quantity warning(s) — above the user's usual, need confirmation:")
+            for f in flags:
+                lines.append(f"  • {f.get('product')} @ {f.get('store')}: "
+                             f"cart {f.get('qty')}, usual {f.get('usual_qty')}")
         lines.append("")
         lines.append("Say 'approve grocery order' to proceed to checkout.")
         return "\n".join(lines)
@@ -76,8 +83,13 @@ def get_grocery_status() -> str:
 
 
 @tool
-def approve_grocery_order() -> str:
+def approve_grocery_order(confirm_quantities: bool = False) -> str:
     """Approve the pending grocery order and trigger checkout at the selected stores.
+
+    If the order has quantity warnings (items above what the user usually
+    orders), this REFUSES and lists them. Read them to the user; only after
+    they explicitly confirm those quantities call again with
+    confirm_quantities=True. Never set it on your own.
 
     The visible browser will open each store's cart and proceed to checkout.
     You will need to confirm payment details in the browser window.
@@ -101,10 +113,21 @@ def approve_grocery_order() -> str:
     stores = ", ".join(order.get("stores", []))
     total  = order.get("total_usd", 0)
 
+    flags = [] if order.get("qty_confirmed") else (order.get("qty_flags") or [])
+    if flags and not confirm_quantities:
+        lines = [
+            f"  • {f.get('product')} @ {f.get('store')}: cart has {f.get('qty')}, "
+            f"usual {f.get('usual_qty')}" for f in flags]
+        return ("Not approved yet, sir — these quantities are above your usual:\n"
+                + "\n".join(lines)
+                + "\nAsk the user to confirm them (or have Remy fix them). Only then "
+                  "call approve_grocery_order(confirm_quantities=True).")
+
     try:
         mqtt_publish.single(
             "jarvis/agents/grocery/trigger",
-            json.dumps({"params": {"action": "checkout"}}),
+            json.dumps({"params": {"action": "checkout",
+                                   "confirm_quantities": bool(confirm_quantities)}}),
             hostname=MQTT_HOST,
             port=MQTT_PORT,
         )
