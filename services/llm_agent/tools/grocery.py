@@ -144,8 +144,11 @@ def approve_grocery_order(confirm_quantities: bool = False) -> str:
 
 @tool
 def trigger_grocery_run(stores: str = "", budget: float = 0, notes: str = "") -> str:
-    """Start Remy, the grocery agent, to build grocery carts now. This IS
-    "use Remy" / "build me a grocery cart" -- never hand groceries to
+    """Start Remy, the grocery agent, to build grocery carts now. This is the FULL
+    weekly shop (plans a week of meals); he reads the cart first and only adds
+    what the meals still need. When the user names specific items, use
+    add_grocery_items instead. This IS "use Remy" / "build me a grocery
+    cart" -- never hand groceries to
     spawn_task, which has no store logins.
 
     Remy plans a week of meals from the user's nutrition profile and recomp
@@ -229,6 +232,57 @@ def remove_grocery_items(items: str = "", stores: str = "all", added_by_remy: st
         ("everything" if want == "all" else ", ".join(want))
     return (f"Remy is removing {what} from the {'carts' if st == 'all' else st + ' cart'}, sir. "
             "He'll report what he took out; ask for the grocery agent's report in a minute.")
+
+
+@tool
+def add_grocery_items(items: str, store: str = "heb", force: bool = False) -> str:
+    """Add specific grocery items to a cart, and nothing else: no meal plan,
+    no weekly shop. Use for "add eggs and 2 bags of spinach", "put basmati in
+    my H-E-B cart", or topping up after the user edited the cart themselves.
+    Prefer this over trigger_grocery_run whenever the user names the items.
+
+    Remy reads the cart first and skips anything already in it (any brand or
+    size of the same product), reporting what he skipped.
+
+    Args:
+        items: comma-separated, each optionally "qty x item" or "item:qty",
+            e.g. "egg whites, 2 x spinach, basmati rice:1".
+        store: 'heb' (default), 'target', 'amazon' (Fresh) or 'whole_foods'.
+        force: True only when the user explicitly wants MORE of something that's
+            already in the cart.
+    """
+    import re
+    want = []
+    for raw in items.split(","):
+        e = raw.strip()
+        if not e:
+            continue
+        qty = 1
+        m = re.match(r"^(\d+)\s*x?\s+(.+)$", e, re.I) or re.match(r"^(\d+)\s*x\s*(.+)$", e, re.I)
+        if m:
+            qty, e = int(m.group(1)), m.group(2).strip()
+        elif ":" in e and e.rsplit(":", 1)[1].strip().isdigit():
+            e, q = e.rsplit(":", 1)
+            e, qty = e.strip(), int(q)
+        want.append({"item": e, "qty": max(1, min(qty, 6))})
+    if not want:
+        return "Which items should I add?"
+    if _r.get("browser:busy") == "remy":
+        queued = " He's mid-run, so this is queued and starts when he finishes."
+    else:
+        queued = ""
+    params = {"action": "add", "items": want, "stores": [store.strip().lower() or "heb"],
+              "force": bool(force), "notify_room": ACTIVE_ROOM.get("room", "")}
+    try:
+        mqtt_publish.single("jarvis/agents/grocery/trigger",
+                            json.dumps({"source": "llm", "params": params}),
+                            hostname=MQTT_HOST, port=MQTT_PORT)
+    except Exception as exc:
+        return f"Failed to reach Remy: {exc}"
+    listed = ", ".join("%d x %s" % (w["qty"], w["item"]) for w in want)
+    return (f"Remy is adding {listed} to the "
+            f"{store} cart (skipping anything already in it).{queued} He reports back in a "
+            "minute or two; nothing is checked out.")
 
 
 _USUAL_ORDER_KEY = "grocery:usual_order"

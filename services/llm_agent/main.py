@@ -134,7 +134,7 @@ from tools.workout import (get_todays_workout, get_workout_plan, plan_workout_we
 from tools.grocery import (
     approve_grocery_order, get_grocery_status, get_usual_order,
     learn_fresh_cart, pin_favorite_product, remove_grocery_items, suggest_meals,
-    trigger_grocery_run,
+    trigger_grocery_run, add_grocery_items,
 )
 from tools.classpass import (
     book_class,
@@ -320,7 +320,7 @@ _core_tools = [
     get_spending_insights,
     # Grocery agent control
     get_grocery_status, approve_grocery_order, trigger_grocery_run, suggest_meals,
-    remove_grocery_items,
+    remove_grocery_items, add_grocery_items,
     learn_fresh_cart, get_usual_order, pin_favorite_product,
     # Uber Eats (Remy's signed-in browser; builds carts, never checks out)
     ubereats_search, ubereats_menu, ubereats_item_options, ubereats_add_to_cart,

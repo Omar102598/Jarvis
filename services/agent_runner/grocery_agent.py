@@ -384,7 +384,7 @@ class OrderResult:
     assigned_store:     str
     assigned_store_name:str
     best_price:         Optional[float]
-    status:             str  # "added" | "not_found" | "error" | "budget_exceeded"
+    status:             str  # "added" | "not_found" | "error" | "budget_exceeded" | "in_cart"
     note:               str = ""
     all_prices:         list[PriceResult] = field(default_factory=list)
     title:              str = ""
@@ -1008,6 +1008,58 @@ def _norm_title(title: str) -> str:
     return re.sub(r"\s+", " ", title.lower()).strip()
 
 
+# Words that don't tell two grocery products apart.
+_NOISE_WORDS = {
+    "h", "e", "b", "heb", "h-e-b", "fresh", "organic", "organics", "the", "and", "of",
+    "with", "lb", "lbs", "oz", "fl", "ct", "count", "pack", "pk", "each", "avg", "bag",
+    "value", "family", "size", "hill", "country", "fare", "central", "market",
+    "good", "gather", "365", "whole", "foods", "amazon", "grocery", "by",
+}
+
+
+def _product_words(title: str) -> set[str]:
+    words = re.sub(r"[^a-z ]+", " ", (title or "").lower()).split()
+    return {w.rstrip("s") for w in words if len(w) > 1 and w not in _NOISE_WORDS}
+
+
+def _cart_match(title: str, cart: list[dict]) -> dict | None:
+    """The cart line that is the same kind of product as `title`, if any.
+    'H-E-B Organics Indian Basmati Rice, 2 lbs' matches 'Basmati Rice 2lb' but
+    'Brown Rice' doesn't: most of the shorter name's words must be shared."""
+    want = _product_words(title)
+    if not want:
+        return None
+    best, best_score = None, 0.0
+    for line in cart or []:
+        have = _product_words(line.get("title", ""))
+        if not have:
+            continue
+        shared = want & have
+        score = len(shared) / min(len(want), len(have))
+        if score > best_score and (len(shared) >= 2 or score == 1.0):
+            best, best_score = line, score
+    return best if best_score >= 0.75 else None
+
+
+async def _read_carts(session, store_keys) -> dict[str, list[dict]]:
+    """What's in each store's cart now ({store: [{title, qty}]}). A store whose
+    cart can't be read maps to None, so callers know it's unknown, not empty."""
+    out: dict[str, list[dict] | None] = {}
+    for sk in store_keys:
+        kind = _LEARNABLE_STORES.get(sk)
+        try:
+            if kind == "amazon_dom":
+                out[sk] = await _scan_amazon_cart(session, sk)
+            elif kind == "text_llm":
+                out[sk] = await _scan_text_cart(session, sk)
+            else:
+                out[sk] = None
+        except Exception as exc:
+            _log(f"  ⚠ Couldn't read the {STORES[sk]['name']} cart: {exc}")
+            out[sk] = None
+    return out
+
+
 async def _clean_item_names(titles: list[str]) -> dict[str, str]:
     """LLM-normalize raw Amazon titles into short searchable names.
 
@@ -1421,6 +1473,7 @@ async def _classify_titles(titles: list[str]) -> dict[str, dict]:
 async def _generate_smart_list(
     past_purchases: list[str], profile: dict, targets: dict,
     usual_order: list[dict] | None = None, intake: dict | None = None,
+    in_cart: list[dict] | None = None,
 ) -> tuple[list[dict], list[str], dict[str, int]]:
     """Plan a cohesive week of meals, then derive the consolidated shopping list.
 
@@ -1480,6 +1533,16 @@ async def _generate_smart_list(
     if profile.get("_request_notes"):
         pref_block += ("THE USER'S INSTRUCTIONS FOR THIS SHOP — follow them over the "
                        f"defaults above: {profile['_request_notes']}\n")
+    if in_cart:
+        listed = "; ".join(f"{c['title']} x{c.get('qty', 1)}" for c in in_cart[:60])
+        pref_block += (
+            "ALREADY IN THE CART RIGHT NOW (the user's own picks, they COUNT toward this "
+            f"week): {listed}.\n"
+            "Plan the meals using these first. grocery_list must contain ONLY what is still "
+            "MISSING for the week's meals. Never list something that is already in the cart "
+            "(same kind of product, any brand or size) unless the cart clearly has too "
+            "little, and then qty is only the EXTRA units. If nothing is missing, return an "
+            "empty grocery_list.\n")
     if avoid:
         pref_block += f"AVOID / substitute these (use the preferred alternative instead): {', '.join(avoid)}.\n"
 
@@ -1573,6 +1636,9 @@ async def _generate_smart_list(
                     # budget on one line before anything else got bought.
                     glist.append(name)
                     qty_map[name] = max(1, min(qty, 6))
+                if not glist and in_cart and meals:
+                    _log(f"  ✓ Planned {len(meals)} meals; the cart already covers them.")
+                    return meals, [], {}
                 if glist:
                     units = sum(qty_map.values())
                     _log(f"  ✓ Planned {len(meals)} meals, {len(glist)} grocery items "
@@ -2037,6 +2103,7 @@ def _build_report(
     added         = [r for r in order_results if r.status == "added"]
     failed        = [r for r in order_results if r.status in ("not_found", "error")]
     skipped       = [r for r in order_results if r.status == "budget_exceeded"]
+    had           = [r for r in order_results if r.status == "in_cart"]
     week_of       = datetime.now(timezone.utc).strftime("%B %-d, %Y")
 
     store_lines = {}
@@ -2085,6 +2152,11 @@ def _build_report(
 
     if skipped:
         lines.append(f"\n  ⚠ {len(skipped)} items skipped (budget cap reached)")
+
+    if had:
+        lines += ["", f"ALREADY IN YOUR CART, NOT ADDED ({len(had)})"]
+        for r in had:
+            lines.append(f"  = {r.item}: {r.note}")
 
     lines += [
         "",
@@ -2234,6 +2306,8 @@ class GroceryAgent(BaseAgent):
                     return await self._run_learn_orders()
                 if action == "remove":
                     return await self._run_remove()
+                if action == "add":
+                    return await self._run_add()
                 return await self._run_full()
             finally:
                 try:
@@ -2411,6 +2485,85 @@ class GroceryAgent(BaseAgent):
                     f"in the {', '.join(STORES[s]['name'] for s in stores)} cart(s).")
         return " ".join(lines)
 
+    async def _run_add(self) -> str:
+        """Add specific items, nothing else: no meal planning, no weekly shop.
+        params: items [{"item", "qty"}] or strings, stores (one store; default
+        H-E-B), force (add even if the same product is already in the cart)."""
+        p = self.params or {}
+        raw = p.get("items") or []
+        raw = raw if isinstance(raw, list) else [raw]
+        wanted: list[tuple[str, int]] = []
+        for e in raw:
+            name = str(e.get("item") or e.get("name") or "") if isinstance(e, dict) else str(e)
+            try:
+                qty = int(e.get("qty", 1) or 1) if isinstance(e, dict) else 1
+            except (TypeError, ValueError):
+                qty = 1
+            if name.strip():
+                wanted.append((name.strip(), max(1, min(qty, 6))))
+        if not wanted:
+            return "Nothing to add: no items were named."
+        stores = self._req_stores(default="heb")
+        if not stores:
+            return f"I don't shop at {p.get('stores')!r}."
+        sk = stores[0]
+        force = bool(p.get("force"))
+        _log(f"=== Grocery Agent | add: {wanted} at {STORES[sk]['name']} ===")
+
+        added, had, failed = [], [], []
+        async with aiohttp.ClientSession() as session:
+            if not await _check_bridge(session):
+                return f"Mac Bridge unreachable at {MAC_BRIDGE_URL}. Cannot edit carts."
+            cart = [] if force else ((await _read_carts(session, [sk])).get(sk) or [])
+            for name, qty in wanted:
+                prices = await _resolve_item(session, name, (sk,), self.r)
+                pr = next((x for x in prices if x.price is not None), None)
+                if pr is None:
+                    failed.append(f"{name} (no match at {STORES[sk]['name']})")
+                    continue
+                same = None if force else _cart_match(pr.title, cart)
+                if same:
+                    had.append(f"{name} (you have {same['title'][:45]} x{same.get('qty', 1)})")
+                    continue
+                try:
+                    status, note = await _add_product_to_cart(session, pr, qty)
+                except HumanCheck as hc:
+                    return f"{hc}. Do that once, then ask me again."
+                if status == "added":
+                    added.append({"store_key": sk, "product": pr.title or name, "item": name,
+                                  "price": pr.price, "qty": qty})
+                else:
+                    failed.append(f"{name} ({note or status})")
+            await _bridge_post(session, "/browser/save-state", {}, timeout=15)
+
+        _record_added(self.r, added)
+        # Keep the pending order (what approve/checkout reads) in step.
+        try:
+            pend = json.loads(self.r.get(PENDING_ORDER_KEY) or "{}")
+            if pend.get("status") == "pending_approval":
+                for a in added:
+                    pend.setdefault("items", []).append({
+                        "item": a["item"], "product": a["product"], "store": STORES[sk]["name"],
+                        "store_key": sk, "price": a["price"], "qty": a["qty"], "status": "added"})
+                    pend["total_usd"] = round(pend.get("total_usd", 0) + (a["price"] or 0) * a["qty"], 2)
+                self.r.set(PENDING_ORDER_KEY, json.dumps(pend), ex=604800)
+        except Exception:
+            pass
+
+        parts = []
+        if added:
+            parts.append("Added to your " + STORES[sk]["name"] + " cart: " + ", ".join(
+                f"{a['product'][:50]} x{a['qty']}" + (f" (${a['price']:.2f} each)" if a["price"] else "")
+                for a in added) + ".")
+        if had:
+            parts.append("Already in your cart, so not added: " + "; ".join(had) +
+                         ". Say if you want more anyway.")
+        if failed:
+            parts.append("Couldn't add: " + "; ".join(failed) + ".")
+        summary = " ".join(parts) or "Nothing changed."
+        _log(f"  ✓ {summary}")
+        return summary
+
     async def _run_learn_orders(self) -> str:
         """Learn the usual order from past orders at every store.
 
@@ -2566,10 +2719,27 @@ class GroceryAgent(BaseAgent):
             if intake:
                 _log(f"  Sage: {intake['days_logged']} logged day(s), avg "
                      f"{intake['avg_protein_g']}g protein / {intake['avg_calories']} kcal.")
+            # What's already in the carts. Without this a "top up what's missing"
+            # request re-bought the whole week on top of the user's own cart
+            # (2026-11-15: two bags of basmati, double eggs and veg).
+            _log("Step 2a: Reading what's already in the cart(s)…")
+            carts = await _read_carts(session, store_keys)
+            in_cart = [dict(c, store=sk) for sk, lines in carts.items() for c in (lines or [])]
+            _log(f"  ✓ {len(in_cart)} line(s) already in the cart(s).")
             meals, grocery_list, qty_map = await _generate_smart_list(
-                past_purchases, profile, targets, usual_order, intake
+                past_purchases, profile, targets, usual_order, intake, in_cart
             )
             _log(f"  {len(meals)} meals planned; grocery list ({len(grocery_list)} items): {grocery_list}")
+            if not grocery_list:
+                summary = ("Your cart already covers this week's meals, sir; I didn't add "
+                           "anything. Meals planned: "
+                           + "; ".join(m.get("name", "") for m in meals[:8]) + ".")
+                self.r.set("grocery:meal_plan", json.dumps({
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "meals": meals, "groceries": [c["title"] for c in in_cart],
+                }), ex=1209600)
+                _push_to_ios_app(summary)
+                return summary
 
             # ── 4. Resolve each item to a real product across all stores ─
             _log(f"Step 3: Resolving {len(grocery_list)} items × {len(store_keys)} stores "
@@ -2600,6 +2770,21 @@ class GroceryAgent(BaseAgent):
                 assigned_pr = next(
                     (p for p in prices if p.store == assigned and p.price is not None), None
                 )
+
+                # Same kind of product already in that cart: never add it again.
+                # (The planner is told the cart too; this is the backstop.)
+                already = _cart_match(assigned_pr.title if assigned_pr else item,
+                                      carts.get(assigned) or [])
+                if already:
+                    order_results.append(OrderResult(
+                        item=item, assigned_store=assigned,
+                        assigned_store_name=STORES[assigned]["name"],
+                        best_price=assigned_pr.price if assigned_pr else None,
+                        status="in_cart",
+                        note=f"already in your cart: {already['title'][:50]} x{already.get('qty', 1)}",
+                        all_prices=prices,
+                    ))
+                    continue
 
                 if assigned_pr is None:
                     order_results.append(OrderResult(
