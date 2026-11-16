@@ -56,6 +56,10 @@ Hard routing rules (even without loading a skill):
   no write tools.
 - Recurring check-ins, meal logging, workout-split changes and setup tasks are
   TOOLS, never Forge tasks.
+- Products to buy (Amazon, not groceries): load_skill("shopping") and run
+  amazon_search, which shows live listings as cards the user can tap. Do this
+  even for "show me those again": an earlier list from memory or review sites
+  has no listings to show.
 
 Guidance:
 - Each user message starts with "[Sent <day, time>]": when it was said. When a
