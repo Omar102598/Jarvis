@@ -290,13 +290,9 @@ class WorkoutAgent(BaseAgent):
 
     async def _today(self) -> str:
         plan = _load_json(self.r, PLAN_KEY, {})
-        generated = plan.get("generated_at", "")
-        stale = True
-        try:
-            age = datetime.now(timezone.utc) - datetime.fromisoformat(generated)
-            stale = age > timedelta(days=7)
-        except Exception:
-            pass
+        # Stale = programmed for an earlier week than the current one. (An age
+        # check of 7 days let last week's plan answer for this Monday.)
+        stale = str(plan.get("week_of", "")) < _plan_monday().isoformat()
         if not plan.get("days") or stale:
             await self._plan_week()
             plan = _load_json(self.r, PLAN_KEY, {})

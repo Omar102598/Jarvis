@@ -17,7 +17,8 @@ import paho.mqtt.client as mqtt
 import redis
 import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+
+from cron_util import cron_trigger
 
 from ambient_agent import AmbientAgent
 from atlas_agent import AtlasAgent
@@ -560,7 +561,7 @@ def _sync_recurring() -> None:
         try:
             rec = json.loads(raw)
             # The user's LOCAL time — "Sundays at 10" means 10 in Chicago.
-            trigger = CronTrigger.from_crontab(rec["cron"], timezone=tz)
+            trigger = cron_trigger(rec["cron"], timezone=tz)
         except Exception as exc:
             print(f"[AgentRunner] bad recurring check-in {rec_id}: {exc}", file=sys.stderr)
             continue
@@ -733,7 +734,7 @@ async def main() -> None:
         params = cfg.get("params", {})
 
         try:
-            trigger = CronTrigger.from_crontab(schedule)
+            trigger = cron_trigger(schedule)
         except Exception as exc:
             print(f"[AgentRunner] Bad cron for '{name}': {exc}", file=sys.stderr)
             continue

@@ -2,7 +2,8 @@
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import paho.mqtt.publish as mqtt_publish
 import redis
@@ -15,6 +16,10 @@ MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 
 _PLAN_KEY = "workout:plan"
+
+
+def _local_now() -> datetime:
+    return datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago")))
 
 
 def _trigger(action: str) -> str | None:
@@ -50,11 +55,17 @@ def get_todays_workout() -> str:
     except Exception:
         return "The stored plan looks corrupted — ask Apollo to re-plan the week."
 
-    try:
-        from zoneinfo import ZoneInfo
-        today = datetime.now(ZoneInfo(os.environ.get("USER_TZ", "America/Chicago"))).strftime("%A")
-    except Exception:
-        today = datetime.now().strftime("%A")
+    now = _local_now()
+    today = now.strftime("%A")
+    this_monday = (now.date() - timedelta(days=now.weekday())).isoformat()
+    if str(plan.get("week_of", "")) < this_monday:
+        # Last week's plan would put the wrong split day on today. Apollo
+        # re-plans the current week (the rotation carries on from last week).
+        err = _trigger("week")
+        return err or (
+            f"The plan on file is for the week of {plan.get('week_of', '?')}, not this "
+            "week, so Apollo is re-planning this week now. Don't read the old plan to the "
+            "user. Tell them it's being refreshed and to ask again in about a minute.")
     day = next((d for d in plan.get("days", []) if d.get("day") == today), None)
     if not day:
         return f"Apollo's plan has no session for {today}. Say 'plan my workout week' to refresh."
