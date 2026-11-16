@@ -41,7 +41,7 @@ from typing_extensions import TypedDict
 from llm_factory import TIER_MODELS, build_llm
 from plugin_registry import PluginRegistry
 from tools.agents import get_agent_report, trigger_agent
-from tools.amazon_cart import amazon_add_to_cart
+from tools.amazon_cart import amazon_add_to_cart, amazon_search
 from tools.ubereats import (
     ubereats_add_to_cart, ubereats_item_options, ubereats_menu, ubereats_remove_from_cart,
     ubereats_search, ubereats_view_cart,
@@ -293,7 +293,7 @@ _core_tools = [
     spotify_control, spotify_desktop, github_tool, manage_notes,
     # Amazon RETAIL cart staging (groceries go through the grocery agent —
     # Fresh/Whole Foods use separate carts this cannot reach)
-    amazon_add_to_cart,
+    amazon_add_to_cart, amazon_search,
     # Relationship memory (CRM-lite) + routine detection from history
     manage_people, detect_routines,
     # Travel (Miles: plan in-chat, assisted booking via Approval Inbox) + calls

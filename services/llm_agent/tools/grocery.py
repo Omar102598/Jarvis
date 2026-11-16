@@ -162,6 +162,7 @@ def trigger_grocery_run(stores: str = "", budget: float = 0, notes: str = "") ->
         notes: Anything else the user asked for, in their words ("use what's
             already in the cart as a reference", "no fish this week").
     """
+    already = _r.get("browser:busy") == "remy"
     params = {"notify_room": ACTIVE_ROOM.get("room", "")}
     if stores.strip():
         params["stores"] = [x.strip() for x in stores.split(",") if x.strip()]
@@ -180,6 +181,11 @@ def trigger_grocery_run(stores: str = "", budget: float = 0, notes: str = "") ->
         return f"Failed to trigger grocery agent: {exc}"
 
     where = f" at {', '.join(params['stores'])}" if params.get("stores") else ""
+    if already:
+        return (f"Remy is already in the middle of a run, so this one is QUEUED{where}: "
+                "it starts when the current run finishes and adds its items on top "
+                "(it doesn't merge with or replace the current run). Tell the user it's "
+                "queued, and that he'll report on both.")
     return (f"Remy is building the cart{where}, sir. He adds only (nothing removed, "
             "no checkout) and reports when done -- usually 5-10 minutes.")
 

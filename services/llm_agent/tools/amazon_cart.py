@@ -22,11 +22,41 @@ go through the grocery agent's browser automation instead.
 
 from __future__ import annotations
 
+import json
 import os
 import re
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 
+import aiohttp
+import redis
 from langchain_core.tools import tool
+
+from tools import cards
+
+_BRIDGE = (f"http://{os.environ.get('MAC_BRIDGE_HOST', 'host.docker.internal')}"
+           f":{os.environ.get('MAC_BRIDGE_PORT', '7777')}")
+_r = redis.Redis(host=os.environ.get("REDIS_HOST", "redis"), decode_responses=True)
+_SEARCH_TTL = 1800   # prices move, but not within half an hour
+
+# Runs in the Mac browser on an amazon.com search page. Amazon's server-side
+# pages bot-block the VM, a real signed-in browser gets the real results.
+_EXTRACT_JS = r"""(() => {
+  const out = [];
+  for (const el of document.querySelectorAll('div[data-component-type="s-search-result"][data-asin]')) {
+    const asin = el.getAttribute('data-asin'); if (!asin) continue;
+    const h2 = el.querySelector('h2');
+    let title = (h2 && (h2.getAttribute('aria-label') || h2.innerText) || '').trim();
+    const sponsored = /^Sponsored/.test(title) || !!el.querySelector('.puis-sponsored-label-text');
+    title = title.replace(/^Sponsored Ad -\s*/, '');
+    const price = (el.querySelector('.a-price:not(.a-text-price) .a-offscreen') || {}).textContent || '';
+    const img = (el.querySelector('img.s-image') || {}).src || '';
+    const rating = ((el.querySelector('.a-icon-alt') || {}).textContent || '').replace(' out of 5 stars', '');
+    const rc = el.querySelector('[aria-label$="ratings"]');
+    out.push({asin, title, price, img, rating, sponsored,
+              reviews: rc ? rc.getAttribute('aria-label').replace(' ratings', '') : ''});
+  }
+  return JSON.stringify({title: document.title, items: out});
+})()"""
 
 # Optional: attribute the cart to an Associates tag when one is configured.
 ASSOCIATE_TAG = os.environ.get("AMAZON_ASSOCIATE_TAG", "").strip()
@@ -72,6 +102,69 @@ def _parse_items(items: str) -> tuple[list[tuple[str, int]], list[str]]:
         parsed.append((asin, qty))
 
     return parsed, problems
+
+
+async def _bridge(path: str, body: dict | None = None, timeout: int = 45) -> dict:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as s:
+        async with s.request("POST" if body is not None else "GET", f"{_BRIDGE}{path}",
+                             json=body) as resp:
+            if resp.status >= 400:
+                raise RuntimeError(f"Mac browser error {resp.status}")
+            return await resp.json()
+
+
+@tool
+async def amazon_search(query: str, max_results: int = 6) -> str:
+    """Search Amazon for products and show them to the user as product cards
+    (photo, price, rating; tapping opens the listing).
+
+    Use whenever the user wants to see or compare products to buy on Amazon
+    ("show me protein powders on Amazon", "find a USB-C hub"). Results are live
+    listings with real ASINs, so use them (not memory or review sites) before
+    amazon_add_to_cart. Sponsored results are marked.
+
+    Args:
+        query: what to search for, as you'd type it into Amazon.
+        max_results: how many products to return (1-10).
+    """
+    n = max(1, min(int(max_results or 6), 10))
+    key = f"amazon:search:{query.strip().lower()}"
+    raw = _r.get(key)
+    if not raw:
+        busy = _r.get("browser:busy")
+        if busy:
+            return (f"{busy.capitalize()} is using the Mac browser right now (a grocery run); "
+                    "Amazon search will work again in a few minutes.")
+        try:
+            await _bridge("/browser/navigate",
+                          {"url": "https://www.amazon.com/s?k=" + quote_plus(query)})
+            raw = (await _bridge("/browser/js", {"script": _EXTRACT_JS})).get("result") or ""
+            data = json.loads(raw)
+        except Exception as e:
+            return f"Couldn't search Amazon through the Mac browser ({e})."
+        if not data.get("items"):
+            return (f"Amazon showed no products for '{query}' (page: {data.get('title', '?')}). "
+                    "It may be asking for a sign-in or a captcha in the Mac browser.")
+        _r.set(key, raw, ex=_SEARCH_TTL)
+    items = json.loads(raw)["items"]
+    # Organic results first; a sponsored slot isn't a recommendation.
+    items = sorted(items, key=lambda i: i.get("sponsored", False))[:n]
+
+    lines = [f"Amazon results for '{query}':"]
+    for i in items:
+        bits = [i["price"] or "no price shown"]
+        if i.get("rating"):
+            bits.append(f"{i['rating']}★ ({i.get('reviews') or '?'} ratings)")
+        if i.get("sponsored"):
+            bits.append("sponsored")
+        lines.append(f"- {i['title'][:120]} | ASIN {i['asin']} | " + ", ".join(bits))
+    card = cards.products(f"Amazon: {query}", [{
+        "name": i["title"][:90], "price": i["price"], "image": i["img"],
+        "url": f"https://www.amazon.com/dp/{i['asin']}",
+        "detail": f"{i['rating']}★ · {i['reviews']} ratings" if i.get("rating") else "",
+        "badge": "Sponsored" if i.get("sponsored") else "",
+    } for i in items])
+    return "\n".join(lines) + card
 
 
 @tool

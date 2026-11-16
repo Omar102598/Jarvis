@@ -1195,6 +1195,10 @@ async def _list_cart_names(session: aiohttp.ClientSession, store_key: str,
 _ADDED_LOG_KEY = "grocery:added_log"
 # Set while Remy is using the Mac browser (see run()).
 BROWSER_BUSY_KEY = "browser:busy"
+# One run at a time: two runs in the one shared browser page navigate under
+# each other (seen 2026-11-15: two back-to-back requests, "egg whites" lost).
+# A second request waits its turn instead.
+_RUN_LOCK = asyncio.Lock()
 
 
 def _record_added(r, entries: list[dict]) -> None:
@@ -2210,29 +2214,32 @@ class GroceryAgent(BaseAgent):
         _EMIT = self.log_event   # route _log() into the observability stream
         action = (self.params or {}).get("action", "")
 
-        # Remy drives the shared Mac browser page; the brain's Uber Eats tools
-        # (tools/ubereats.py) use the same page and back off while this is set.
-        try:
-            self.r.set(BROWSER_BUSY_KEY, "remy", ex=3600)
-        except Exception:
-            pass
-        try:
-            if action == "confirm_quantities":
-                return self._confirm_quantities()
-            if action == "checkout":
-                return await self._run_checkout()
-            if action == "learn_cart":
-                return await self._run_learn_cart()
-            if action == "learn_orders":
-                return await self._run_learn_orders()
-            if action == "remove":
-                return await self._run_remove()
-            return await self._run_full()
-        finally:
+        if action == "confirm_quantities":      # no browser needed
+            return self._confirm_quantities()
+        if _RUN_LOCK.locked():
+            _log("  ⏳ another Remy run is in progress; this one waits its turn")
+        async with _RUN_LOCK:
+            # Remy drives the shared Mac browser page; the brain's Uber Eats tools
+            # (tools/ubereats.py) use the same page and back off while this is set.
             try:
-                self.r.delete(BROWSER_BUSY_KEY)
+                self.r.set(BROWSER_BUSY_KEY, "remy", ex=3600)
             except Exception:
                 pass
+            try:
+                if action == "checkout":
+                    return await self._run_checkout()
+                if action == "learn_cart":
+                    return await self._run_learn_cart()
+                if action == "learn_orders":
+                    return await self._run_learn_orders()
+                if action == "remove":
+                    return await self._run_remove()
+                return await self._run_full()
+            finally:
+                try:
+                    self.r.delete(BROWSER_BUSY_KEY)
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Learn the user's usual order from their current Amazon Fresh cart
