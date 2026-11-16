@@ -11,6 +11,16 @@ final class VoiceRecorder {
     private let silenceThreshold: Float = 0.01       // RMS below this = silence
     private let silenceDurationSecs: Double = 1.5    // stop after this much silence
     private let maxDurationSecs: Double = 30.0        // hard stop
+    /// How long to wait for the user to START talking before giving up. 0 keeps
+    /// the chat's behaviour (silence from the first moment ends the take); the
+    /// car waits, because a driver needs a beat to start speaking.
+    private let leadInSecs: Double
+    /// Whether the last take contained any speech at all.
+    private(set) var heardSpeech = false
+
+    init(leadInSecs: Double = 0) {
+        self.leadInSecs = leadInSecs
+    }
 
     // Returns WAV bytes or throws if recording fails.
     func record() async throws -> Data {
@@ -20,6 +30,7 @@ final class VoiceRecorder {
         return try await withCheckedThrowingContinuation { continuation in
             audioBuffer = Data()
             isCapturing = true
+            heardSpeech = false
 
             let inputNode = audioEngine.inputNode
             let recordingFormat = inputNode.outputFormat(forBus: 0)
@@ -30,7 +41,8 @@ final class VoiceRecorder {
 
                 let rms = self.calculateRMS(buffer: buffer)
                 DispatchQueue.main.async {
-                    if rms < self.silenceThreshold {
+                    if rms >= self.silenceThreshold { self.heardSpeech = true }
+                    if rms < self.silenceThreshold && (self.heardSpeech || self.leadInSecs == 0) {
                         self.startSilenceTimer {
                             self.stop { result in
                                 continuation.resume(with: result)
@@ -48,6 +60,14 @@ final class VoiceRecorder {
             } catch {
                 continuation.resume(throwing: error)
                 return
+            }
+
+            // Nobody spoke within the lead-in: end the take (heardSpeech stays false).
+            if leadInSecs > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + leadInSecs) { [weak self] in
+                    guard let self, !self.heardSpeech else { return }
+                    self.stop { result in continuation.resume(with: result) }
+                }
             }
 
             // Hard stop after maxDurationSecs

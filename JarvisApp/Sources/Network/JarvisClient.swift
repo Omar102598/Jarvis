@@ -63,16 +63,17 @@ final class JarvisClient {
     // MARK: Text query → QueryResponse
 
     func askText(_ text: String, speak: Bool = true,
-                 requestID: String = "") async throws -> QueryResponse {
-        let body = TextQueryRequest(text: text, speak: speak, requestID: requestID)
+                 requestID: String = "", source: String = "app") async throws -> QueryResponse {
+        let body = TextQueryRequest(text: text, source: source, speak: speak, requestID: requestID)
         // Turns that search the web run 30-60s; the 60s default cut some off.
         return try await post(path: "/ask/query", body: body, timeout: 180)
     }
 
     // MARK: Audio query → QueryResponse
 
-    func askAudio(_ audioData: Data) async throws -> QueryResponse {
-        var request = try baseRequest(path: "/ask/query/audio?source=app")
+    /// `source` picks the reply style: "app" (chat), "car" (short, spoken).
+    func askAudio(_ audioData: Data, source: String = "app") async throws -> QueryResponse {
+        var request = try baseRequest(path: "/ask/query/audio?source=\(source)")
         request.httpMethod = "POST"
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         request.httpBody = audioData

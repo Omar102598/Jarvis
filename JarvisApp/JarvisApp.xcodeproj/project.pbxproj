@@ -11,6 +11,7 @@
 		0470F816916DC59969908838 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0351D2CCD443344D2D3C6A55 /* SettingsView.swift */; };
 		04A39413F29A6F4983AF16D8 /* ChatMediaCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = D758C80F629DBF6D148898E6 /* ChatMediaCache.swift */; };
 		060697313E064F4B3877572C /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05324E07DB759668AAED1FC0 /* AgentsView.swift */; };
+		26703C9026B6905085775FA4 /* JarvisSpeaker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51147F8ADBEBEAD9A6F25190 /* JarvisSpeaker.swift */; };
 		299C52A2483D4B83A86BADFD /* JarvisClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01850FC46EF51C52C729FEDD /* JarvisClient.swift */; };
 		2C9303C3D0E1EF897AD2BD9C /* PresenceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C575D13A1066337B17BF9CD9 /* PresenceManager.swift */; };
 		2D899C2282A114DE9CBDE6B5 /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00DEA30CBAF36DA03378BC95 /* ChatViewModel.swift */; };
@@ -21,6 +22,7 @@
 		365191E0FC23319F9CA2C898 /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = FF438430EB2C80F2F63E9EBD /* MWDATCore */; };
 		3E914859A26FDA6884D89F35 /* JarvisTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ED77026FB4C749323DEFB83 /* JarvisTheme.swift */; };
 		441905D41CCDB8C1FFD6D262 /* GlassesMockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B5E8A1F3253F6AFD0C176E0 /* GlassesMockController.swift */; };
+		45B1AC33E4F4DDC3ADB9FDEE /* CarPlaySceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CA417DA700497DEAEF56B0C /* CarPlaySceneDelegate.swift */; };
 		5804145E27C3BCB4DC363141 /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12B2DA705EF3A7EF2CE84457 /* LocationManager.swift */; };
 		69FE3CB9F475B44F9F2CD865 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DB76D2E01AE4FFC890367A0D /* Assets.xcassets */; };
 		6D3A81EEB495E8BCC8E6CEE6 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = 76CEC077EB6AB178FEB46CFA /* MWDATCamera */; };
@@ -31,6 +33,8 @@
 		916FD28AD327E03F2DEFDA3D /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62305609ECC5C1E0BF545BC6 /* Models.swift */; };
 		A6C598CF1AD360258E0EE920 /* JarvisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0CD866B2962AE9EBBBFCC0 /* JarvisApp.swift */; };
 		B21B1DD67E2EF4E0956E77B7 /* GlassesManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE2853AF41CA3597BC07C02 /* GlassesManager.swift */; };
+		BAD29494E6F59E454BC70723 /* CarGreetingIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B1AD200B7101B1498E51FF /* CarGreetingIntent.swift */; };
+		C007306A778BCE06ECCD36B0 /* ArcReactor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49AAA3017FC58AAA4848AD65 /* ArcReactor.swift */; };
 		D311028518E5332DF8FD48CF /* MWDATDisplay in Frameworks */ = {isa = PBXBuildFile; productRef = B3ED96B3B3457B1A0855C4CB /* MWDATDisplay */; };
 		D9B1C7E8DB35AA7002FAF6B9 /* CardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7A2413BEBD79F55B05BAC0 /* CardViews.swift */; };
 		DCC6C309A7BEC0ACC2108E2B /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBC398BFD0D411B5F40A28F3 /* ActivityView.swift */; };
@@ -51,14 +55,18 @@
 		395FDC318B7947C290651B23 /* VoiceRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRecorder.swift; sourceTree = "<group>"; };
 		3E06625565B69F6487B5E4A9 /* HealthKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitManager.swift; sourceTree = "<group>"; };
 		46A89DD221C88129D350CA3E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		49AAA3017FC58AAA4848AD65 /* ArcReactor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArcReactor.swift; sourceTree = "<group>"; };
+		51147F8ADBEBEAD9A6F25190 /* JarvisSpeaker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisSpeaker.swift; sourceTree = "<group>"; };
 		5A7A2413BEBD79F55B05BAC0 /* CardViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardViews.swift; sourceTree = "<group>"; };
 		5C6730BDBD692ABB75550576 /* LinkPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkPreview.swift; sourceTree = "<group>"; };
 		62305609ECC5C1E0BF545BC6 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		6931A58F122A71990D09EF46 /* JarvisApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = JarvisApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6ED77026FB4C749323DEFB83 /* JarvisTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisTheme.swift; sourceTree = "<group>"; };
 		7E1D7CE5DA8EE7405878BE41 /* HUDRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDRenderer.swift; sourceTree = "<group>"; };
+		8CA417DA700497DEAEF56B0C /* CarPlaySceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlaySceneDelegate.swift; sourceTree = "<group>"; };
 		9313A453880957C0C0B0638D /* CameraPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPicker.swift; sourceTree = "<group>"; };
 		AFE2853AF41CA3597BC07C02 /* GlassesManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassesManager.swift; sourceTree = "<group>"; };
+		C4B1AD200B7101B1498E51FF /* CarGreetingIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarGreetingIntent.swift; sourceTree = "<group>"; };
 		C575D13A1066337B17BF9CD9 /* PresenceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresenceManager.swift; sourceTree = "<group>"; };
 		CBC398BFD0D411B5F40A28F3 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 		CFE81596832509FC6C029227 /* CalendarManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarManager.swift; sourceTree = "<group>"; };
@@ -108,6 +116,16 @@
 			path = App;
 			sourceTree = "<group>";
 		};
+		2EAACF32EBCB98D40A130589 /* CarPlay */ = {
+			isa = PBXGroup;
+			children = (
+				49AAA3017FC58AAA4848AD65 /* ArcReactor.swift */,
+				8CA417DA700497DEAEF56B0C /* CarPlaySceneDelegate.swift */,
+				51147F8ADBEBEAD9A6F25190 /* JarvisSpeaker.swift */,
+			);
+			path = CarPlay;
+			sourceTree = "<group>";
+		};
 		38C0A69499BE6D1B87E2DC6C /* Glasses */ = {
 			isa = PBXGroup;
 			children = (
@@ -140,6 +158,7 @@
 				C7C1F6BAF567465E90CEEC4C /* Agents */,
 				2E059475AC8105BD12FC79B7 /* App */,
 				0F79EADE4B6FDC521E23B69E /* Calendar */,
+				2EAACF32EBCB98D40A130589 /* CarPlay */,
 				E17CD49A89AE84CC41CCCE48 /* Chat */,
 				38C0A69499BE6D1B87E2DC6C /* Glasses */,
 				EEF9E31C398C3F2610C6EA7E /* Health */,
@@ -163,6 +182,7 @@
 			isa = PBXGroup;
 			children = (
 				27E6BAE82F385B773B0F166D /* AskJarvisIntent.swift */,
+				C4B1AD200B7101B1498E51FF /* CarGreetingIntent.swift */,
 			);
 			path = Intents;
 			sourceTree = "<group>";
@@ -299,9 +319,12 @@
 			files = (
 				DCC6C309A7BEC0ACC2108E2B /* ActivityView.swift in Sources */,
 				060697313E064F4B3877572C /* AgentsView.swift in Sources */,
+				C007306A778BCE06ECCD36B0 /* ArcReactor.swift in Sources */,
 				2E47D8CDED7CF6798EC70AFC /* AskJarvisIntent.swift in Sources */,
 				F998C62E240F1C0A24670D44 /* CalendarManager.swift in Sources */,
 				89CD52C9D7F6B7B8DB38FC7D /* CameraPicker.swift in Sources */,
+				BAD29494E6F59E454BC70723 /* CarGreetingIntent.swift in Sources */,
+				45B1AC33E4F4DDC3ADB9FDEE /* CarPlaySceneDelegate.swift in Sources */,
 				D9B1C7E8DB35AA7002FAF6B9 /* CardViews.swift in Sources */,
 				04A39413F29A6F4983AF16D8 /* ChatMediaCache.swift in Sources */,
 				815B7FD2D06021F52551C1CA /* ChatView.swift in Sources */,
@@ -313,6 +336,7 @@
 				778B3926A24EFF71053F3603 /* HealthKitManager.swift in Sources */,
 				A6C598CF1AD360258E0EE920 /* JarvisApp.swift in Sources */,
 				299C52A2483D4B83A86BADFD /* JarvisClient.swift in Sources */,
+				26703C9026B6905085775FA4 /* JarvisSpeaker.swift in Sources */,
 				3E914859A26FDA6884D89F35 /* JarvisTheme.swift in Sources */,
 				3578C1D9CFA20D91A34A0BD8 /* LinkPreview.swift in Sources */,
 				5804145E27C3BCB4DC363141 /* LocationManager.swift in Sources */,
@@ -332,6 +356,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = JarvisApp.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "JarvisApp-Simulator.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = FCTJWGB3C4;
@@ -472,6 +497,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = JarvisApp.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "JarvisApp-Simulator.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = FCTJWGB3C4;

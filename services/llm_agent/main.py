@@ -829,6 +829,7 @@ def _build_system_prompt(room: str) -> list[dict]:
     # format used to sit in the cached base prompt for every turn; only glasses
     # and mobile turns need it.
     surface = ("app" if room.startswith("app-")
+               else "car" if room.startswith("car-")
                else "glasses" if room.startswith(("glasses-", "mobile-"))
                else "voice" if is_voice else "")
     note = prompt_files.surface_note(surface) if surface else ""

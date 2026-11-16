@@ -36,6 +36,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.omarsalazar.jarvis
         INFOPLIST_FILE: Resources/Info.plist
         CODE_SIGN_STYLE: Automatic
+        # CarPlay needs an entitlement Apple grants to paid accounts; a device
+        # build with it fails to sign. The simulator doesn't check, so only
+        # simulator builds carry it (JarvisApp-Simulator.entitlements = the
+        # main file plus CarPlay). When Apple grants it, move the key into the
+        # entitlements block above and delete this line.
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": JarvisApp-Simulator.entitlements
         DEVELOPMENT_TEAM: "FCTJWGB3C4"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
