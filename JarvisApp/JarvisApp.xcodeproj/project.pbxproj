@@ -16,6 +16,7 @@
 		2D899C2282A114DE9CBDE6B5 /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00DEA30CBAF36DA03378BC95 /* ChatViewModel.swift */; };
 		2E47D8CDED7CF6798EC70AFC /* AskJarvisIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27E6BAE82F385B773B0F166D /* AskJarvisIntent.swift */; };
 		34B990AB78A1AC09B2897F32 /* MarkdownText.swift in Sources */ = {isa = PBXBuildFile; fileRef = F24F09E2348676B64A4ABFCC /* MarkdownText.swift */; };
+		3578C1D9CFA20D91A34A0BD8 /* LinkPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C6730BDBD692ABB75550576 /* LinkPreview.swift */; };
 		362865FB260F2442DB4CBDF0 /* MWDATMockDevice in Frameworks */ = {isa = PBXBuildFile; productRef = D915170B26416E01FCC3D2C8 /* MWDATMockDevice */; };
 		365191E0FC23319F9CA2C898 /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = FF438430EB2C80F2F63E9EBD /* MWDATCore */; };
 		3E914859A26FDA6884D89F35 /* JarvisTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ED77026FB4C749323DEFB83 /* JarvisTheme.swift */; };
@@ -51,6 +52,7 @@
 		3E06625565B69F6487B5E4A9 /* HealthKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitManager.swift; sourceTree = "<group>"; };
 		46A89DD221C88129D350CA3E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		5A7A2413BEBD79F55B05BAC0 /* CardViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardViews.swift; sourceTree = "<group>"; };
+		5C6730BDBD692ABB75550576 /* LinkPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkPreview.swift; sourceTree = "<group>"; };
 		62305609ECC5C1E0BF545BC6 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		6931A58F122A71990D09EF46 /* JarvisApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = JarvisApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6ED77026FB4C749323DEFB83 /* JarvisTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisTheme.swift; sourceTree = "<group>"; };
@@ -182,6 +184,7 @@
 				D758C80F629DBF6D148898E6 /* ChatMediaCache.swift */,
 				12BF08499D6DED3B05E5AEC0 /* ChatView.swift */,
 				00DEA30CBAF36DA03378BC95 /* ChatViewModel.swift */,
+				5C6730BDBD692ABB75550576 /* LinkPreview.swift */,
 				F24F09E2348676B64A4ABFCC /* MarkdownText.swift */,
 				395FDC318B7947C290651B23 /* VoiceRecorder.swift */,
 			);
@@ -311,6 +314,7 @@
 				A6C598CF1AD360258E0EE920 /* JarvisApp.swift in Sources */,
 				299C52A2483D4B83A86BADFD /* JarvisClient.swift in Sources */,
 				3E914859A26FDA6884D89F35 /* JarvisTheme.swift in Sources */,
+				3578C1D9CFA20D91A34A0BD8 /* LinkPreview.swift in Sources */,
 				5804145E27C3BCB4DC363141 /* LocationManager.swift in Sources */,
 				34B990AB78A1AC09B2897F32 /* MarkdownText.swift in Sources */,
 				916FD28AD327E03F2DEFDA3D /* Models.swift in Sources */,

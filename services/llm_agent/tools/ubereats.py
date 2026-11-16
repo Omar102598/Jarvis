@@ -28,6 +28,7 @@ tools back off instead of navigating his page away.
 
 from __future__ import annotations
 
+import base64
 import difflib
 import json
 import os
@@ -144,6 +145,24 @@ async def _store(store_uuid: str) -> dict:
     return data
 
 
+def _store_url(store_uuid: str, slug: str = "") -> str:
+    """ubereats.com/store/<slug>/<id>; the id is the UUID's bytes in base64url.
+    Opens the Uber Eats app on the phone when it's installed."""
+    try:
+        sid = base64.urlsafe_b64encode(uuid.UUID(store_uuid).bytes).decode().rstrip("=")
+    except ValueError:
+        return ""
+    return f"https://www.ubereats.com/store/{slug or 'store'}/{sid}"
+
+
+def _product(item: dict, info: dict) -> dict:
+    """One menu item as a products-card entry."""
+    badge = "Sold out" if item.get("soldOut") else ""
+    return {"name": item["title"], "price": _money(item["price"]),
+            "image": item.get("imageURL", ""), "detail": item.get("description", "")[:90],
+            "badge": badge, "url": _store_url(info.get("uuid", ""), info.get("slug", ""))}
+
+
 def _menu_items(store: dict) -> list[dict]:
     """Flatten a getStoreV1 menu into unique items with their section."""
     items, seen = [], set()
@@ -177,6 +196,7 @@ async def _menu(store_uuid: str) -> tuple[dict, list[dict]]:
         return c["store"], c["items"]
     store = await _store(store_uuid)
     info = {"uuid": store_uuid, "title": store.get("title", ""),
+            "slug": store.get("slug") or "",
             # isOpen stays true while a store takes SCHEDULED orders; a
             # closedMessage ("Opens at 12:00 PM") is what says it's shut now.
             "isOpen": bool(store.get("isOpen")) and not store.get("closedMessage"),
@@ -409,7 +429,17 @@ async def ubereats_menu(store: str, filter: str = "") -> str:
         desc = f": {i['description'][:110]}" if i["description"] else ""
         lines.append(f"- {i['title']} {_money(i['price'])}{extra}{desc}")
     more = f"\n({len(items) - 80} more items; use filter to narrow.)" if len(items) > 80 else ""
-    return head + "\n" + "\n".join(lines) + more if lines else head + f"\nNothing matches '{filter}'."
+    if not lines:
+        return head + f"\nNothing matches '{filter}'."
+    # A filtered menu is a short list worth seeing: photos and prices as a card.
+    card = ""
+    if fw:
+        info.setdefault("uuid", uid)
+        shown = [i for i in items if i.get("imageURL")][:8] or items[:8]
+        card = cards.products(f"{info['title']}: {filter}", [_product(i, info) for i in shown],
+                              subtitle=info.get("eta") if info.get("isOpen")
+                              else (info.get("closedMessage") or "Closed now"))
+    return head + "\n" + "\n".join(lines) + more + card
 
 
 @tool
@@ -530,7 +560,12 @@ async def ubereats_add_to_cart(store: str, item: str, quantity: int = 1,
            + (f" Subtotal {sub}, total {tot} with fees." if sub else ""))
     if not info.get("isOpen"):
         msg += f" Note: {info['title']} is closed now ({info.get('closedMessage')})."
-    return msg + " The user checks out in the Uber Eats app; Jarvis never places the order."
+    info.setdefault("uuid", uid)
+    card = cards.products(f"Added to your {info['title']} cart",
+                          [{**_product(it, info), "detail": _line_text(landed),
+                            "badge": f"x{quantity}" if quantity > 1 else ""}],
+                          footer=f"Subtotal {sub} · Total {tot}" if sub else "")
+    return msg + " The user checks out in the Uber Eats app; Jarvis never places the order." + card
 
 
 @tool

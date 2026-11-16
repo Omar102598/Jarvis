@@ -15,6 +15,13 @@ Card types (``type`` field; the iOS app renders each):
     table   {title, columns:[...], rows:[[...]], footer?}
     chart   {title, kind:"bar"|"line", unit, points:[{x,y}], target?, footer?}
     action  {title, subtitle, icon, approval_id?, status:"pending"|"done", footer?}
+    products {title, subtitle?, products:[{name, price?, image?, url?, detail?, badge?}], footer?}
+            One product is drawn large; several scroll sideways. Tapping a
+            product opens its url (a store page, an app link).
+
+Links the brain writes into its reply get a preview in the app by themselves
+(Apple's LinkPresentation), so a card is only needed when the tool has better
+data than the page's preview: the real price, the item's own photo.
 
 Redis: jarvis:card:{id}  json, 1 day (only needs to live until the turn ends)
 """
@@ -42,6 +49,17 @@ def attach(card: dict) -> str:
     except Exception:
         return ""   # a card is decoration; never fail the tool over it
     return f"\n[[card:{cid}]]{_NOTE}"
+
+
+def products(title: str, items: list[dict], subtitle: str = "", footer: str = "") -> str:
+    """Attach a products card. Each item: name, and any of price, image, url,
+    detail, badge. Items without a name are dropped; returns "" if none are left."""
+    keep = ("name", "price", "image", "url", "detail", "badge")
+    rows = [{k: str(it[k]) for k in keep if it.get(k)} for it in items if it.get("name")]
+    if not rows:
+        return ""
+    return attach({"type": "products", "title": title, "subtitle": subtitle,
+                   "products": rows[:12], "footer": footer})
 
 
 def take(text: str) -> list[dict]:

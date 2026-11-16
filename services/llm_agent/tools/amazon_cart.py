@@ -86,6 +86,9 @@ def amazon_add_to_cart(items: str) -> str:
     names — do not guess an ASIN, since a wrong one silently adds the wrong
     product.
 
+    In the app, put each product's page link (returned below) on its own line
+    in your reply: the app shows it as a preview card with the product photo.
+
     Args:
         items: Comma-separated ASINs, each optionally ":quantity".
                e.g. "B00I0TJHDO, B007GCH756:2"
@@ -107,7 +110,7 @@ def amazon_add_to_cart(items: str) -> str:
 
     lines = [f"Amazon cart link ({len(parsed[:_MAX_ITEMS])} item(s)):", url, ""]
     for asin, qty in parsed[:_MAX_ITEMS]:
-        lines.append(f"  {asin} x{qty}")
+        lines.append(f"  {asin} x{qty}: https://www.amazon.com/dp/{asin}")
 
     if len(parsed) > _MAX_ITEMS:
         lines.append(f"\nOnly the first {_MAX_ITEMS} items are in the link; "

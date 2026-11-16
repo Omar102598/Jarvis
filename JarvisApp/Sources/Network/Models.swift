@@ -151,6 +151,20 @@ struct ChatCard: Decodable, Equatable, Identifiable {
     let icon: String
     let approvalID: String
     let status: String
+    // products
+    let products: [Product]
+
+    struct Product: Decodable, Equatable {
+        let name: String; let price: String; let image: String
+        let url: String; let detail: String; let badge: String
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            func s(_ k: K) -> String { (try? c.decode(String.self, forKey: k)) ?? "" }
+            name = s(.name); price = s(.price); image = s(.image)
+            url = s(.url); detail = s(.detail); badge = s(.badge)
+        }
+        enum K: String, CodingKey { case name, price, image, url, detail, badge }
+    }
 
     struct MacroValue: Decodable, Equatable { let value: Double; let target: Double }
     struct MacroBar: Decodable, Equatable {
@@ -173,7 +187,7 @@ struct ChatCard: Decodable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case type, title, subtitle, footer, calories, bars, meals, items, columns, rows
-        case kind, unit, points, target, icon, status
+        case kind, unit, points, target, icon, status, products
         case approvalID = "approval_id"
     }
 
@@ -196,6 +210,7 @@ struct ChatCard: Decodable, Equatable, Identifiable {
         icon     = (try? c.decode(String.self, forKey: .icon)) ?? "sparkles"
         approvalID = (try? c.decode(String.self, forKey: .approvalID)) ?? ""
         status   = (try? c.decode(String.self, forKey: .status)) ?? ""
+        products = (try? c.decode([Product].self, forKey: .products)) ?? []
     }
 
     /// A value that may arrive as a string or a number ("205g" or 205).

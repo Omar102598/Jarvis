@@ -567,6 +567,11 @@ struct MessageBubble: View {
                 }
                 if !message.text.isEmpty {
                     MarkdownText(text: message.text)
+                    let shown = Set(message.cards.flatMap { $0.products.map(\.url) })
+                    let links = LinkPreviewCache.links(in: message.text, excluding: shown)
+                    if !links.isEmpty {
+                        LinkPreviewList(urls: links)
+                    }
                 }
                 if let media = message.mediaURL, let url = URL(string: media) {
                     MediaCard(url: url,

@@ -17,6 +17,7 @@ struct ChatCardView: View {
         case "table":  TableCardView(card: card)
         case "chart":  ChartCardView(card: card)
         case "action": ActionCardView(card: card)
+        case "products": ProductsCardView(card: card)
         default:       EmptyView()   // a newer card type than this build knows
         }
     }
@@ -401,6 +402,112 @@ struct ActionCardView: View {
                 await MainActor.run { state = approve ? "approved" : "denied" }
             } catch {
                 await MainActor.run { state = "error" }
+            }
+        }
+    }
+}
+
+// MARK: Products — photo, name, price; tap opens the store page
+
+struct ProductsCardView: View {
+    let card: ChatCard
+
+    var body: some View {
+        CardFrame(title: card.title, subtitle: card.subtitle) {
+            if card.products.count == 1, let p = card.products.first {
+                ProductTile(product: p, wide: true)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 10) {
+                        ForEach(Array(card.products.enumerated()), id: \.offset) { _, p in
+                            ProductTile(product: p, wide: false)
+                        }
+                    }
+                }
+            }
+            if !card.footer.isEmpty {
+                Text(card.footer)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.jText)
+            }
+        }
+    }
+}
+
+private struct ProductTile: View {
+    let product: ChatCard.Product
+    let wide: Bool
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        Button {
+            if let u = URL(string: product.url) { openURL(u) }
+        } label: {
+            if wide {
+                HStack(alignment: .top, spacing: 12) {
+                    photo.frame(width: 96, height: 96)
+                    info
+                    Spacer(minLength: 0)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    photo.frame(width: 140, height: 105)
+                    info
+                }
+                .frame(width: 140, alignment: .leading)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(URL(string: product.url) == nil)
+    }
+
+    private var photo: some View {
+        ZStack {
+            Color.jBorder.opacity(0.5)
+            if let u = URL(string: product.image), !product.image.isEmpty {
+                AsyncImage(url: u) { phase in
+                    if let img = phase.image {
+                        img.resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "photo").foregroundColor(.jText.opacity(0.3))
+                    }
+                }
+            } else {
+                Image(systemName: "bag").foregroundColor(.jText.opacity(0.3))
+            }
+        }
+        .clipped()
+        .cornerRadius(8)
+    }
+
+    private var info: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(product.name)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.jText)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+            HStack(spacing: 6) {
+                if !product.price.isEmpty {
+                    Text(product.price)
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundColor(.jGreen)
+                }
+                if !product.badge.isEmpty {
+                    Text(product.badge)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.jGold)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Color.jGold.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+            }
+            if !product.detail.isEmpty {
+                Text(product.detail)
+                    .font(.system(size: 10))
+                    .foregroundColor(.jText.opacity(0.55))
+                    .lineLimit(wide ? 3 : 2)
+                    .multilineTextAlignment(.leading)
             }
         }
     }
