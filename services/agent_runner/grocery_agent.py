@@ -1756,7 +1756,41 @@ def _add_to_cart_js(store_key: str) -> str:
 # quantity is ABSOLUTE — it SETS the line to N rather than adding N. Verified:
 # a hand-click made it 1, then quantity:2 produced "quantity: 2 eachs" and
 # $2.44, not 3. So this is called once per item, never in a loop.
-_HEB_ADD_QUERY_HASH = "740b6637fc54740a4cb3e0e734845c66727b1c5b89af7c95a0695bb6eb89b4d9"
+_HEB_ADD_QUERY_HASH = "b99d4b9c2ecf4cdd91dc100ea33ceba9bdd49bbd7d3555a0f30ea89f544c8550"  # 2026-11-15
+_HEB_HASH_KEY = "grocery:heb_add_hash"   # a re-captured hash, newer than the constant
+
+# Re-captures the hash when HEB redeploys: finds the cartItemV2 document in the
+# page's webpack modules, has HEB's own Apollo client issue it, and reads the
+# hash off the request, which is BLOCKED before it leaves the page, so the cart
+# is never touched.
+_HEB_CAPTURE_HASH_JS = """(async () => {
+  const chunkKey = Object.keys(window).find(k => k.startsWith('webpackChunk'));
+  if (!chunkKey || !window.__APOLLO_CLIENT__) return null;
+  let req; window[chunkKey].push([[Symbol('jarvis')], {}, r => { req = r; }]);
+  let doc = null;
+  for (const id of Object.keys(req.m)) {
+    if (!String(req.m[id]).includes('mutation cartItemV2(')) continue;
+    const ex = req(id);
+    for (const k of Object.keys(ex)) {
+      const v = ex[k];
+      if (v && v.definitions && v.definitions.some(d => d.name && d.name.value === 'cartItemV2')) { doc = v; break; }
+    }
+    if (doc) break;
+  }
+  if (!doc) return null;
+  const realFetch = window.fetch; let hash = null;
+  window.fetch = function (url, opts) {
+    const body = opts && opts.body ? String(opts.body) : '';
+    if (body.includes('cartItemV2')) {
+      const m = body.match(/"sha256Hash":"([0-9a-f]{64})"/); hash = m && m[1];
+      return Promise.reject(new Error('blocked'));
+    }
+    return realFetch.apply(this, arguments);
+  };
+  try { await window.__APOLLO_CLIENT__.mutate({mutation: doc, variables: {productId: '0', skuId: '0', quantity: 0}}); } catch (e) {}
+  window.fetch = realFetch;
+  return hash;
+})()"""
 
 _HEB_IDS_JS = """(function(){
   var out = {productId: (location.pathname.match(/\\/(\\d+)(?:\\?|$)/)||[])[1] || null, skuId: null};
@@ -1769,7 +1803,7 @@ _HEB_IDS_JS = """(function(){
 })()"""
 
 
-def _heb_add_js(product_id: str, sku_id: str, quantity: int) -> str:
+def _heb_add_js(product_id: str, sku_id: str, quantity: int, query_hash: str = "") -> str:
     """In-page fetch of HEB's cart mutation, so it inherits the session."""
     payload = json.dumps({
         "operationName": "cartItemV2",
@@ -1781,7 +1815,7 @@ def _heb_add_js(product_id: str, sku_id: str, quantity: int) -> str:
             "quantity": int(quantity),
         },
         "extensions": {"persistedQuery": {"version": 1,
-                                          "sha256Hash": _HEB_ADD_QUERY_HASH}},
+                                          "sha256Hash": query_hash or _HEB_ADD_QUERY_HASH}},
     })
     return (
         "(function(){return fetch('https://www.heb.com/graphql',{method:'POST',"
@@ -1811,19 +1845,42 @@ async def _add_heb_via_graphql(
     if not product_id or not sku_id:
         return False, f"could not read HEB ids from the page (got {got})"
 
-    res = await _bridge_post(session, "/browser/js",
-                             {"script": _heb_add_js(product_id, sku_id, quantity)},
-                             timeout=30)
-    out = res.get("result") or {}
-    body = str(out.get("body") or "")
-    if out.get("status") == 200 and "addItemToCartV2" in body:
+    r = redis_lib.Redis(host=os.environ.get("REDIS_HOST", "redis"), decode_responses=True)
+    query_hash = ""
+    try:
+        query_hash = r.get(_HEB_HASH_KEY) or ""
+    except Exception:
+        pass
+    for attempt in (1, 2):
+        res = await _bridge_post(session, "/browser/js",
+                                 {"script": _heb_add_js(product_id, sku_id, quantity, query_hash)},
+                                 timeout=30)
+        out = res.get("result") or {}
+        body = str(out.get("body") or "")
+        # PersistedQueryNotFound: HEB redeployed and the hash moved on. Capture
+        # the new one from the page (cart untouched) and retry once.
+        if "PersistedQueryNotFound" in body and attempt == 1:
+            cap = await _bridge_post(session, "/browser/js",
+                                     {"script": _HEB_CAPTURE_HASH_JS}, timeout=30)
+            new = cap.get("result") or ""
+            if isinstance(new, str) and re.fullmatch(r"[0-9a-f]{64}", new):
+                _log(f"  ↻ HEB cart hash re-captured ({new[:8]}…)")
+                query_hash = new
+                try:
+                    r.set(_HEB_HASH_KEY, new)
+                except Exception:
+                    pass
+                continue
+            return False, "HEB persisted-query hash is stale and re-capture failed"
+        break
+    # An error reply ALSO says addItemToCartV2 (it's the field name), so
+    # success means a Cart came back, not an *Error type.
+    if out.get("status") == 200 and "addItemToCartV2" in body and "Error\"" not in body \
+            and '"errors"' not in body:
         return True, f"Added {quantity}x to HEB via API (sku {sku_id})."
-    # PersistedQueryNotFound means HEB redeployed and the hash moved on. Worth
-    # naming explicitly: it is the one failure that is expected eventually, and
-    # the fix is to re-capture the hash rather than to debug the request.
     if "PersistedQueryNotFound" in body:
         return False, "HEB persisted-query hash is stale — re-capture it"
-    return False, f"HEB API add failed (status {out.get('status')}): {body[:120]}"
+    return False, f"HEB API add failed (status {out.get('status')}): {body[:160]}"
 
 
 # Target's own cart API, captured the same way HEB's was: watch the traffic
