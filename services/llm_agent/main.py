@@ -77,7 +77,7 @@ from tools.routines import detect_routines
 from tools.travel import plan_trip, get_trips, propose_booking
 from tools.calls import make_call
 from tools.watches import manage_watches
-from tools.presence import arrive_home, leave_home
+from tools.presence import arrive_home, leave_home, remind_when_home
 from tools.approvals import manage_approvals
 from tools.atlas import get_health_overview
 from tools.apple_tv import apple_tv
@@ -260,7 +260,7 @@ def _start_thinking_rotation(stop_event: threading.Event) -> None:
 _core_tools = [
     # Smart home + manual presence (geofence fallback) + Apple TV
     control_device, get_device_states, set_scene, get_presence, manage_scenes,
-    arrive_home, leave_home, apple_tv,
+    arrive_home, leave_home, remind_when_home, apple_tv,
     # Bedtime routine. Must be listed HERE, not just exported from tools/
     # __init__: _core_tools is the explicit bind list, and importing a tool
     # without adding it leaves the model unable to call it. "sleep mode" then

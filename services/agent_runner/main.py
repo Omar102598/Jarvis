@@ -315,8 +315,9 @@ def _on_presence(client, userdata, msg):
             notes = [n for n in _redis.lrange("jarvis:arrival:notes", 0, -1) if n]
             if notes:
                 _redis.delete("jarvis:arrival:notes")
-                text += " A reminder for when you got home: " + " Also, ".join(
-                    n if isinstance(n, str) else n.decode() for n in notes)
+                items = [(n if isinstance(n, str) else n.decode()).strip().rstrip(".")
+                         for n in notes]
+                text += " You asked me to remind you: " + ". Also, ".join(items) + "."
         except Exception as e:
             print(f"[AgentRunner] arrival notes read failed: {e}")
         room = profile.get("sentry_greeting_room", "office")

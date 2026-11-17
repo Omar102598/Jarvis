@@ -13,10 +13,16 @@ import json
 import os
 
 import paho.mqtt.publish as mqtt_publish
+import redis
 from langchain_core.tools import tool
 
 MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+_r = redis.Redis(host=os.environ.get("REDIS_HOST", "redis"), decode_responses=True)
+
+# agent_runner speaks and clears these with the geofence welcome-home greeting.
+ARRIVAL_NOTES_KEY = "jarvis:arrival:notes"
+ARRIVAL_NOTES_TTL = 7 * 24 * 3600
 
 
 def _publish_presence(event: str) -> bool:
@@ -51,3 +57,22 @@ def leave_home() -> str:
     if not _publish_presence("left"):
         return "Couldn't reach the presence bus."
     return "Marked you away — lights off and away mode on. Safe travels."
+
+
+@tool
+def remind_when_home(note: str) -> str:
+    """Remind the user of something the next time they ARRIVE HOME. Use for
+    "remind me when I get home to…", "when I'm home, tell me to…". The note is
+    spoken with the welcome-home greeting when the phone's geofence fires, then
+    cleared. Write `note` as what to say, e.g. "take the chicken out of the
+    freezer". For a reminder at a set TIME use set_reminder instead.
+    """
+    note = (note or "").strip().rstrip(".")
+    if not note:
+        return "No reminder text given."
+    try:
+        _r.rpush(ARRIVAL_NOTES_KEY, note)
+        _r.expire(ARRIVAL_NOTES_KEY, ARRIVAL_NOTES_TTL)
+    except Exception as e:
+        return f"Couldn't save the reminder: {e}"
+    return f"Saved. I'll remind you when you get home: {note}."
