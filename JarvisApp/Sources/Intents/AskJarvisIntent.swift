@@ -99,5 +99,16 @@ struct JarvisShortcuts: AppShortcutsProvider {
             shortTitle: "Ask Jarvis",
             systemImageName: "sparkles"
         )
+        // Listed here so it shows under the Jarvis app tile in Shortcuts
+        // (used by the CarPlay → Connects automation).
+        AppShortcut(
+            intent: CarGreetingIntent(),
+            phrases: [
+                "\(.applicationName) car greeting",
+                "Greet me \(.applicationName)",
+            ],
+            shortTitle: "Car Greeting",
+            systemImageName: "car.fill"
+        )
     }
 }
