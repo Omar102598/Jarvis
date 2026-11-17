@@ -310,6 +310,15 @@ def _on_presence(client, userdata, msg):
         who = profile.get("resident_name", "sir")
         text = (f"Welcome home, {who}. I've brought the lights up for you."
                 if scene_ran else f"Welcome home, {who}.")
+        # One-shot "remind me when I get home" notes, spoken with the welcome.
+        try:
+            notes = [n for n in _redis.lrange("jarvis:arrival:notes", 0, -1) if n]
+            if notes:
+                _redis.delete("jarvis:arrival:notes")
+                text += " A reminder for when you got home: " + " Also, ".join(
+                    n if isinstance(n, str) else n.decode() for n in notes)
+        except Exception as e:
+            print(f"[AgentRunner] arrival notes read failed: {e}")
         room = profile.get("sentry_greeting_room", "office")
         _redis.set("jarvis:arrival:pending",
                    json.dumps({"text": text, "room": room}), ex=600)
