@@ -15,6 +15,12 @@
 # =============================================================================
 set -euo pipefail
 
+# The watchdog runs this from launchd, whose PATH has no Homebrew. Without
+# this the "brew" check failed, the script exited before launching anything,
+# and the watchdog logged "HEALED: native audio" every 5 minutes while the
+# wake word stayed dead (2026-11-16).
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="$REPO_DIR/.venv-audio"
 PIDS_FILE="$REPO_DIR/.audio_pids"
@@ -155,6 +161,11 @@ cmd_start() {
   # shellcheck disable=SC1091
   source "$VENV/bin/activate"
 
+  # Reinstall only when the package list below changes: running pip on every
+  # start made each restart slow and at the mercy of PyPI being reachable.
+  _deps_sha="$(sed -n '/^  # ---------- virtualenv/,/^  mkdir -p "\$AUDIO_DIR"/p' "$0" | shasum | cut -d' ' -f1)"
+  _stamp="$VENV/.deps.sha"
+  if [ "$(cat "$_stamp" 2>/dev/null)" != "$_deps_sha" ]; then
   echo "[audio] Installing Python dependencies (this may take a few minutes on first run)..."
   pip install --quiet --upgrade pip
   # TTS uses macOS built-in `say`, so no piper/phonemize needed
@@ -171,6 +182,8 @@ cmd_start() {
     "redis>=5.0" \
     "edge-tts>=7.3.1" \
     "websockets>=13"
+  echo "$_deps_sha" > "$_stamp"
+  fi
 
   mkdir -p "$AUDIO_DIR" "$MODEL_DIR"
 
