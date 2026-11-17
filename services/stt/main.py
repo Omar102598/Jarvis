@@ -153,7 +153,15 @@ DEVICE, COMPUTE_TYPE, DEFAULT_MODEL = resolve_device()
 MODEL_NAME = os.environ.get("STT_MODEL", DEFAULT_MODEL)
 
 print(f"[STT] Loading whisper '{MODEL_NAME}' on {DEVICE} ({COMPUTE_TYPE})...")
-model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE)
+# Cache first. A plain load asks Hugging Face for updates on every start, and
+# when that connection hangs (seen 2026-11-16 over IPv6) STT never finishes
+# starting: wake words fire, nobody records. Network only if not cached.
+try:
+    model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE,
+                         local_files_only=True)
+except Exception:
+    print("[STT] Model not cached — downloading...")
+    model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE)
 print("[STT] Model loaded.")
 
 
@@ -630,8 +638,18 @@ def on_wake_word(client, userdata, msg):
         _beep()
 
     raw, audio_buf, engine = listen(preroll=True)
+    heard = _transcribe(raw, audio_buf, engine)
+    text = _strip_wake(heard)
+    if heard and not text:
+        # Only the wake word itself (it sits in the pre-roll). The user said
+        # "Hey Jarvis", then paused for him, and Scribe committed the turn on
+        # that pause, so the question was never recorded and the turn was
+        # dropped as "no speech" while the app sat on "listening". Keep
+        # listening for the actual request.
+        print(f"[STT] Heard only the wake word ('{heard}') — listening for the request...")
+        raw, audio_buf, engine = listen(preroll=False, no_speech_timeout=6.0)
+        text = _strip_wake(_transcribe(raw, audio_buf, engine))
     audio_path = cache_audio(audio_buf, room)
-    text = _strip_wake(_transcribe(raw, audio_buf, engine))
 
     if text and not _is_hallucination(text):
         print(f"[STT] Transcribed ({room}): '{text}'")
