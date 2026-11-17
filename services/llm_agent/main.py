@@ -1249,6 +1249,26 @@ def _norm_echo(t: str) -> str:
     return _re.sub(r"[^a-z0-9 ]", "", (t or "").lower()).strip()
 
 
+_stream_rooms: dict[str, float] = {}   # room -> when a turn claimed it
+_stream_rooms_lock = threading.Lock()
+_STREAM_CLAIM_TTL = 180   # a turn that crashed mid-way can't block a room forever
+
+
+def _claim_stream_room(room: str) -> bool:
+    """True if this turn may stream speech into `room` (no other turn is)."""
+    now = _time.time()
+    with _stream_rooms_lock:
+        if now - _stream_rooms.get(room, 0) < _STREAM_CLAIM_TTL:
+            return False
+        _stream_rooms[room] = now
+        return True
+
+
+def _release_stream_room(room: str) -> None:
+    with _stream_rooms_lock:
+        _stream_rooms.pop(room, None)
+
+
 def _record_reply(text: str) -> None:
     n = _norm_echo(text)
     if len(n) >= 4:
@@ -1363,9 +1383,42 @@ def _handle_request(client, data):
     ).start()
 
     _sentence_queue: list[str] = []
+    # Speak each sentence as soon as it's ready instead of after the whole
+    # turn (a 14s tool turn used to be 14s of silence). Physical rooms only:
+    # the app/gateway collects until is_final anyway. One streaming turn per
+    # room at a time: a concurrent turn (a check-in landing mid-answer) falls
+    # back to the old send-at-the-end path, so sentences never interleave and
+    # its /done can't reopen the mic under the other turn.
+    _streamed: list[str] = []
+    _stream = room in PHYSICAL_ROOMS and _claim_stream_room(room)
+
+    def _speak_now(sentence: str) -> None:
+        if not _streamed:
+            try:
+                r.set(f"jarvis:voice:state:{room}", "speaking", ex=300)
+            except Exception:
+                pass
+        _record_reply(sentence)   # remember it so the echo doesn't loop back
+        client.publish(f"jarvis/tts/{room}/speak",
+                       json.dumps({"text": sentence, "room": room, "is_final": False}))
+        _streamed.append(sentence)
 
     def on_sentence(sentence: str) -> None:
-        _sentence_queue.append(sentence)
+        if not _stream:
+            _sentence_queue.append(sentence)
+            return
+        # The non-streaming fallback hands over the whole reply as one block,
+        # including sentences already spoken: speak only the new ones.
+        parts, rest = _split_sentences(sentence + "\n")
+        parts = parts + ([rest.strip()] if rest.strip() else [])
+        if len(parts) > 1 and _streamed:
+            said = set(_streamed)
+            parts = [x for x in parts if x not in said]
+        else:
+            parts = [sentence]
+        for x in parts:
+            _sentence_queue.append(x)
+            _speak_now(x)
 
     response = ""
     try:
@@ -1376,7 +1429,9 @@ def _handle_request(client, data):
         print(f"[LLM] Error: {err_str}")
         # Transient Anthropic overload (529) — retry once after a short pause
         # instead of apologizing ("turn on my apple tv" died to a momentary 529).
-        if "529" in err_str or "overloaded" in err_str.lower():
+        # Not once part of the answer has been spoken: a retry regenerates
+        # the whole reply and the user would hear the first half twice.
+        if ("529" in err_str or "overloaded" in err_str.lower()) and not _streamed:
             try:
                 time.sleep(3)
                 print("[LLM] 529/overloaded — retrying once")
@@ -1397,8 +1452,11 @@ def _handle_request(client, data):
                     print(f"[LLM] Cleared corrupted history for user {USER_ID}")
                 except Exception:
                     pass
-            response = "I'm sorry, I encountered an error processing that request."
+            response = ("Sorry, I lost my train of thought there." if _streamed
+                        else "I'm sorry, I encountered an error processing that request.")
             _sentence_queue.append(response)
+            if _stream:
+                _speak_now(response)
     finally:
         _stop_thinking.set()
 
@@ -1412,15 +1470,26 @@ def _handle_request(client, data):
     except Exception:
         pass
 
-    for i, sentence in enumerate(_sentence_queue):
-        is_final = (i == len(_sentence_queue) - 1)
-        _record_reply(sentence)   # remember it so the echo doesn't loop back
-        msg = {"text": sentence, "room": room, "is_final": is_final}
-        if is_final:
-            # The whole reply, newlines intact, for callers that show text (the
-            # mobile gateway) rather than speak it sentence by sentence.
-            msg["full_text"] = response or " ".join(_sentence_queue)
-        client.publish(f"jarvis/tts/{room}/speak", json.dumps(msg))
+    if _stream:
+        if not _streamed:   # nothing was said (empty reply): say the fallback
+            _speak_now(_sentence_queue[0])
+        # Everything is already spoken. An empty final message carries the
+        # whole reply and makes tts_mac publish /done (which opens the
+        # follow-up mic) only after the last sentence has played.
+        client.publish(f"jarvis/tts/{room}/speak", json.dumps({
+            "text": "", "room": room, "is_final": True,
+            "full_text": response or " ".join(_sentence_queue)}))
+        _release_stream_room(room)
+    else:
+        for i, sentence in enumerate(_sentence_queue):
+            is_final = (i == len(_sentence_queue) - 1)
+            _record_reply(sentence)   # remember it so the echo doesn't loop back
+            msg = {"text": sentence, "room": room, "is_final": is_final}
+            if is_final:
+                # The whole reply, newlines intact, for callers that show text (the
+                # mobile gateway) rather than speak it sentence by sentence.
+                msg["full_text"] = response or " ".join(_sentence_queue)
+            client.publish(f"jarvis/tts/{room}/speak", json.dumps(msg))
 
     print(f"[LLM] Tier={tier}, {len(_sentence_queue)} sentence(s): '{response[:80]}...'")
 
