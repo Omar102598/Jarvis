@@ -25,6 +25,7 @@ GET  /scraper/screenshot              — PNG screenshot of scraper page
 POST /scraper/close                   — close scraper context
 """
 
+import asyncio
 import base64
 import collections
 import json
@@ -79,6 +80,16 @@ _browser_context  = None
 _page             = None
 
 _BROWSER_STATE_PATH = os.path.expanduser("~/.jarvis/browser_state.json")
+
+# Both Chromium instances used to stay open for the bridge's whole life. Heavy
+# store sites (H-E-B, Amazon) grow their renderers by gigabytes over days, and
+# tabs a site opens on its own were never closed, so Chrome for Testing ended up
+# eating most of the Mac's memory. The reaper closes a browser that has sat idle
+# for BROWSER_IDLE_SECS (saving the visible one's logins first). The next
+# request relaunches it, which takes a couple of seconds.
+BROWSER_IDLE_SECS = int(os.environ.get("BROWSER_IDLE_SECS", "1200"))
+_last_visible_use = 0.0
+_last_scraper_use = 0.0
 
 # ---------------------------------------------------------------------------
 # Network capture
@@ -170,7 +181,8 @@ async def _get_page():
     Loads a saved storage state (cookies/localStorage) from disk if it exists,
     so the user stays logged in to stores between grocery agent runs.
     """
-    global _pw, _browser, _browser_context, _page
+    global _pw, _browser, _browser_context, _page, _last_visible_use
+    _last_visible_use = time.monotonic()
     if _pw is None:
         from playwright.async_api import async_playwright
         _pw = await async_playwright().start()
@@ -212,7 +224,8 @@ async def _get_page():
 
 async def _get_scraper_page():
     """Return the headless scraper page, launching a separate browser if needed."""
-    global _scraper_pw, _scraper_browser, _scraper_page
+    global _scraper_pw, _scraper_browser, _scraper_page, _last_scraper_use
+    _last_scraper_use = time.monotonic()
     if _scraper_pw is None:
         from playwright.async_api import async_playwright
         _scraper_pw = await async_playwright().start()
@@ -227,6 +240,11 @@ async def _get_scraper_page():
             ],
         )
     if _scraper_page is None or _scraper_page.is_closed():
+        if _scraper_page is not None:   # page died on its own — drop its context too
+            try:
+                await _scraper_page.context.close()
+            except Exception:
+                pass
         context = await _scraper_browser.new_context(
             viewport={"width": 1280, "height": 900},
             user_agent=(
@@ -250,21 +268,71 @@ async def _get_scraper_page():
     return _scraper_page
 
 
+async def _close_visible_browser(save_state: bool = True) -> None:
+    """Close the visible browser completely, keeping its logins on disk."""
+    global _pw, _browser, _browser_context, _page
+    ctx, browser, pw = _browser_context, _browser, _pw
+    _pw = _browser = _browser_context = _page = None
+    if ctx is not None and save_state:
+        try:
+            os.makedirs(os.path.dirname(_BROWSER_STATE_PATH), exist_ok=True)
+            await ctx.storage_state(path=_BROWSER_STATE_PATH)
+        except Exception as e:
+            print(f"[MacBridge] couldn't save browser state before closing: {e}")
+    for closer in (ctx and ctx.close, browser and browser.close, pw and pw.stop):
+        if closer:
+            try:
+                await asyncio.wait_for(closer(), timeout=15)
+            except Exception:
+                pass
+
+
+async def _close_scraper_browser() -> None:
+    global _scraper_pw, _scraper_browser, _scraper_page
+    browser, pw = _scraper_browser, _scraper_pw
+    _scraper_pw = _scraper_browser = _scraper_page = None
+    for closer in (browser and browser.close, pw and pw.stop):
+        if closer:
+            try:
+                await asyncio.wait_for(closer(), timeout=15)
+            except Exception:
+                pass
+
+
+async def _browser_reaper() -> None:
+    """Every minute: close stray tabs, and close any browser left idle."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            now = time.monotonic()
+            if _browser_context is not None:
+                # Tabs a site opened by itself (popups, target=_blank). Our
+                # endpoints only ever drive _page, so the rest just hold memory.
+                for pg in list(_browser_context.pages):
+                    if pg is not _page and not pg.is_closed():
+                        try:
+                            await pg.close()
+                        except Exception:
+                            pass
+                if now - _last_visible_use > BROWSER_IDLE_SECS:
+                    print("[MacBridge] visible browser idle — closing it to free memory", flush=True)
+                    await _close_visible_browser()
+            if _scraper_browser is not None and now - _last_scraper_use > BROWSER_IDLE_SECS:
+                print("[MacBridge] scraper browser idle — closing it to free memory", flush=True)
+                await _close_scraper_browser()
+        except Exception as e:
+            print(f"[MacBridge] browser reaper error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    reaper = asyncio.create_task(_browser_reaper())
     yield
-    global _pw, _browser, _browser_context, _page, _scraper_pw, _scraper_browser, _scraper_page
-    for p in [_page, _scraper_page]:
-        if p and not p.is_closed():
-            await p.close()
-    if _browser_context:
-        await _browser_context.close()
-    for b in [_browser, _scraper_browser]:
-        if b:
-            await b.close()
-    for pw in [_pw, _scraper_pw]:
-        if pw:
-            await pw.stop()
+    reaper.cancel()
+    # Timeouts and swallowed errors: a wedged or already-dead browser used to
+    # raise here (TargetClosedError) or hang, leaving the process on :7777.
+    await _close_visible_browser()
+    await _close_scraper_browser()
 
 
 app = FastAPI(title="JARVIS macOS Bridge", version="1.1.0", lifespan=lifespan)
@@ -831,8 +899,13 @@ async def scraper_screenshot():
 async def scraper_close():
     """Close the headless scraper page (browser stays alive for reuse)."""
     global _scraper_page
-    if _scraper_page and not _scraper_page.is_closed():
-        await _scraper_page.close()
+    if _scraper_page is not None:
+        # Close the whole context: the next page gets a fresh one, so closing
+        # only the page leaked a context (and its memory) every time.
+        try:
+            await _scraper_page.context.close()
+        except Exception:
+            pass
         _scraper_page = None
     return {"status": "scraper page closed"}
 

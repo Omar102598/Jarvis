@@ -78,13 +78,20 @@ cmd_start() {
   # shellcheck disable=SC1091
   source "$VENV/bin/activate"
 
-  echo "[bridge] Installing dependencies..."
-  pip install --quiet --upgrade pip
-  pip install --quiet -r "$REPO_DIR/services/mac_bridge/requirements.txt"
-
-  # Install Playwright's Chromium browser (only downloads if not already present)
-  echo "[bridge] Checking Playwright Chromium..."
-  "$VENV/bin/playwright" install chromium 2>&1 | grep -v "^$" || true
+  # Install only when requirements.txt changed. Doing it on every start meant
+  # a slow or unreachable PyPI hung the watchdog's restart at "pip install"
+  # and kept the bridge down.
+  REQ="$REPO_DIR/services/mac_bridge/requirements.txt"
+  STAMP="$VENV/.requirements.sha"
+  want="$(shasum "$REQ" | cut -d' ' -f1)"
+  if [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then
+    echo "[bridge] Installing dependencies..."
+    pip install --quiet --upgrade pip
+    pip install --quiet -r "$REQ"
+    # Playwright's Chromium (only downloads if not already present)
+    "$VENV/bin/playwright" install chromium 2>&1 | grep -v "^$" || true
+    echo "$want" > "$STAMP"
+  fi
 
   echo "[bridge] Starting on port $MAC_BRIDGE_PORT..."
   nohup "$VENV/bin/python" "$REPO_DIR/services/mac_bridge/main.py" \
