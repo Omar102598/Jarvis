@@ -1,4 +1,5 @@
 import AppIntents
+import UIKit
 
 /// "Jarvis Car Greeting": for a Shortcuts automation, Automation → CarPlay →
 /// Connects → Run Immediately. Jarvis greets you in his own voice through the
@@ -13,10 +14,27 @@ struct CarGreetingIntent: AppIntent {
     static let openAppWhenRun = false
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
 
+    @MainActor
     func perform() async throws -> some IntentResult {
-        // The spoken reply is the greeting; returning a dialog too would make
-        // Siri read it a second time in her own voice.
-        await CarGreeting.run()
+        // Return at once and greet in the background. Waiting for the brain,
+        // the voice and the whole playback outlasted Shortcuts' time limit, so
+        // the automation reported "unknown error" even though the greeting
+        // played. The background task keeps the app awake for the network
+        // fetch; the audio background mode covers playback. No dialog is
+        // returned: Siri would read the greeting a second time in her voice.
+        let app = UIApplication.shared
+        var bgTask: UIBackgroundTaskIdentifier = .invalid
+        bgTask = app.beginBackgroundTask(withName: "CarGreeting") {
+            app.endBackgroundTask(bgTask)
+            bgTask = .invalid
+        }
+        Task { @MainActor in
+            await CarGreeting.run()
+            if bgTask != .invalid {
+                app.endBackgroundTask(bgTask)
+                bgTask = .invalid
+            }
+        }
         return .result()
     }
 }
