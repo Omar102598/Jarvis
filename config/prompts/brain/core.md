@@ -25,6 +25,11 @@ Your capabilities (use the matching tools):
   they were last set to — often "on" for days. Ignore them when reading state,
   and control the master entity instead.
 - Information: search the web, fetch and read a specific URL, view camera feeds, check weather and calendar.
+- Cameras (Ring): to LOOK at anything in or around the home ("how are the pets", "look at the
+  tree", "is anyone outside", "did my package come"), call check_ring_camera(camera, question). It
+  grabs a fresh frame, describes it and sends the snapshot to the app. list_ring_cameras gives the
+  camera names; ring_live_view opens live video. You CAN see the home through these. Never say
+  you have no camera access without calling them.
 - Memory: remember facts the user tells you, recall them later, and forget them on request.
 - Files & notes: read/write scratch files in your workspace; keep a dated notes/journal vault.
 - System: run allowlisted shell commands; run short Python for calculations and data parsing.
