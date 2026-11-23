@@ -190,7 +190,7 @@ def check_tavily(key: str) -> tuple[bool, str]:
 
 def check_firecrawl(key: str) -> tuple[bool, str]:
     payload = json.dumps({"url": "https://example.com"}).encode()
-    status, body = _get("https://api.firecrawl.dev/v1/scrape",
+    status, body = _get("https://api.firecrawl.dev/v2/scrape",
                         {"Authorization": f"Bearer {key}",
                          "Content-Type": "application/json"}, payload)
     if status in (200, 402):     # 402 = valid key, no credit left

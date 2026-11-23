@@ -59,15 +59,17 @@ async def extract(
     body: dict[str, Any] = {
         "url": url,
         "onlyMainContent": True,
-        "formats": ["json"],
-        "jsonOptions": {"prompt": prompt, "schema": schema},
+        # v2: json extraction is a typed `formats` entry (no jsonOptions), and
+        # maxAge=0 skips the default 2-day cache — a cached price is a wrong price.
+        "maxAge": 0,
+        "formats": [{"type": "json", "prompt": prompt, "schema": schema}],
     }
 
     owned = session is None
     sess = session or aiohttp.ClientSession()
     try:
         async with sess.post(
-            f"{FIRECRAWL_URL}/v1/scrape",
+            f"{FIRECRAWL_URL}/v2/scrape",
             headers={"Authorization": f"Bearer {FIRECRAWL_API_KEY}",
                      "Content-Type": "application/json"},
             json=body,

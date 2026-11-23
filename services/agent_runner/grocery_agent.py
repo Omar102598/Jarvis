@@ -575,8 +575,11 @@ async def _firecrawl_candidates(
     body = {
         "url": url,
         "onlyMainContent": True,
-        "formats": ["json"],
-        "jsonOptions": {
+        # v2: typed json format (no jsonOptions); maxAge=0 skips the default
+        # 2-day cache so prices are today's.
+        "maxAge": 0,
+        "formats": [{
+            "type": "json",
             "prompt": (f"Extract up to 8 grocery products from these search "
                        f"results for '{item}'. Skip sponsored results."),
             "schema": {"type": "object", "properties": {"products": {
@@ -585,11 +588,11 @@ async def _firecrawl_candidates(
                     "price": {"type": "number"},
                     "url": {"type": "string"},
                 }, "required": ["title", "price"]}}}, "required": ["products"]},
-        },
+        }],
     }
     try:
         async with session.post(
-                f"{FIRECRAWL_URL}/v1/scrape",
+                f"{FIRECRAWL_URL}/v2/scrape",
                 headers={"Authorization": f"Bearer {FIRECRAWL_API_KEY}",
                          "Content-Type": "application/json"},
                 json=body, timeout=aiohttp.ClientTimeout(total=60)) as resp:

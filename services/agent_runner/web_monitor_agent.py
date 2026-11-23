@@ -543,13 +543,15 @@ class WebMonitorAgent(BaseAgent):
         )
         body = {
             "url": url,
-            "formats": ["json"],
+            # v2: typed json format (no jsonOptions); maxAge=0 so a watch
+            # never diffs against v2's default 2-day cached copy.
+            "formats": [{"type": "json", "schema": schema, "prompt": prompt}],
             "onlyMainContent": True,
-            "jsonOptions": {"schema": schema, "prompt": prompt},
+            "maxAge": 0,
         }
         try:
             async with session.post(
-                f"{FIRECRAWL_URL}/v1/scrape",
+                f"{FIRECRAWL_URL}/v2/scrape",
                 headers={"Authorization": f"Bearer {FIRECRAWL_API_KEY}",
                          "Content-Type": "application/json"},
                 json=body,

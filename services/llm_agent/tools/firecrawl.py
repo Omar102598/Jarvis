@@ -42,17 +42,17 @@ async def scrape_page(url: str, extract: str = "") -> str:
     if not url.strip():
         return "Give me a URL to fetch."
 
-    body: dict = {"url": url, "onlyMainContent": True}
+    # v2: json extraction is a typed entry in `formats` (v1's jsonOptions is
+    # gone), and maxAge=0 skips v2's default 2-day page cache.
+    body: dict = {"url": url, "onlyMainContent": True, "maxAge": 0,
+                  "formats": [{"type": "markdown"}]}
     if extract.strip():
-        body["formats"] = ["markdown", "json"]
-        body["jsonOptions"] = {"prompt": f"Extract: {extract.strip()}"}
-    else:
-        body["formats"] = ["markdown"]
+        body["formats"].append({"type": "json", "prompt": f"Extract: {extract.strip()}"})
 
     try:
         async with aiohttp.ClientSession() as s:
             async with s.post(
-                f"{FIRECRAWL_URL}/v1/scrape",
+                f"{FIRECRAWL_URL}/v2/scrape",
                 headers={"Authorization": f"Bearer {FIRECRAWL_API_KEY}",
                          "Content-Type": "application/json"},
                 json=body,
