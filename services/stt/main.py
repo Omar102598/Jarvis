@@ -405,7 +405,7 @@ def _open_scribe(previous_text: str):
 
 
 def listen(preroll: bool = True, no_speech_timeout: float | None = None,
-           previous_text: str = "") -> tuple[str, io.BytesIO, str]:
+           previous_text: str = "", trust_scribe: bool = False) -> tuple[str, io.BytesIO, str]:
     """Record one utterance. Returns (text, wav, engine).
 
     `text` is Scribe's committed transcript, or "" when Whisper must
@@ -470,6 +470,17 @@ def listen(preroll: bool = True, no_speech_timeout: float | None = None,
     if sess:
         if why in ("scribe turn", "scribe silence"):
             engine, text = "scribe", sess.text
+        elif why == "no_speech" and trust_scribe:
+            # Right after a bare "Hey Jarvis" the user IS talking to us, but the
+            # local VAD can miss a quiet or distant voice that Scribe still
+            # heard. Ask Scribe before throwing the take away. (Not used for
+            # follow-up windows, where it could turn TV dialogue into commands.)
+            sess.finish()
+            if sess.text:
+                engine, text = "scribe", sess.text
+                why = "no_speech (scribe heard it)"
+            else:
+                engine = "none"
         elif why == "no_speech":
             engine = "none"
         else:   # local safety net / cap: force a commit, take what Scribe has
@@ -647,7 +658,8 @@ def on_wake_word(client, userdata, msg):
         # dropped as "no speech" while the app sat on "listening". Keep
         # listening for the actual request.
         print(f"[STT] Heard only the wake word ('{heard}') — listening for the request...")
-        raw, audio_buf, engine = listen(preroll=False, no_speech_timeout=6.0)
+        _beep()   # tell the user he's listening; it ends before recording starts
+        raw, audio_buf, engine = listen(preroll=False, no_speech_timeout=6.0, trust_scribe=True)
         text = _strip_wake(_transcribe(raw, audio_buf, engine))
     audio_path = cache_audio(audio_buf, room)
 
